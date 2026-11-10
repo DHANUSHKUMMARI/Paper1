@@ -7,6 +7,8 @@ Research code for Paper 1. The model classifies an image as *real*, *fully AI-ge
 > Status: Milestone 1 (environment) built; checkpoint CP0 passes in CI and awaits the Colab run.
 > Implementation follows `docs/IMPLEMENTATION_BRIEF.docx` (milestones 1–8); progress is recorded in
 > `docs/CHECKPOINTS.md`, `docs/TESTING.md` and `docs/EXPERIMENT_LOG.md`.
+> The brief is at v1.2 (11 Nov 2026), after the pre-implementation review recorded in section 13
+> of the Research Specification.
 
 Target journals (hybrid, subscription route, no APC), in order: Multimedia Systems; Pattern Analysis
 and Applications; The Visual Computer; Applied Intelligence; International Journal of Multimedia

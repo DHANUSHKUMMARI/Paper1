@@ -12,7 +12,7 @@ compute:
 
 data:
   profile: medium
-  crop: 512
+  crop: 256                   # no padding, no resizing; test images are tiled (brief v1.2, D0)
   clip_size: 224
   balance: [1, 1, 1]          # real : fully generated : locally edited
   num_workers: 4

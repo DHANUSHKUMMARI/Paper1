@@ -6,7 +6,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
-| CP0 | 1 | Environment | pending | |
+| CP0 | 1 | Environment | sandbox + CI PASS · Colab part pending | |
 | CP1 | 2 | Data integrity and leakage | pending | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
@@ -27,4 +27,26 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Numbers:** each pass criterion with its measured value
 - **Result:** PASS | FAIL
 - **If FAIL:** fix applied, re-run result, or fallback taken (and why)
+- **Verified by Dhanush:** ☐
+
+---
+
+### CP0 — Environment — 2026-11-11
+
+- **Run / commit:** branch `m1-environment` · `git 45a9329` · CI run [42877556236](https://github.com/DHANUSHKUMMARI/Paper1/actions/runs/42877556236)
+- **What was run:** `ruff check src tests`; `pytest -q`; `python -m eviground.utils.repo_audit --history`; `EVIGROUND_DRY_RUN=1 pytest -q --nbmake notebooks/00_setup_and_data.ipynb`. Locally in the build sandbox (Python 3.13.18, torch 2.15.0, CPU) and in GitHub Actions (Python 3.10 and 3.12, CPU).
+- **Numbers, against the pass criteria of Research Specification 9.1:**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| All tests pass in CI | Python 3.10: success; Python 3.12: success (lint, tests, audit, notebook dry run all green) | PASS |
+| All tests pass locally | 52 passed, 0 failed, 0 skipped | PASS |
+| No tokens in the repository | 0 findings in 38 tracked files; 0 findings across all 5 commits (36 blobs), including inside the `.docx` | PASS |
+| No dataset, checkpoint or secret file tracked | 0 forbidden files; 0 images outside `docs/`; largest tracked file 40 KB (limit 5 MB) | PASS |
+| `.gitignore` works | 9 of 9 sample data, checkpoint and secret paths ignored; 3 of 3 source paths not ignored | PASS |
+| Layout under `src/eviground/` | `data`, `models`, `train`, `eval`, `explain`, `baselines`, `utils` present; 19 of 19 required paths exist | PASS |
+| All tests pass in a fresh Colab runtime (mount Drive, clone with the secret, `pytest`) | not run: needs Dhanush's Colab account | **PENDING** |
+
+- **Result:** sandbox and CI parts PASS. **CP0 is not closed** until `notebooks/00_setup_and_data.ipynb` prints `CP0 (Colab part): PASS` in a fresh Colab runtime and `Paper 1/runs/checkpoints/cp0_colab.json` exists on Drive. Its numbers are then added here.
+- **Not checked by this checkpoint:** the Drive copy of the downloader notebook, and whether the tokens pasted in chat on 10 Nov were rotated (only Dhanush can confirm).
 - **Verified by Dhanush:** ☐

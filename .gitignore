@@ -1,0 +1,27 @@
+# data and model artifacts never go to Git (they live on Google Drive)
+data/*
+!data/README.md
+!data/manifests/
+runs/
+outputs/
+cache/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.tar
+*.zip
+*.parquet
+!data/manifests/*.parquet
+# secrets
+.env
+kaggle.json
+*.token
+# python / notebooks
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+build/
+dist/

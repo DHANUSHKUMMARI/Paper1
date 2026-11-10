@@ -1,0 +1,23 @@
+# CPU-only settings for tests, CI and smoke runs: tiny random backbones, synthetic data,
+# no downloads of weights or datasets.
+defaults: [base]
+experiment: debug
+
+compute:
+  gpu_preference: cpu
+  cu_per_hour: 0.0
+  precision: fp32
+
+data:
+  profile: synthetic
+  crop: 128
+  num_workers: 0
+
+model:
+  semantic: {name: vit_tiny_patch16_224, pretrained: false}
+  trace: {name: efficientnet_b0, pretrained: false}
+
+train:
+  epochs: 2
+  steps_per_epoch: 3
+  batch_size: 4

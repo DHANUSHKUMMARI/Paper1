@@ -1,0 +1,14 @@
+# Runtime stack for Colab. Lower bounds only: Colab ships its own torch build and
+# forcing an exact torch pin would reinstall it on every session.
+# The exact versions used for the paper are frozen by notebooks/00_setup_and_data.ipynb
+# into `requirements.lock.txt` (pip freeze) at the first Colab run and copied into every run folder.
+numpy>=1.26
+pillow>=10.0
+pyyaml>=6.0
+omegaconf>=2.3
+torch>=2.3
+torchvision>=0.18
+open_clip_torch>=2.24
+timm>=1.0
+peft>=0.11
+transformers>=4.44

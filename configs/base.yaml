@@ -1,0 +1,28 @@
+# Shared settings. Paths are NOT set here: they come from eviground.env
+# (Drive on Colab; override with EVIGROUND_DRIVE_ROOT / EVIGROUND_LOCAL_DATA).
+project: eviground
+seed: 42
+seeds: [42, 123, 2026]        # the paper reports mean and std over these three
+deterministic: true
+
+compute:
+  gpu_preference: L4
+  cu_per_hour: 1.7            # read the live rate in Colab's resource panel and update
+  precision: bf16             # fp16 + GradScaler on T4
+
+data:
+  profile: medium
+  crop: 512
+  clip_size: 224
+  balance: [1, 1, 1]          # real : fully generated : locally edited
+  num_workers: 4
+
+checkpoint:
+  every_steps: 500
+  keep_last: 2
+  monitor: val_auc
+  mode: max
+
+logging:
+  level: INFO
+  log_every_steps: 50

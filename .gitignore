@@ -25,3 +25,15 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.venv/
+.ruff_cache/
+*.log
+# more weight / array / archive formats
+*.bin
+*.onnx
+*.h5
+*.npz
+*.npy
+*.gz
+*.tgz
+*.7z

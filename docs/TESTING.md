@@ -26,7 +26,7 @@ EVIGROUND_DRY_RUN=1 pytest -q --nbmake notebooks/00_setup_and_data.ipynb
 | Notebook dry run (`nbmake`) | sandbox | 1 passed |
 | GitHub Actions `ci`, Python 3.10 | run 42877556236 | success: lint, tests, audit, notebook dry run |
 | GitHub Actions `ci`, Python 3.12 | run 42877556236 | success: lint, tests, audit, notebook dry run |
-| Fresh Colab runtime (`notebooks/00_setup_and_data.ipynb`) | Colab | **not run yet** |
+| Fresh Colab runtime (`notebooks/00_setup_and_data.ipynb`) | Colab CPU runtime, Python 3.13.18, torch 2.14.1, commit `dc6fdc2`, 2026-11-11 | PASS: 52 tests passed, audit ok, Drive mounted (record: Drive `Paper 1/runs/checkpoints/cp0_colab.json`) |
 
 CI run: https://github.com/DHANUSHKUMMARI/Paper1/actions/runs/42877556236
 

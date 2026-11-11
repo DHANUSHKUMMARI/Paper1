@@ -4,7 +4,8 @@
 
 Research code for Paper 1. The model classifies an image as *real*, *fully AI-generated* or *locally AI-edited*, localizes edited regions, and produces a forensic report written by a frozen LLM that may cite **only** ID-tagged detector evidence, checked by a rule-based verifier.
 
-> Status: Milestone 1 (environment) built; checkpoint CP0 passes in CI and awaits the Colab run.
+> Status: Milestone 1 (environment) complete; checkpoint CP0 passed on 11 Nov 2026 (sandbox, CI, Colab).
+> Next: Milestone 2 (data layer, checkpoint CP1).
 > Implementation follows `docs/RESEARCH_SPEC.md` (what to build and why) and
 > `docs/IMPLEMENTATION_BRIEF.docx` (how to build it, milestones 1–8); progress is recorded in
 > `docs/CHECKPOINTS.md`, `docs/TESTING.md` and `docs/EXPERIMENT_LOG.md`.

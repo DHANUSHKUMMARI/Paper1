@@ -6,7 +6,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
-| CP0 | 1 | Environment | sandbox + CI PASS · Colab part pending | |
+| CP0 | 1 | Environment | **PASS** (11 Nov 2026) | |
 | CP1 | 2 | Data integrity and leakage | pending | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
@@ -45,8 +45,21 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | No dataset, checkpoint or secret file tracked | 0 forbidden files; 0 images outside `docs/`; largest tracked file 40 KB (limit 5 MB) | PASS |
 | `.gitignore` works | 9 of 9 sample data, checkpoint and secret paths ignored; 3 of 3 source paths not ignored | PASS |
 | Layout under `src/eviground/` | `data`, `models`, `train`, `eval`, `explain`, `baselines`, `utils` present; 19 of 19 required paths exist | PASS |
-| All tests pass in a fresh Colab runtime (mount Drive, clone with the secret, `pytest`) | not run: needs Dhanush's Colab account | **PENDING** |
+| All tests pass in a fresh Colab runtime (mount Drive, clone, `pytest`) | 52 of 52 tests passed; Drive mounted; repository audit ok (40 tracked files, 0 findings); commit `dc6fdc2` | PASS |
 
-- **Result:** sandbox and CI parts PASS. **CP0 is not closed** until `notebooks/00_setup_and_data.ipynb` prints `CP0 (Colab part): PASS` in a fresh Colab runtime and `Paper 1/runs/checkpoints/cp0_colab.json` exists on Drive. Its numbers are then added here.
+- **Colab run (by Dhanush), 2026-11-11 16:16 UTC:** `notebooks/00_setup_and_data.ipynb` on a CPU runtime, commit `dc6fdc2`. Record: Drive `Paper 1/runs/checkpoints/cp0_colab.json`; package versions: `requirements.lock.txt` in the same folder.
+
+| Item | Value from `cp0_colab.json` |
+|------|------------------------------|
+| Status | PASS |
+| Tests | passed, 52 of 52 |
+| Repository audit | ok: 40 tracked files, 0 tracked-file, secret, .gitignore or structure findings (shallow clone: 1 commit, 35 blobs; full history is scanned in CI) |
+| Runtime | Python 3.13.18, torch 2.14.1 (CPU build), no GPU |
+| Key library versions | transformers 5.22.1, peft 0.21.2, timm 1.0.31, numpy 2.4.6, omegaconf 2.4.0 |
+| Drive | mounted at `/content/drive/MyDrive/Paper 1`; free space reported by the mount: 109.7 GB |
+| Dataset folders seen | 01_GenImage, 02_DiffSeg30k, 03_SID-Set, 04_BR-Gen, 05_Chameleon, 06_MMTD-Set, 07_FaceForensics++_optional, plus `Chameleon.zip` and `INVENTORY.csv` |
+
+- **Result: PASS.** Every CP0 criterion is met in the build sandbox, in CI and in Colab.
+- **Carried forward to later checkpoints:** (1) this run used a CPU runtime, so the GPU is first exercised at CP2; (2) Colab ships transformers 5.x, so the CLIP layer names targeted by LoRA are asserted at CP2; (3) `bitsandbytes`, `grad-cam` and `diffusers` inpainting are not needed yet and are installed and locked when first used; (4) whether each dataset folder is complete (`_DONE` markers, file counts) is checked at CP1, not here.
 - **Not checked by this checkpoint:** the Drive copy of the downloader notebook, and whether the tokens pasted in chat on 10 Nov were rotated (only Dhanush can confirm).
 - **Verified by Dhanush:** ☐

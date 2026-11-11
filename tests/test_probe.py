@@ -201,3 +201,49 @@ def test_card_split_sizes_feed_the_assessment(fake_root: Path) -> None:
                     fetch_cards=True, opener=opener)  # fmt: skip
     assert _status(rep, "DiffSeg30k train")["status"] == "partial"  # 4 of 100
     assert _status(rep, "DiffSeg30k validation")["status"] == "present"
+
+
+# Regression tests for review findings on the present/missing assessment (PR #1).
+
+
+def _card_opener(split_sizes: dict[str, int]):
+    def opener(req, timeout):
+        if "README" in req.full_url:
+            return _Resp(b"card")
+        body = {k: {"num_examples": v} for k, v in split_sizes.items()}
+        return _Resp(json.dumps({"dataset_info": {"d": {"splits": body}}}).encode())
+
+    return opener
+
+
+def _small_probe(root: Path, **kw) -> dict:
+    return run_probe(root, sample_headers=5, sample_blockiness=1, sample_masks=5, **kw)
+
+
+def test_card_split_missing_on_drive_is_reported(tmp_path: Path) -> None:
+    root = make_fake_drive(tmp_path / "datasets", per_folder=2)
+    opener = _card_opener({"train": 2, "validation": 2, "test": 9})
+    rep = _small_probe(root, fetch_cards=True, opener=opener)
+    row = _status(rep, "DiffSeg30k test")
+    assert row["status"] == "missing" and row["present"] == "no folder"
+    assert _status(rep, "DiffSeg30k train")["status"] == "present"
+
+
+def test_generator_folder_without_images_is_not_found(tmp_path: Path) -> None:
+    root = make_fake_drive(tmp_path / "datasets", per_folder=2)
+    (root / "01_GenImage/Validation/imagenet_ai_0419_vqdm/val/ai").mkdir(parents=True)
+    val = _small_probe(root)["genimage"]["subsets"]["Validation"]
+    assert "vqdm" not in val["generators_found"]
+    assert "vqdm" in val["generators_missing"]
+    assert val["generators_without_images"] == ["vqdm"]
+    assert val["images_per_generator"] == {"adm": 4, "biggan": 4, "glide": 4}
+
+
+def test_unpaired_diffseg_files_are_not_complete(tmp_path: Path) -> None:
+    root = make_fake_drive(tmp_path / "datasets", per_folder=2)
+    masks = root / "02_DiffSeg30k/validation/masks"
+    (masks / "validation_000001_mask.png").rename(masks / "validation_999999_mask.png")
+    rep = _small_probe(root)
+    row = _status(rep, "DiffSeg30k validation")
+    assert row["status"] == "partial"  # counts still match: 2 images, 2 masks
+    assert "2 unpaired" in row["present"]

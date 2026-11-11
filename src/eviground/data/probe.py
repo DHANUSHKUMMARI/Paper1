@@ -278,7 +278,13 @@ def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, 
             r["dir"] for r in records if r["dir"] == prefix or r["dir"].startswith(prefix + "/")
         ]
         img_dirs = {k: len(v) for k, v in images.items() if k.startswith(prefix + "/")}
-        found = {
+        # a generator counts as found only if folders named after it actually hold images
+        per_gen = {
+            g: sum(n for k, n in img_dirs.items() if re.search(pat, k.lower()))
+            for g, pat in GENIMAGE_GENERATORS.items()
+        }
+        found = {g for g, n in per_gen.items() if n > 0}
+        named = {
             g
             for g, pat in GENIMAGE_GENERATORS.items()
             if any(re.search(pat, x.lower()) for x in dirs)
@@ -292,6 +298,8 @@ def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, 
             "image_folders": img_dirs,
             "generators_found": sorted(found),
             "generators_missing": sorted(set(GENIMAGE_GENERATORS) - found),
+            "generators_without_images": sorted(named - found),
+            "images_per_generator": {g: n for g, n in per_gen.items() if n},
             "train_images": sum(n for k, n in img_dirs.items() if "/train" in f"/{k}/"),
         }
     return out
@@ -487,7 +495,12 @@ def assess_medium(probe: dict[str, Any]) -> list[dict[str, Any]]:
             "present" if n == 8 else "partial",
             "8 generators",
             f"{n} found ({', '.join(val['generators_found'])}); missing: "
-            f"{', '.join(val['generators_missing']) or 'none'}; {val['images']} images",
+            f"{', '.join(val['generators_missing']) or 'none'}; {val['images']} images"
+            + (
+                f"; folders without images: {', '.join(val['generators_without_images'])}"
+                if val["generators_without_images"]
+                else ""
+            ),
         )
     sd = gi.get("subsets", {}).get("SD_v1.4", {})
     if not sd or not (sd.get("folder") or sd.get("tar")):
@@ -508,17 +521,27 @@ def assess_medium(probe: dict[str, Any]) -> list[dict[str, Any]]:
         add("DiffSeg30k", "missing", "about 30k images + masks (official 8:2 split)", "no folder")
     elif not dfs["splits"]:
         add("DiffSeg30k", "missing", "about 30k images + masks", "folder without splits")
-    for split, s in dfs.get("splits", {}).items():
+    local_splits = dfs.get("splits", {}) if dfs.get("exists") else {}
+    for split in sorted(set(local_splits) | set(info)):  # card splits missing on Drive too
         exp = info.get(split)
+        s = local_splits.get(split)
+        if s is None:
+            add(f"DiffSeg30k {split}", "missing", f"{exp} pairs (dataset card)", "no folder")
+            continue
+        unpaired = s["masks_without_image"] + s["images_without_mask"]
         complete = (
-            s["images"] > 0 and s["images"] == s["masks"] and (exp is None or s["images"] >= exp)
+            s["images"] > 0
+            and s["images"] == s["masks"]
+            and unpaired == 0
+            and (exp is None or s["images"] >= exp)
         )
         status = "present" if complete else ("missing" if s["images"] == 0 else "partial")
         add(
             f"DiffSeg30k {split}",
             status,
             f"{exp} pairs (dataset card)" if exp else "all pairs of the split",
-            f"{s['images']} images, {s['masks']} masks, manifest rows {s['manifest_rows']}",
+            f"{s['images']} images, {s['masks']} masks, {unpaired} unpaired, "
+            f"manifest rows {s['manifest_rows']}",
         )
 
     sid = probe["sidset"]

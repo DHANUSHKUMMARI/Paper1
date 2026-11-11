@@ -6,7 +6,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
-| CP0 | 1 | Environment | **PASS** (11 Nov 2026) | |
+| CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
 | CP1 | 2 | Data integrity and leakage | pending | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
@@ -62,4 +62,4 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Result: PASS.** Every CP0 criterion is met in the build sandbox, in CI and in Colab.
 - **Carried forward to later checkpoints:** (1) this run used a CPU runtime, so the GPU is first exercised at CP2; (2) Colab ships transformers 5.x, so the CLIP layer names targeted by LoRA are asserted at CP2; (3) `bitsandbytes`, `grad-cam` and `diffusers` inpainting are not needed yet and are installed and locked when first used; (4) whether each dataset folder is complete (`_DONE` markers, file counts) is checked at CP1, not here.
 - **Not checked by this checkpoint:** the Drive copy of the downloader notebook, and whether the tokens pasted in chat on 10 Nov were rotated (only Dhanush can confirm).
-- **Verified by Dhanush:** ☐
+- **Verified by Dhanush:** PASS

@@ -247,3 +247,19 @@ def test_unpaired_diffseg_files_are_not_complete(tmp_path: Path) -> None:
     row = _status(rep, "DiffSeg30k validation")
     assert row["status"] == "partial"  # counts still match: 2 images, 2 masks
     assert "2 unpaired" in row["present"]
+
+
+def test_all_generators_without_done_marker_is_partial(tmp_path: Path) -> None:
+    import numpy as np
+    from PIL import Image
+
+    root = make_fake_drive(tmp_path / "datasets", per_folder=2)
+    val_dir = root / "01_GenImage/Validation"
+    for gen in ("imagenet_midjourney", "imagenet_ai_0419_sdv4", "imagenet_ai_0424_sdv5",
+                "imagenet_ai_0419_vqdm", "imagenet_ai_0424_wukong"):  # fmt: skip
+        (val_dir / gen / "val/ai").mkdir(parents=True)
+        Image.fromarray(np.zeros((32, 32, 3), np.uint8)).save(val_dir / gen / "val/ai/0.png")
+    assert _status(_small_probe(root), "GenImage Validation")["status"] == "present"
+    (val_dir / "_DONE").unlink()  # interrupted copy: every generator has images, no marker
+    row = _status(_small_probe(root), "GenImage Validation")
+    assert row["status"] == "partial" and "_DONE marker absent" in row["present"]

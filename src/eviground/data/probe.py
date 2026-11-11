@@ -492,10 +492,12 @@ def assess_medium(probe: dict[str, Any]) -> list[dict[str, Any]]:
         n = len(val["generators_found"])
         add(
             "GenImage Validation",
-            "present" if n == 8 else "partial",
-            "8 generators",
+            # the downloader writes _DONE only after a subset has been copied completely
+            "present" if n == 8 and val["done_marker"] else "partial",
+            "8 generators, _DONE marker",
             f"{n} found ({', '.join(val['generators_found'])}); missing: "
-            f"{', '.join(val['generators_missing']) or 'none'}; {val['images']} images"
+            f"{', '.join(val['generators_missing']) or 'none'}; {val['images']} images; "
+            f"_DONE marker {'present' if val['done_marker'] else 'absent'}"
             + (
                 f"; folders without images: {', '.join(val['generators_without_images'])}"
                 if val["generators_without_images"]
@@ -510,9 +512,10 @@ def assess_medium(probe: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         add(
             "GenImage SD v1.4 (train)",
-            "present" if sd["train_images"] else "partial",
-            "train set, real + generated",
-            f"{sd['train_images']} train images, {sd['images']} images in total",
+            "present" if sd["train_images"] and sd["done_marker"] else "partial",
+            "train set, real + generated, _DONE marker",
+            f"{sd['train_images']} train images, {sd['images']} images in total; "
+            f"_DONE marker {'present' if sd['done_marker'] else 'absent'}",
         )
 
     dfs = probe["diffseg30k"]

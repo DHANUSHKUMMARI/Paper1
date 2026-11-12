@@ -171,7 +171,8 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
         n_images += 1
         total_bytes += path.stat().st_size
         rel = path.relative_to(folder).as_posix().lower()
-        gens = [g for g, pat in GENIMAGE_GENERATORS.items() if re.search(pat, rel)]
+        rel_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""  # folder names only, never file names
+        gens = [g for g, pat in GENIMAGE_GENERATORS.items() if re.search(pat, rel_dir)]
         cls = [c for c in classes if f"/{c}/" in f"/{rel}"]
         if len(gens) == 1 and len(cls) == 1:
             counts[(gens[0], cls[0])] += 1

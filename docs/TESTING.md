@@ -3,6 +3,26 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — GenImage generator names of the Kaggle mirror — 2026-11-12
+
+First Colab run of `00c_data_download.ipynb` (12 Nov 2026): DiffSeg30k downloaded and verified
+(SHA-256), SID-Set verified in place, GenImage Validation **failed**. Listing the Drive folder
+showed the mirror's layout `Validation/GenImage/<Generator>/val/{ai,nature}` with only 5 of 8
+generators (`ADM`, `BigGAN`, `Midjourney`, `stable_diffusion_v_1_5`, `wukong`). It also showed a
+bug: the SD patterns did not accept `stable_diffusion_v_1_5` (underscore between `v` and `1`), and
+generators were matched on the whole path, file names included, so SD v1.5's real images were
+counted as unassigned. Fix: patterns accept `v_1_4` / `v_1_5`; generators are matched on folder
+names only.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 135 passed, 0 failed, 0 skipped (2 new; both fail on the previous code) |
+
+New tests: the mirror's folder names give 8 generators and 0 unassigned images, and a file whose
+name mentions another generator is counted by its folder; with the 5 generators present on Drive
+the error names exactly GLIDE, SD v1.4 and VQDM as missing.
+
 ## Milestone 2, step 3 (SID-Set verified in place, option A) — 2026-11-12 — branch `claude/nice-curie-3tzxzr`
 
 SID-Set is already on Drive (10,000 per class train, 2,000 per class validation, written by the

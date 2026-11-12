@@ -233,18 +233,43 @@ GENIMAGE_GENERATOR_DIRS = (
 )
 
 
-def make_genimage_validation(folder: Path, per_class: int = 2, seed: int = 0) -> int:
-    """A complete fake GenImage Validation folder (8 generators); returns the image count."""
+# Folder names of the Kaggle mirror as found on Drive (12 Nov 2026), under Validation/GenImage/
+GENIMAGE_MIRROR_DIRS = (
+    "ADM",
+    "BigGAN",
+    "glide",
+    "Midjourney",
+    "stable_diffusion_v_1_4",
+    "stable_diffusion_v_1_5",
+    "VQDM",
+    "wukong",
+)
+
+
+def make_genimage_validation(
+    folder: Path,
+    per_class: int = 2,
+    seed: int = 0,
+    generator_dirs: tuple[str, ...] = GENIMAGE_GENERATOR_DIRS,
+    prefix: str = "",
+) -> int:
+    """A fake GenImage Validation folder; returns the image count.
+
+    Default: all 8 generators with GenImage's own folder names. ``generator_dirs`` and
+    ``prefix`` reproduce other layouts, e.g. the Kaggle mirror on Drive
+    (``prefix="GenImage"``, ``GENIMAGE_MIRROR_DIRS``).
+    """
     rng = np.random.default_rng(seed)
-    for gen in GENIMAGE_GENERATOR_DIRS:
+    for gen in generator_dirs:
+        base = folder / prefix / gen / "val" if prefix else folder / gen / "val"
         for i in range(per_class):
-            ai = folder / gen / "val" / "ai" / f"{i:03d}_{gen}.PNG"
-            nature = folder / gen / "val" / "nature" / f"ILSVRC2012_val_{i:08d}.JPEG"
+            ai = base / "ai" / f"{i:03d}_{gen}.PNG"
+            nature = base / "nature" / f"ILSVRC2012_val_{i:08d}.JPEG"
             for path, data in ((ai, _png(rng)), (nature, _jpeg(rng))):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
     (folder / "_DONE").write_text("vtphatt2/GenImage-Validation")  # the old downloader's marker
-    return len(GENIMAGE_GENERATOR_DIRS) * 2 * per_class
+    return len(generator_dirs) * 2 * per_class
 
 
 def dry_run_overrides(val_images: int) -> dict[str, dict[str, Any]]:

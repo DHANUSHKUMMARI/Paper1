@@ -44,7 +44,7 @@ jobs:
       - name: Repository audit (secrets, data, checkpoints; full history)
         run: python -m eviground.utils.repo_audit --history
 
-      - name: Notebook dry run
+      - name: Notebook dry runs
         env:
           EVIGROUND_DRY_RUN: "1"
-        run: pytest -q --nbmake notebooks/00_setup_and_data.ipynb
+        run: pytest -q --nbmake notebooks/00_setup_and_data.ipynb notebooks/00c_data_download.ipynb notebooks/00b_data_probe.ipynb

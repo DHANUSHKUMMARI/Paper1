@@ -164,6 +164,15 @@ def test_sidset_label_map_mismatch_fails(tmp_path: Path) -> None:
     assert "disagrees with the label map" in msg
 
 
+def test_sidset_row_from_other_split_fails(tmp_path: Path) -> None:
+    def borrow(rows):  # a train row pointing at a validation image of the same class
+        rows[0]["image"] = "validation/real/images/validation_real_00000.jpg"
+        return rows
+
+    msg = _sid_failure(tmp_path, lambda f: _edit_manifest(f, "train", borrow))
+    assert "outside the train/ folder" in msg and "validation_real_00000.jpg" in msg
+
+
 def test_sidset_parquet_fallback(tmp_path: Path) -> None:
     """The kept fallback: download 10k/2k per class from parquet into tar files."""
     paths = _paths(tmp_path)
@@ -176,6 +185,9 @@ def test_sidset_parquet_fallback(tmp_path: Path) -> None:
     folder = paths.datasets / "03_SID-Set"
     assert len(_rows(folder / "train_manifest.csv")) == 18 and list(folder.glob("*.tar"))
     assert not list(folder.rglob("*.parquet"))  # parquet files never stored on Drive
+    assert read_done(folder)["method"] == "hf_parquet_subset"
+    staged = stage("sidset", paths=paths)  # unpacks the fallback's tar files
+    assert staged["files"] == 18 + 6 + 9 + 3 and staged["archives"]
 
 
 def test_second_run_makes_no_network_call(done_world) -> None:

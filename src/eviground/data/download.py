@@ -118,6 +118,7 @@ def write_done(folder: Path, spec: DatasetSpec, summary: dict[str, Any]) -> dict
     record = {
         "dataset": spec.key,
         "source": spec.source,
+        "method": spec.method,
         "verified": True,
         "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "git_commit": git_commit(),
@@ -596,7 +597,8 @@ def step_verify_sid_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dic
     Per split: the manifest lists exactly ``cap`` images per class; every listed image and
     mask exists and is not empty; no image is listed twice; each image sits in the folder of
     its class and its ``label_name`` agrees with the label map; every tampered image has a
-    mask and no real or fully synthetic image has one. Nothing is downloaded or changed.
+    mask and no real or fully synthetic image has one; every listed path lies inside its own
+    split's folder (no train/validation mixing). Nothing is downloaded or changed.
     """
     p = spec.params
     names = {int(k): v for k, v in p["labels"].items()}
@@ -615,6 +617,7 @@ def step_verify_sid_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dic
         seen: set[str] = set()
         counts, masks = Counter(), Counter()
         dup, missing, empty, wrong_label, mask_on_other, tampered_no_mask = 0, [], [], [], 0, 0
+        other_split: list[str] = []
         nbytes = 0
         for r in rows:
             img, lab = r["image"], int(r["label"])
@@ -629,6 +632,8 @@ def step_verify_sid_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dic
             for rel in (img, r.get("mask") or ""):
                 if not rel:
                     continue
+                if not rel.startswith(f"{split}/"):  # never let a test image into training
+                    other_split.append(rel)
                 path = folder / rel
                 if not path.is_file():
                     missing.append(rel)
@@ -657,6 +662,11 @@ def step_verify_sid_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dic
         wrong_counts = {k: v for k, v in per_label.items() if v != cap}
         for what, bad in (
             (f"counts per class {wrong_counts} differ from {cap}", wrong_counts),
+            (
+                f"{len(other_split)} listed files outside the {split}/ folder, "
+                f"e.g. {other_split[:3]}",
+                other_split,
+            ),
             (f"{len(missing)} listed files missing, e.g. {missing[:3]}", missing),
             (f"{len(empty)} empty files, e.g. {empty[:3]}", empty),
             (f"{dup} images listed twice", dup),
@@ -759,19 +769,21 @@ def stage(
     paths = paths or get_paths()
     spec = REGISTRY[key]
     folder = paths.datasets / spec.folder
-    if read_done(folder) is None:
+    done = read_done(folder)
+    if done is None:
         raise VerificationError(f"{key}: no verified _DONE on Drive; run ensure_data first")
-    if spec.method == "verify_folder":
+    method = done.get("method", spec.method)  # the step that produced the verified data
+    if method == "verify_folder":
         return {"staged": False, "reason": "read in place on Drive"}
     dest = paths.local_data / key
-    if spec.method == "verify_sid_folder":  # loose files on Drive: copy the listed ones
+    if method == "verify_sid_folder":  # loose files on Drive: copy the listed ones
         files = _sid_listed_files(folder, list(spec.params["caps"]))
         if files is None:
             raise VerificationError(f"{key}: a manifest is missing")
         res = copy_files(folder, files, dest, reserve_gb=reserve_gb)
         write_json_atomic(dest / "_STAGED.json", {**res, "dest": str(dest)})
         return {"staged": True, "skipped": res["copied"] == 0, **res, "dest": str(dest)}
-    archives = sorted(folder.glob("*.zip") if spec.method == "hf_files" else folder.glob("*.tar"))
+    archives = sorted(folder.glob("*.zip") if method == "hf_files" else folder.glob("*.tar"))
     dest = paths.local_data / key
     marker = read_json(dest / "_STAGED.json")
     names = [a.name for a in archives]

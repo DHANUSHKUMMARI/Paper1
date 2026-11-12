@@ -15,13 +15,16 @@ fallback (`hf_parquet_subset`).
 | Check | Result |
 |-------|--------|
 | `ruff check src tests` | All checks passed |
-| `pytest` | 132 passed, 0 failed, 0 skipped (125 before + 7: SID-Set verification failures (5), parquet fallback, `copy_files`) |
+| `pytest` | 133 passed, 0 failed, 0 skipped (125 before + 8: SID-Set verification failures (6), parquet fallback with staging, `copy_files`) |
 | `repo_audit --history` | ok: 54 tracked files, 0 findings |
 | Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
 
 New SID-Set tests: verified in place with no download and no repacking; each of these stops it
 with no `_DONE`: a listed file missing, a tampered image without a mask, a mask on a real image,
-a class below its cap, a label that disagrees with the folder (label map).
+a class below its cap, a label that disagrees with the folder (label map), a row pointing into
+the other split's folder (review of PR #2: no validation image may enter training). `_DONE` now
+records the step that produced the data, and `stage()` follows it, so data from the parquet
+fallback is unpacked from its tar files (review of PR #2).
 
 ## Milestone 2, step 2 (data download: `ensure_data`) — 2026-11-12 — branch `claude/nice-curie-3tzxzr`
 

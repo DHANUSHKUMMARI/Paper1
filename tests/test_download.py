@@ -24,6 +24,7 @@ from eviground.data.fake_sources import (
     dry_run_overrides,
     make_fake_world,
     make_genimage_validation,
+    make_sid_legacy,
 )
 from eviground.data.registry import REGISTRY
 from eviground.data.sources import kaggle_auth_header
@@ -40,8 +41,10 @@ def _paths(tmp: Path) -> Paths:
 def _world(tmp: Path, **kw) -> tuple[Paths, FakeSources, dict]:
     paths = _paths(tmp)
     n_val = make_genimage_validation(paths.datasets / REGISTRY["genimage_val"].folder)
+    ov = dry_run_overrides(n_val)
+    make_sid_legacy(paths.datasets / REGISTRY["sidset"].folder, ov["sidset"]["caps"])
     sources = make_fake_world(tmp / "remote", **kw)
-    return paths, sources, dry_run_overrides(n_val)
+    return paths, sources, ov
 
 
 def _no_network():
@@ -91,16 +94,100 @@ def test_diffseg_zips_kept_as_published(done_world, tmp_path: Path) -> None:
     assert not list(folder.rglob("*.png"))  # no loose files on Drive
 
 
-def test_sidset_caps_and_label_map(done_world) -> None:
-    paths, _s, _ov, report = done_world
+def test_sidset_verified_in_place(done_world) -> None:
+    paths, sources, _ov, report = done_world
     folder = paths.datasets / "03_SID-Set"
     summary = report["sidset"]["summary"]
     assert summary["train"]["per_label"] == {"0": 6, "1": 6, "2": 6}
     assert summary["validation"]["per_label"] == {"0": 3, "1": 3, "2": 3}
     assert summary["train"]["masks_per_label"] == {"2": 6}
-    rows = _rows(folder / "train_manifest.csv")
-    assert len(rows) == 18 and all(r["mask"] for r in rows if r["label"] == "2")
+    assert summary["train"]["files_on_disk_not_in_manifest"] == 0
+    assert not any("SID_Set" in c for c in sources.calls)  # nothing downloaded
+    assert not list(folder.glob("*.tar"))  # nothing repacked
+
+
+def _sid_failure(tmp_path: Path, damage) -> str:
+    paths, _sources, ov = _world(tmp_path)
+    folder = paths.datasets / "03_SID-Set"
+    damage(folder)
+    with pytest.raises(DataStepError) as err:
+        ensure_data(datasets=["sidset"], paths=paths, sources=_no_network, overrides=ov)
+    assert read_done(folder) is None
+    return err.value.report["sidset"]["error"]
+
+
+def _edit_manifest(folder: Path, split: str, edit) -> None:
+    path = folder / f"{split}_manifest.csv"
+    rows = _rows(path)
+    rows = edit(rows)
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["image", "mask", "label", "label_name"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_sidset_missing_file_fails(tmp_path: Path) -> None:
+    msg = _sid_failure(tmp_path, lambda f: (f / "train/real/images/train_real_00002.jpg").unlink())
+    assert "1 listed files missing" in msg and "train_real_00002.jpg" in msg
+
+
+def test_sidset_tampered_without_mask_fails(tmp_path: Path) -> None:
+    def drop_mask(rows):
+        rows[-1]["mask"] = ""
+        return rows
+
+    msg = _sid_failure(tmp_path, lambda f: _edit_manifest(f, "validation", drop_mask))
+    assert "validation: 1 tampered images have no mask" in msg
+
+
+def test_sidset_mask_on_real_image_fails(tmp_path: Path) -> None:
+    def add_mask(rows):
+        rows[0]["mask"] = rows[-1]["mask"]
+        return rows
+
+    msg = _sid_failure(tmp_path, lambda f: _edit_manifest(f, "train", add_mask))
+    assert "real or fully synthetic images have a mask" in msg
+
+
+def test_sidset_count_below_cap_fails(tmp_path: Path) -> None:
+    msg = _sid_failure(tmp_path, lambda f: _edit_manifest(f, "train", lambda r: r[1:]))
+    assert "counts per class {'0': 5} differ from 6" in msg
+
+
+def test_sidset_label_map_mismatch_fails(tmp_path: Path) -> None:
+    def swap_label(rows):
+        rows[0]["label"] = "1"  # a real image labelled fully synthetic
+        rows[6]["label"] = "0"
+        return rows
+
+    msg = _sid_failure(tmp_path, lambda f: _edit_manifest(f, "train", swap_label))
+    assert "disagrees with the label map" in msg
+
+
+def test_sidset_row_from_other_split_fails(tmp_path: Path) -> None:
+    def borrow(rows):  # a train row pointing at a validation image of the same class
+        rows[0]["image"] = "validation/real/images/validation_real_00000.jpg"
+        return rows
+
+    msg = _sid_failure(tmp_path, lambda f: _edit_manifest(f, "train", borrow))
+    assert "outside the train/ folder" in msg and "validation_real_00000.jpg" in msg
+
+
+def test_sidset_parquet_fallback(tmp_path: Path) -> None:
+    """The kept fallback: download 10k/2k per class from parquet into tar files."""
+    paths = _paths(tmp_path)
+    sources = make_fake_world(tmp_path / "remote")
+    ov = {"sidset": {"method": "hf_parquet_subset", "caps": {"train": 6, "validation": 3}}}
+    report = ensure_data(datasets=["sidset"], paths=paths, sources=sources, overrides=ov)
+    summary = report["sidset"]["summary"]
+    assert summary["train"]["per_label"] == {"0": 6, "1": 6, "2": 6}
+    assert summary["train"]["masks_per_label"] == {"2": 6}
+    folder = paths.datasets / "03_SID-Set"
+    assert len(_rows(folder / "train_manifest.csv")) == 18 and list(folder.glob("*.tar"))
     assert not list(folder.rglob("*.parquet"))  # parquet files never stored on Drive
+    assert read_done(folder)["method"] == "hf_parquet_subset"
+    staged = stage("sidset", paths=paths)  # unpacks the fallback's tar files
+    assert staged["files"] == 18 + 6 + 9 + 3 and staged["archives"]
 
 
 def test_second_run_makes_no_network_call(done_world) -> None:
@@ -113,12 +200,16 @@ def test_subset_is_seeded_and_reproducible(tmp_path: Path) -> None:
     outs = []
     for run in ("a", "b"):
         paths, sources, ov = _world(tmp_path / run)
+        ov["sidset"]["method"] = "hf_parquet_subset"
+        sid = paths.datasets / "03_SID-Set"
+        for leftover in sid.glob("*_manifest.csv"):
+            leftover.unlink()  # start the fallback from an empty folder
         ensure_data(datasets=["genimage_sd14", "sidset"], paths=paths, sources=sources,
                     overrides=ov)  # fmt: skip
         gi = paths.datasets / REGISTRY["genimage_sd14"].folder
-        sid = paths.datasets / "03_SID-Set"
         outs.append([(gi / "manifest.csv").read_text(), (sid / "train_manifest.csv").read_text(),
-                     [p.read_bytes() for p in sorted(gi.glob("*.tar"))]])  # fmt: skip
+                     [p.read_bytes() for p in sorted(gi.glob("*.tar"))],
+                     [p.read_bytes() for p in sorted(sid.glob("*.tar"))]])  # fmt: skip
     assert outs[0] == outs[1]
 
 
@@ -128,7 +219,8 @@ def test_interrupted_downloads_resume(tmp_path: Path) -> None:
         ensure_data(paths=paths, sources=sources, overrides=ov)
     first = err.value.report
     assert first["genimage_val"]["status"] == "verified"
-    for key in ("genimage_sd14", "diffseg30k", "sidset"):
+    assert first["sidset"]["status"] == "verified"  # nothing to download
+    for key in ("genimage_sd14", "diffseg30k"):
         assert first[key]["status"] == "error" and "simulated interruption" in first[key]["error"]
         assert read_done(paths.datasets / REGISTRY[key].folder) is None
     assert (paths.local_data / "downloads/genimage_sd14.zip.part").stat().st_size == 300
@@ -234,7 +326,12 @@ def test_stage_unpacks_locally_and_resumes(done_world) -> None:
     assert (paths.local_data / "diffseg30k/train/masks/train_000001.png").is_file()
     assert stage("diffseg30k", paths=paths)["skipped"]
     assert stage("genimage_sd14", paths=paths)["files"] == 10
-    assert stage("sidset", paths=paths)["files"] == 18 + 6 + 9 + 3  # images + tampered masks
+    sid = stage("sidset", paths=paths)  # loose files on Drive: copied, checked by size
+    assert sid["files"] == 18 + 6 + 9 + 3 and sid["copied"] == sid["files"]  # + tampered masks
+    assert (
+        paths.local_data / "sidset/train/tampered/masks/train_tampered_00000_mask.png"
+    ).is_file()
+    assert stage("sidset", paths=paths)["copied"] == 0
     assert stage("genimage_val", paths=paths)["staged"] is False
 
 

@@ -131,3 +131,22 @@ def test_unsafe_member_names_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(VerificationError):
         extract_archive(arc, tmp_path / "local")
     assert not (tmp_path / "escape.txt").exists()
+
+
+def test_copy_files_resumable_and_checked(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "drive"
+    for name, data in FILES.items():
+        (src / name).parent.mkdir(parents=True, exist_ok=True)
+        (src / name).write_bytes(data)
+    files = {k: len(v) for k, v in FILES.items()}
+    dest = tmp_path / "local"
+    assert storage.copy_files(src, files, dest)["copied"] == 3
+    (dest / "a/x.png").write_bytes(b"cut")  # an interrupted copy
+    assert storage.copy_files(src, files, dest)["copied"] == 1
+    assert (dest / "a/x.png").read_bytes() == FILES["a/x.png"]
+    with pytest.raises(VerificationError):
+        storage.copy_files(src, {**files, "a/y.jpg": 999}, tmp_path / "other")
+    monkeypatch.setattr(storage, "free_bytes", lambda p: 1)
+    with pytest.raises(InsufficientSpaceError):
+        storage.copy_files(src, files, tmp_path / "third")
+    assert not (tmp_path / "third").exists()

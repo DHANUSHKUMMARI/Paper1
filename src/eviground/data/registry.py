@@ -33,13 +33,18 @@ REGISTRY: dict[str, DatasetSpec] = {
         key="genimage_val",
         folder="01_GenImage/Validation",
         method="verify_folder",
-        source="kaggle:vtphatt2/GenImage-Validation (already on Drive; never downloaded again)",
+        source="kaggle:vtphatt2/GenImage-Validation (5 generators already on Drive as loose files)",
         role="P1 test set: 8 generators, real (nature) and generated (ai)",
         licence="Non-commercial research",
         citation="Zhu et al., GenImage, NeurIPS 2023 Datasets and Benchmarks",
         params={
             "expected_images": 100_000,
             "generators": 8,
+            # Drive held 5 of 8 generators (12 Nov 2026); the missing ones (GLIDE, SD v1.4,
+            # VQDM) are added from this Kaggle archive as one tar file each (decision of
+            # 12 Nov 2026). None = verify only.
+            "fill_from": "vtphatt2/GenImage-Validation",
+            "fill_gb_estimate": 12.0,
             "class_dirs": {"nature": LABELS["real"], "ai": LABELS["generated"]},
         },
     ),

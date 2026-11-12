@@ -301,7 +301,12 @@ def test_genimage_validation_must_be_complete(tmp_path: Path) -> None:
     for p in (folder / "imagenet_ai_0424_wukong/val/ai").iterdir():
         p.unlink()
     with pytest.raises(DataStepError) as err:
-        ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network, overrides=ov)
+        ensure_data(
+            datasets=["genimage_val"],
+            paths=paths,
+            sources=_no_network,
+            overrides={**ov, "genimage_val": {**ov["genimage_val"], "fill_from": None}},
+        )
     msg = err.value.report["genimage_val"]["error"]
     assert "wukong/ai" in msg and "expected" in msg
     assert (folder / "_DONE").read_text() == "vtphatt2/GenImage-Validation"  # untouched
@@ -411,7 +416,102 @@ def test_genimage_validation_reports_missing_mirror_generators(tmp_path: Path) -
     present = ("ADM", "BigGAN", "Midjourney", "stable_diffusion_v_1_5", "wukong")
     make_genimage_validation(folder, generator_dirs=present, prefix="GenImage")
     with pytest.raises(DataStepError) as err:
-        ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network)
+        ensure_data(
+            datasets=["genimage_val"],
+            paths=paths,
+            sources=_no_network,
+            overrides={"genimage_val": {"fill_from": None}},
+        )
     msg = err.value.report["genimage_val"]["error"]
     assert "no images for glide/nature, glide/ai, sd14/nature, sd14/ai, vqdm/nature, vqdm/ai" in msg
     assert "not under exactly one generator" not in msg
+
+
+# Filling the missing generators from the Kaggle Validation archive (decision of 12 Nov 2026)
+
+PRESENT = ("ADM", "BigGAN", "Midjourney", "stable_diffusion_v_1_5", "wukong")
+FILL_OV = {
+    "genimage_val": {"expected_images": 32, "fill_gb_estimate": 0.001}
+}  # 32 images; tiny space estimate
+
+
+def _partial_validation(tmp: Path, **kw) -> tuple[Paths, FakeSources, Path]:
+    paths = _paths(tmp)
+    folder = paths.datasets / REGISTRY["genimage_val"].folder
+    make_genimage_validation(folder, generator_dirs=PRESENT, prefix="GenImage")
+    return paths, make_fake_world(tmp / "remote", **kw), folder
+
+
+def test_validation_fill_adds_missing_generators_as_tars(tmp_path: Path) -> None:
+    paths, sources, folder = _partial_validation(tmp_path)
+    loose_before = sorted(p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
+    ov = FILL_OV
+    summary = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                          overrides=ov)["genimage_val"]["summary"]  # fmt: skip
+    assert sorted(summary["filled"]["tars"]) == [
+        "genimage_val_glide.tar", "genimage_val_sd14.tar", "genimage_val_vqdm.tar"]  # fmt: skip
+    assert summary["filled"]["absent_from_archive"] == []
+    assert all(by == {"nature": 2, "ai": 2} for by in summary["per_generator"].values())
+    assert summary["per_source"]["loose"] == 20 and summary["unassigned_images"] == 0
+    loose_after = sorted(p.relative_to(folder) for p in folder.rglob("*")
+                         if p.is_file() and p.suffix.lower() in (".png", ".jpeg"))  # fmt: skip
+    assert [p for p in loose_before if p.suffix.lower() in (".png", ".jpeg")] == loose_after
+    assert not list((paths.local_data / "downloads").glob("genimage_val_fill*"))
+    assert ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network,
+                       overrides=ov)["genimage_val"]["status"] == "done"  # fmt: skip
+    staged = stage("genimage_val", paths=paths)
+    assert staged["files"] == 12 and len(staged["archives"]) == 3
+    assert (paths.local_data / "genimage_val/GenImage/glide/val/ai/000_glide.PNG").is_file()
+
+
+def test_validation_fill_resumes_after_interruption(tmp_path: Path) -> None:
+    paths, sources, _folder = _partial_validation(tmp_path, fail_after=500)
+    ov = FILL_OV
+    with pytest.raises(DataStepError):
+        ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=ov)
+    assert (paths.local_data / "downloads/genimage_val_fill.zip.part").stat().st_size == 500
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=ov)
+    assert report["genimage_val"]["status"] == "verified"
+    assert sources.calls.count("kaggle_download vtphatt2/GenImage-Validation") == 2
+
+
+def test_validation_fill_reports_generator_absent_from_archive(tmp_path: Path) -> None:
+    from eviground.data.fake_sources import GENIMAGE_VAL_SLUG, make_genimage_val_zip
+
+    paths, sources, folder = _partial_validation(tmp_path)
+    without_vqdm = tuple(g for g in GENIMAGE_MIRROR_DIRS if g != "VQDM")
+    sources.kaggle[GENIMAGE_VAL_SLUG] = make_genimage_val_zip(
+        tmp_path / "remote/kaggle/validation_no_vqdm.zip", generator_dirs=without_vqdm
+    )
+    with pytest.raises(DataStepError) as err:
+        ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                    overrides=FILL_OV)  # fmt: skip
+    msg = err.value.report["genimage_val"]["error"]
+    assert "vqdm not found in kaggle:vtphatt2/GenImage-Validation" in msg
+    assert "GenImage/VQDM" not in msg and "GenImage/glide" in msg  # top folders listed
+    assert (folder / "genimage_val_glide.tar").is_file()  # what exists is kept
+    assert read_done(folder) is None
+
+
+def test_validation_fill_checks_space_first(tmp_path: Path, monkeypatch) -> None:
+    paths, sources, folder = _partial_validation(tmp_path)
+    monkeypatch.setattr(storage, "free_bytes", lambda p: 1)
+    with pytest.raises(DataStepError) as err:
+        ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                    overrides=FILL_OV)  # fmt: skip
+    assert "InsufficientSpaceError" in err.value.report["genimage_val"]["error"]
+    assert not any(c.startswith("kaggle") for c in sources.calls)
+    assert not list(folder.glob("*.tar"))
+
+
+def test_validation_fill_repairs_a_damaged_tar(tmp_path: Path) -> None:
+    """Review of PR #4: a truncated fill tar is rewritten on the next run, not a crash."""
+    paths, sources, folder = _partial_validation(tmp_path)
+    ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=FILL_OV)
+    good = (folder / "genimage_val_vqdm.tar").read_bytes()
+    (folder / "genimage_val_vqdm.tar").write_bytes(good[:700])  # damaged on Drive
+    (folder / "_DONE").unlink()
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                         overrides=FILL_OV)  # fmt: skip
+    assert report["genimage_val"]["status"] == "verified"
+    assert (folder / "genimage_val_vqdm.tar").read_bytes() == good

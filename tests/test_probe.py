@@ -319,3 +319,24 @@ def test_probe_after_ensure_data(tmp_path: Path) -> None:
     assert sid_masks["images_without_mask"] == sid_masks["masks_without_image"] == 0
     assert sid_masks["distinct_values"] == ["0", "255"]
     assert _status(rep, "SID-Set train/tampered")["status"] == "partial"  # 6 of 10,000
+
+
+def test_probe_counts_filled_generators(tmp_path: Path) -> None:
+    """Validation with 5 loose generators + 3 fill tars reads as complete once verified."""
+    from eviground.data.download import ensure_data
+    from eviground.data.fake_sources import make_fake_world, make_genimage_validation
+    from eviground.env import Paths
+
+    paths = Paths(root=tmp_path / "drive", local_data=tmp_path / "local")
+    folder = paths.datasets / "01_GenImage/Validation"
+    present = ("ADM", "BigGAN", "Midjourney", "stable_diffusion_v_1_5", "wukong")
+    make_genimage_validation(folder, generator_dirs=present, prefix="GenImage")
+    before = _status(_small_probe(paths.datasets), "GenImage Validation")
+    assert before["status"] == "partial"
+    ensure_data(datasets=["genimage_val"], paths=paths, sources=make_fake_world(tmp_path / "r"),
+                overrides={"genimage_val": {"expected_images": 32,
+                                           "fill_gb_estimate": 0.001}})  # fmt: skip
+    rep = _small_probe(paths.datasets)
+    val = rep["genimage"]["subsets"]["Validation"]
+    assert val["generators_missing"] == [] and len(val["fill_tars"]) == 3
+    assert _status(rep, "GenImage Validation")["status"] == "present"

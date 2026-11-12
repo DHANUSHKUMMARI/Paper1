@@ -502,6 +502,10 @@ def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, 
             for g, pat in GENIMAGE_GENERATORS.items()
         }
         found = {g for g, n in per_gen.items() if n > 0}
+        done = _verified(d)
+        verified_per_gen = (done or {}).get("summary", {}).get("per_generator")
+        if verified_per_gen:  # verified by ensure_data: includes generators held in tar files
+            found = {g for g, by in verified_per_gen.items() if by and all(by.values())}
         named = {
             g
             for g, pat in GENIMAGE_GENERATORS.items()
@@ -512,7 +516,8 @@ def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, 
             "tar": tar.is_file(),
             "tar_bytes": tar.stat().st_size if tar.is_file() else None,
             "done_marker": _read_text(d / "_DONE"),
-            "verified": _verified(d) is not None,
+            "verified": done is not None,
+            "fill_tars": sorted(t.name for t in d.glob("genimage_val_*.tar")) if d.is_dir() else [],
             "images": sum(img_dirs.values()),
             "image_folders": img_dirs,
             "generators_found": sorted(found),

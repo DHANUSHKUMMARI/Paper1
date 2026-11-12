@@ -193,6 +193,28 @@ class FakeSources:
         return pq.read_table(self.hf[repo][filename], columns=[column]).column(column).to_pylist()
 
 
+GENIMAGE_VAL_SLUG = "vtphatt2/GenImage-Validation"
+
+
+def make_genimage_val_zip(
+    path: Path,
+    per_class: int = 2,
+    generator_dirs: tuple[str, ...] | None = None,
+    prefix: str = "GenImage",
+    seed: int = 3,
+) -> Path:
+    """A zip shaped like the Kaggle Validation archive: <prefix>/<Generator>/val/{ai,nature}."""
+    gens = generator_dirs if generator_dirs is not None else GENIMAGE_MIRROR_DIRS
+    rng = np.random.default_rng(seed)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        for gen in gens:
+            for i in range(per_class):
+                zf.writestr(f"{prefix}/{gen}/val/ai/{i:03d}_{gen}.PNG", _png(rng))
+                zf.writestr(f"{prefix}/{gen}/val/nature/ILSVRC2012_val_{i:08d}.JPEG", _jpeg(rng))
+    return path
+
+
 def make_fake_world(
     remote: Path,
     *,
@@ -204,7 +226,10 @@ def make_fake_world(
 ) -> FakeSources:
     """Build all fake remote datasets under ``remote`` and return sources serving them."""
     remote = Path(remote)
-    kaggle = {GENIMAGE_SLUG: make_genimage_sd14_zip(remote / "kaggle/sd14.zip", sd14_per_class)}
+    kaggle = {
+        GENIMAGE_SLUG: make_genimage_sd14_zip(remote / "kaggle/sd14.zip", sd14_per_class),
+        GENIMAGE_VAL_SLUG: make_genimage_val_zip(remote / "kaggle/validation.zip"),
+    }
     diff = {
         "train.zip": make_diffseg_zip(remote / "diffseg/train.zip", "train", diffseg),
         "validation.zip": make_diffseg_zip(
@@ -275,7 +300,7 @@ def make_genimage_validation(
 def dry_run_overrides(val_images: int) -> dict[str, dict[str, Any]]:
     """Registry parameters scaled to the fake world (tests and notebook dry runs)."""
     return {
-        "genimage_val": {"expected_images": val_images},
+        "genimage_val": {"expected_images": val_images, "fill_gb_estimate": 0.001},
         "genimage_sd14": {"per_class": 5, "shard_images": 4, "subset_gb_estimate": 0.001},
         "sidset": {"caps": {"train": 6, "validation": 3}},
     }

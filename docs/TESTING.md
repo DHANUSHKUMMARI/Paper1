@@ -3,6 +3,26 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, step 3 (SID-Set verified in place, option A) — 2026-11-12 — branch `claude/nice-curie-3tzxzr`
+
+SID-Set is already on Drive (10,000 per class train, 2,000 per class validation, written by the
+retired downloader on 7 Nov 2026). Decision of 12 Nov 2026: verify it in place instead of
+downloading it again. New step `verify_sid_folder`; `stage("sidset")` copies the listed files to the
+local disk (`storage.copy_files`, resumable, size-checked, space-checked). The probe now also reads
+mask values and image/mask pairing for loose mask folders. The parquet download is kept as a tested
+fallback (`hf_parquet_subset`).
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 132 passed, 0 failed, 0 skipped (125 before + 7: SID-Set verification failures (5), parquet fallback, `copy_files`) |
+| `repo_audit --history` | ok: 54 tracked files, 0 findings |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
+New SID-Set tests: verified in place with no download and no repacking; each of these stops it
+with no `_DONE`: a listed file missing, a tampered image without a mask, a mask on a real image,
+a class below its cap, a label that disagrees with the folder (label map).
+
 ## Milestone 2, step 2 (data download: `ensure_data`) — 2026-11-12 — branch `claude/nice-curie-3tzxzr`
 
 Code: `src/eviground/data/{storage,registry,sources,fake_sources,download}.py`, archive support in

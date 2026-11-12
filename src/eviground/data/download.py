@@ -19,8 +19,10 @@ Per dataset (see :mod:`eviground.data.registry`):
   archive is deleted.
 - ``diffseg30k``: ``train.zip`` and ``validation.zip`` copied to Drive as they are, checked
   against the size and SHA-256 published by Hugging Face.
-- ``sidset``: 10,000 per class from train and 2,000 per class from validation, chosen
-  from whole parquet shards in a seeded order, stored as tar files plus a manifest.
+- ``sidset``: already on Drive as loose files (10,000 per class from train, 2,000 per class
+  from validation, written by the retired downloader); verified in place and copied to the
+  local disk by :func:`stage`. The parquet download into tar files
+  (``hf_parquet_subset``) is kept as a tested fallback.
 - ``brgen``, ``chameleon``: not downloaded (out of CP1).
 """
 
@@ -47,6 +49,7 @@ from eviground.data.storage import (
     ArchiveReader,
     VerificationError,
     check_space,
+    copy_files,
     extract_archive,
     read_json,
     sha256_file,
@@ -573,8 +576,111 @@ def step_hf_parquet_subset(ctx: Context, spec: DatasetSpec, folder: Path) -> dic
     return summary
 
 
+def _sid_listed_files(folder: Path, splits: list[str]) -> dict[str, int] | None:
+    """Relative path -> size of every image and mask in the SID-Set manifests."""
+    files: dict[str, int] = {}
+    for split in splits:
+        rows = _read_csv(folder / f"{split}_manifest.csv")
+        if rows is None:
+            return None
+        for r in rows:
+            for rel in (r["image"], r.get("mask") or ""):
+                if rel:
+                    files[rel] = (folder / rel).stat().st_size
+    return files
+
+
+def step_verify_sid_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, Any]:
+    """Verify the SID-Set files already on Drive (left by the retired downloader), in place.
+
+    Per split: the manifest lists exactly ``cap`` images per class; every listed image and
+    mask exists and is not empty; no image is listed twice; each image sits in the folder of
+    its class and its ``label_name`` agrees with the label map; every tampered image has a
+    mask and no real or fully synthetic image has one. Nothing is downloaded or changed.
+    """
+    p = spec.params
+    names = {int(k): v for k, v in p["labels"].items()}
+    tampered = int(p.get("tampered_label", 2))
+    summary: dict[str, Any] = {}
+    problems: list[str] = []
+    for split, cap in p["caps"].items():
+        rows = _read_csv(folder / f"{split}_manifest.csv")
+        if rows is None:
+            problems.append(f"{split}: {split}_manifest.csv is missing")
+            continue
+        missing_cols = {"image", "mask", "label"} - set(rows[0] if rows else {})
+        if missing_cols:
+            problems.append(f"{split}: manifest has no column(s) {sorted(missing_cols)}")
+            continue
+        seen: set[str] = set()
+        counts, masks = Counter(), Counter()
+        dup, missing, empty, wrong_label, mask_on_other, tampered_no_mask = 0, [], [], [], 0, 0
+        nbytes = 0
+        for r in rows:
+            img, lab = r["image"], int(r["label"])
+            if img in seen:
+                dup += 1
+                continue
+            seen.add(img)
+            counts[lab] += 1
+            name = names.get(lab)
+            if name is None or r.get("label_name", name) != name or f"/{name}/" not in f"/{img}":
+                wrong_label.append(img)
+            for rel in (img, r.get("mask") or ""):
+                if not rel:
+                    continue
+                path = folder / rel
+                if not path.is_file():
+                    missing.append(rel)
+                elif path.stat().st_size == 0:
+                    empty.append(rel)
+                else:
+                    nbytes += path.stat().st_size
+            if r.get("mask"):
+                masks[lab] += 1
+                mask_on_other += lab != tampered
+            elif lab == tampered:
+                tampered_no_mask += 1
+        listed = seen | {r["mask"] for r in rows if r.get("mask")}
+        on_disk = {
+            q.relative_to(folder).as_posix()
+            for q in (folder / split).rglob("*")
+            if q.is_file() and _is_image(q.name)
+        }
+        per_label = {str(k): counts.get(k, 0) for k in sorted(names)}
+        summary[split] = {
+            "per_label": per_label,
+            "masks_per_label": {str(k): v for k, v in sorted(masks.items())},
+            "bytes": nbytes,
+            "files_on_disk_not_in_manifest": len(on_disk - listed),
+        }
+        wrong_counts = {k: v for k, v in per_label.items() if v != cap}
+        for what, bad in (
+            (f"counts per class {wrong_counts} differ from {cap}", wrong_counts),
+            (f"{len(missing)} listed files missing, e.g. {missing[:3]}", missing),
+            (f"{len(empty)} empty files, e.g. {empty[:3]}", empty),
+            (f"{dup} images listed twice", dup),
+            (
+                f"{len(wrong_label)} images whose folder or label_name disagrees with the label "
+                f"map {names}, e.g. {wrong_label[:3]}",
+                wrong_label,
+            ),
+            (
+                f"{mask_on_other} real or fully synthetic images have a mask (label map?)",
+                mask_on_other,
+            ),
+            (f"{tampered_no_mask} tampered images have no mask", tampered_no_mask),
+        ):
+            if bad:
+                problems.append(f"{split}: {what}")
+    if problems:
+        raise VerificationError("SID-Set: " + "; ".join(problems))
+    return summary
+
+
 STEPS: dict[str, Callable[[Context, DatasetSpec, Path], dict[str, Any]]] = {
     "verify_folder": step_verify_folder,
+    "verify_sid_folder": step_verify_sid_folder,
     "kaggle_subset": step_kaggle_subset,
     "hf_files": step_hf_files,
     "hf_parquet_subset": step_hf_parquet_subset,
@@ -603,7 +709,8 @@ def ensure_data(
     runs (downloads only what is missing) and ``_DONE`` is written after verification.
     Errors are collected per dataset; with ``raise_errors`` a :class:`DataStepError`
     carrying the full report is raised at the end. ``overrides`` replaces registry
-    parameters per dataset (tests and dry runs use tiny subsets).
+    parameters per dataset (tests and dry runs use tiny subsets); the key ``method``
+    selects another step (the SID-Set parquet download is kept as a tested fallback).
     """
     paths = paths or get_paths()
     if sources is None:
@@ -617,7 +724,8 @@ def ensure_data(
     for key in datasets or PROFILES[profile]:
         spec = REGISTRY[key]
         if overrides and key in overrides:
-            spec = replace(spec, params={**spec.params, **overrides[key]})
+            ov = dict(overrides[key])
+            spec = replace(spec, method=ov.pop("method", spec.method), params={**spec.params, **ov})
         folder = paths.datasets / spec.folder
         entry: dict[str, Any] = {"folder": spec.folder}
         try:
@@ -655,6 +763,14 @@ def stage(
         raise VerificationError(f"{key}: no verified _DONE on Drive; run ensure_data first")
     if spec.method == "verify_folder":
         return {"staged": False, "reason": "read in place on Drive"}
+    dest = paths.local_data / key
+    if spec.method == "verify_sid_folder":  # loose files on Drive: copy the listed ones
+        files = _sid_listed_files(folder, list(spec.params["caps"]))
+        if files is None:
+            raise VerificationError(f"{key}: a manifest is missing")
+        res = copy_files(folder, files, dest, reserve_gb=reserve_gb)
+        write_json_atomic(dest / "_STAGED.json", {**res, "dest": str(dest)})
+        return {"staged": True, "skipped": res["copied"] == 0, **res, "dest": str(dest)}
     archives = sorted(folder.glob("*.zip") if spec.method == "hf_files" else folder.glob("*.tar"))
     dest = paths.local_data / key
     marker = read_json(dest / "_STAGED.json")

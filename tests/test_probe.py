@@ -293,11 +293,13 @@ def test_probe_after_ensure_data(tmp_path: Path) -> None:
         dry_run_overrides,
         make_fake_world,
         make_genimage_validation,
+        make_sid_legacy,
     )
     from eviground.env import Paths
 
     paths = Paths(root=tmp_path / "drive", local_data=tmp_path / "local")
     n_val = make_genimage_validation(paths.datasets / "01_GenImage/Validation")
+    make_sid_legacy(paths.datasets / "03_SID-Set", dry_run_overrides(n_val)["sidset"]["caps"])
     ensure_data(paths=paths, sources=make_fake_world(tmp_path / "remote"),
                 overrides=dry_run_overrides(n_val))  # fmt: skip
     rep = _small_probe(paths.datasets)
@@ -312,6 +314,8 @@ def test_probe_after_ensure_data(tmp_path: Path) -> None:
     nature = _group(rep, "01_GenImage/SD_v1.4_subset:stable_diffusion_v_1_4/"
                          "imagenet_ai_0419_sdv4/train/nature")  # fmt: skip
     assert nature["n_images"] == 5 and nature["format_counts"] == {"jpeg": 5}
-    (sid_masks,) = [m for m in rep["archives"]["masks"]
-                    if m["dir"] == "03_SID-Set:train/tampered/masks"]  # fmt: skip
-    assert sid_masks["masks"] == 6 and sid_masks["images_without_mask"] == 0
+    (sid_masks,) = [m for m in rep["mask_folders"] if m["dir"] == "03_SID-Set/train/tampered/masks"]
+    assert sid_masks["masks"] == sid_masks["images"] == 6
+    assert sid_masks["images_without_mask"] == sid_masks["masks_without_image"] == 0
+    assert sid_masks["distinct_values"] == ["0", "255"]
+    assert _status(rep, "SID-Set train/tampered")["status"] == "partial"  # 6 of 10,000

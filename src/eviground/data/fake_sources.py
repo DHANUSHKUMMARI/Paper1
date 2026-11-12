@@ -254,3 +254,38 @@ def dry_run_overrides(val_images: int) -> dict[str, dict[str, Any]]:
         "genimage_sd14": {"per_class": 5, "shard_images": 4, "subset_gb_estimate": 0.001},
         "sidset": {"caps": {"train": 6, "validation": 3}},
     }
+
+
+SID_LABEL_NAMES = {0: "real", 1: "full_synthetic", 2: "tampered"}
+
+
+def make_sid_legacy(folder: Path, caps: dict[str, int], seed: int = 0) -> Path:
+    """SID-Set as the retired downloader left it: loose files plus ``<split>_manifest.csv``.
+
+    ``<split>/<label_name>/images/<id>.<ext>``, tampered masks in ``.../masks/<id>_mask.png``;
+    manifest columns image, mask, label, label_name (paths relative to ``folder``).
+    """
+    import csv
+
+    rng = np.random.default_rng(seed)
+    folder = Path(folder)
+    for split, cap in caps.items():
+        rows = []
+        for lab, name in SID_LABEL_NAMES.items():
+            for i in range(cap):
+                iid = f"{split}_{name}_{i:05d}"
+                ext, data = (".jpg", _jpeg(rng)) if lab == 0 else (".png", _png(rng))
+                img = f"{split}/{name}/images/{iid}{ext}"
+                (folder / img).parent.mkdir(parents=True, exist_ok=True)
+                (folder / img).write_bytes(data)
+                mask = ""
+                if lab == 2:
+                    mask = f"{split}/{name}/masks/{iid}_mask.png"
+                    (folder / mask).parent.mkdir(parents=True, exist_ok=True)
+                    (folder / mask).write_bytes(_mask((255,)))
+                rows.append([img, mask, lab, name])
+        with open(folder / f"{split}_manifest.csv", "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["image", "mask", "label", "label_name"])
+            writer.writerows(rows)
+    return folder

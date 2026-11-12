@@ -323,3 +323,45 @@ def extract_archive(
             f"{len(bad)} files missing or wrong size after unpacking, e.g. {bad[:3]}"
         )
     return {"files": len(members), "extracted": len(todo), "bytes": sum(m.size for m in members)}
+
+
+def copy_files(
+    src_root: Path | str,
+    files: dict[str, int],
+    dest: Path | str,
+    *,
+    reserve_gb: float = DEFAULT_RESERVE_GB,
+) -> dict[str, Any]:
+    """Copy ``files`` (relative path -> expected size) from ``src_root`` to ``dest``.
+
+    Resumable (files already there with the right size are skipped), space-checked for
+    what is still missing, each file written as ``.part`` and renamed, and verified by size
+    afterwards. Used to stage datasets that stay as loose files on Drive.
+    """
+    src_root, dest = Path(src_root), Path(dest)
+    todo = {
+        rel: size
+        for rel, size in files.items()
+        if not ((dest / rel).is_file() and (dest / rel).stat().st_size == size)
+    }
+    check_space(
+        dest,
+        sum(todo.values()),
+        what=f"copying {len(todo)} files from {src_root.name}",
+        where="the local disk",
+        reserve_gb=reserve_gb,
+    )
+    for rel in sorted(todo):
+        target = dest / safe_member_name(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".part")
+        shutil.copyfile(src_root / rel, tmp)
+        os.replace(tmp, target)
+    bad = [
+        r for r, s in files.items() if not ((dest / r).is_file() and (dest / r).stat().st_size == s)
+    ]
+    if bad:
+        raise VerificationError(
+            f"{len(bad)} files missing or wrong size after copying, e.g. {bad[:3]}"
+        )
+    return {"files": len(files), "copied": len(todo), "bytes": sum(files.values())}

@@ -19,7 +19,8 @@ class DatasetSpec:
 
     key: str
     folder: str
-    method: str  # verify_folder | kaggle_subset | hf_files | hf_parquet_subset | deferred
+    method: str  # verify_folder | verify_sid_folder | kaggle_subset | hf_files |
+    #              hf_parquet_subset | deferred
     source: str
     role: str
     licence: str
@@ -73,7 +74,10 @@ REGISTRY: dict[str, DatasetSpec] = {
     "sidset": DatasetSpec(
         key="sidset",
         folder="03_SID-Set",
-        method="hf_parquet_subset",
+        # Already on Drive (10k/class train, 2k/class validation, written by the retired
+        # downloader): verified in place, never downloaded again (decision of 12 Nov 2026).
+        # "hf_parquet_subset" is kept as a tested fallback that downloads into tar files.
+        method="verify_sid_folder",
         source="hf:saberzl/SID_Set",
         role="Real / fully synthetic / tampered (+ masks); train subset for training, "
         "validation subset as the P3b test set",
@@ -83,6 +87,7 @@ REGISTRY: dict[str, DatasetSpec] = {
             "caps": {"train": 10_000, "validation": 2_000},
             "seed": 42,
             "labels": {0: "real", 1: "full_synthetic", 2: "tampered"},
+            "tampered_label": 2,
             "label_column": "label",
             "image_column": "image",
             "mask_column": "mask",

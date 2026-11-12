@@ -924,8 +924,27 @@ def run_probe(
 
     log.info("sampling %d image folders", len(images))
     groups = []
+    mask_folders = []
     for i, (rel, names) in enumerate(sorted(images.items())):
+        base = {"dataset": rel.split("/", 1)[0], "dir": rel}
         try:
+            if _is_mask_dir(rel):  # loose masks (e.g. SID-Set): values and pairing
+                img_rel = rel.replace("masks", "images").replace("mask", "image")
+                mask_folders.append(
+                    {
+                        **base,
+                        "image_dir": img_rel,
+                        **mask_stats(
+                            names,
+                            images.get(img_rel, []),
+                            read_mask=lambda n, d=root / rel: d / n,
+                            read_image=lambda n, d=root / img_rel: d / n,
+                            sample=sample_masks,
+                            seed=seed + i,
+                        ),
+                    }
+                )
+                continue
             stats = group_stats(
                 root / rel,
                 names,
@@ -936,8 +955,9 @@ def run_probe(
         except Exception as exc:  # keep going: one bad folder must not hide the rest
             report["errors"].append(f"group {rel}: {type(exc).__name__}: {exc}")
             continue
-        groups.append({"dataset": rel.split("/", 1)[0], "dir": rel, **stats})
+        groups.append({**base, **stats})
     report["groups"] = groups
+    report["mask_folders"] = mask_folders
 
     if fetch_cards:
         report["hf_cards"] = fetch_hf_cards(token_getter=token_getter, opener=opener)
@@ -999,7 +1019,7 @@ def format_summary(report: dict[str, Any]) -> str:
             f"archive {a['path']}: {a.get('members', a.get('error'))} members, "
             f"{a.get('folders')} folders, {a['bytes'] / 1e9:.2f} GB"
         )
-    for m in report.get("archives", {}).get("masks", []):
+    for m in report.get("archives", {}).get("masks", []) + report.get("mask_folders", []):
         lines.append(
             f"masks {m['dir']}: {m['masks']} masks / {m['images']} images, values "
             f"{m['distinct_values']}, formats {m['mask_format_counts']}, "

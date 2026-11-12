@@ -33,6 +33,7 @@ import datetime
 import io
 import logging
 import re
+import tarfile
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -193,8 +194,14 @@ def _count_validation(folder: Path, classes: dict[str, int]) -> dict[str, Any]:
     for path in folder.rglob("*"):
         if path.is_file() and _is_image(path.name):
             add(path.relative_to(folder).as_posix(), path.stat().st_size, "loose")
+    unreadable = []
     for tar in sorted(folder.glob(f"{FILL_PREFIX}*.tar")):
-        for name, size in tar_index(tar).items():
+        try:
+            index = tar_index(tar)
+        except (OSError, tarfile.TarError):  # damaged on Drive: its generator counts as
+            unreadable.append(tar.name)  # missing, so the fill step rewrites it
+            continue
+        for name, size in index.items():
             if _is_image(name):
                 add(name, size, tar.name)
     per_gen = {g: {c: counts[(g, c)] for c in classes} for g in GENIMAGE_GENERATORS}
@@ -204,6 +211,7 @@ def _count_validation(folder: Path, classes: dict[str, int]) -> dict[str, Any]:
         "per_generator": per_gen,
         "unassigned_images": unassigned,
         "per_source": dict(sources),
+        "unreadable_tars": unreadable,
     }
 
 
@@ -326,6 +334,8 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
     n_images = summary["images"]
     if n_images != spec.params["expected_images"]:
         problems.append(f"{n_images} images, expected {spec.params['expected_images']}")
+    if summary["unreadable_tars"]:
+        problems.append(f"unreadable tar files: {', '.join(summary['unreadable_tars'])}")
     if summary["unassigned_images"]:
         problems.append(
             f"{summary['unassigned_images']} images not under exactly one "

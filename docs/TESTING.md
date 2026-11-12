@@ -15,13 +15,15 @@ step names it and lists the archive's top folders, and no `_DONE` is written.
 | Check | Result |
 |-------|--------|
 | `ruff check src tests` | All checks passed |
-| `pytest` | 140 passed, 0 failed, 0 skipped (5 new) |
+| `pytest` | 141 passed, 0 failed, 0 skipped (6 new) |
 | Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
 
 New tests: the three generators are added as three tar files and the five loose ones are untouched,
 the archive is deleted, a second run makes no network call, staging unpacks the tars; an interrupted
 archive download resumes; a generator absent from the archive is named, existing tars are kept, no
-`_DONE`; too little space stops before any download; the probe reads a filled Validation as complete.
+`_DONE`; too little space stops before any download; the probe reads a filled Validation as complete;
+a fill tar damaged on Drive is rewritten on the next run instead of crashing the count (review of
+PR #4). CI runs these tests with a tiny space estimate (the runner has about 8 GB free).
 
 ## Milestone 2, fix — GenImage generator names of the Kaggle mirror — 2026-11-12
 

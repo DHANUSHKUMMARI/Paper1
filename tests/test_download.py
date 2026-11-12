@@ -502,3 +502,16 @@ def test_validation_fill_checks_space_first(tmp_path: Path, monkeypatch) -> None
     assert "InsufficientSpaceError" in err.value.report["genimage_val"]["error"]
     assert not any(c.startswith("kaggle") for c in sources.calls)
     assert not list(folder.glob("*.tar"))
+
+
+def test_validation_fill_repairs_a_damaged_tar(tmp_path: Path) -> None:
+    """Review of PR #4: a truncated fill tar is rewritten on the next run, not a crash."""
+    paths, sources, folder = _partial_validation(tmp_path)
+    ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=FILL_OV)
+    good = (folder / "genimage_val_vqdm.tar").read_bytes()
+    (folder / "genimage_val_vqdm.tar").write_bytes(good[:700])  # damaged on Drive
+    (folder / "_DONE").unlink()
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                         overrides=FILL_OV)  # fmt: skip
+    assert report["genimage_val"]["status"] == "verified"
+    assert (folder / "genimage_val_vqdm.tar").read_bytes() == good

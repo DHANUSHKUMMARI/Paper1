@@ -430,6 +430,9 @@ def test_genimage_validation_reports_missing_mirror_generators(tmp_path: Path) -
 # Filling the missing generators from the Kaggle Validation archive (decision of 12 Nov 2026)
 
 PRESENT = ("ADM", "BigGAN", "Midjourney", "stable_diffusion_v_1_5", "wukong")
+FILL_OV = {
+    "genimage_val": {"expected_images": 32, "fill_gb_estimate": 0.001}
+}  # 32 images; tiny space estimate
 
 
 def _partial_validation(tmp: Path, **kw) -> tuple[Paths, FakeSources, Path]:
@@ -442,7 +445,7 @@ def _partial_validation(tmp: Path, **kw) -> tuple[Paths, FakeSources, Path]:
 def test_validation_fill_adds_missing_generators_as_tars(tmp_path: Path) -> None:
     paths, sources, folder = _partial_validation(tmp_path)
     loose_before = sorted(p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
-    ov = {"genimage_val": {"expected_images": 32}}
+    ov = FILL_OV
     summary = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
                           overrides=ov)["genimage_val"]["summary"]  # fmt: skip
     assert sorted(summary["filled"]["tars"]) == [
@@ -463,7 +466,7 @@ def test_validation_fill_adds_missing_generators_as_tars(tmp_path: Path) -> None
 
 def test_validation_fill_resumes_after_interruption(tmp_path: Path) -> None:
     paths, sources, _folder = _partial_validation(tmp_path, fail_after=500)
-    ov = {"genimage_val": {"expected_images": 32}}
+    ov = FILL_OV
     with pytest.raises(DataStepError):
         ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=ov)
     assert (paths.local_data / "downloads/genimage_val_fill.zip.part").stat().st_size == 500
@@ -482,7 +485,7 @@ def test_validation_fill_reports_generator_absent_from_archive(tmp_path: Path) -
     )
     with pytest.raises(DataStepError) as err:
         ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
-                    overrides={"genimage_val": {"expected_images": 32}})  # fmt: skip
+                    overrides=FILL_OV)  # fmt: skip
     msg = err.value.report["genimage_val"]["error"]
     assert "vqdm not found in kaggle:vtphatt2/GenImage-Validation" in msg
     assert "GenImage/VQDM" not in msg and "GenImage/glide" in msg  # top folders listed
@@ -495,7 +498,7 @@ def test_validation_fill_checks_space_first(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(storage, "free_bytes", lambda p: 1)
     with pytest.raises(DataStepError) as err:
         ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
-                    overrides={"genimage_val": {"expected_images": 32}})  # fmt: skip
+                    overrides=FILL_OV)  # fmt: skip
     assert "InsufficientSpaceError" in err.value.report["genimage_val"]["error"]
     assert not any(c.startswith("kaggle") for c in sources.calls)
     assert not list(folder.glob("*.tar"))

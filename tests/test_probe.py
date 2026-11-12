@@ -334,7 +334,8 @@ def test_probe_counts_filled_generators(tmp_path: Path) -> None:
     before = _status(_small_probe(paths.datasets), "GenImage Validation")
     assert before["status"] == "partial"
     ensure_data(datasets=["genimage_val"], paths=paths, sources=make_fake_world(tmp_path / "r"),
-                overrides={"genimage_val": {"expected_images": 32}})  # fmt: skip
+                overrides={"genimage_val": {"expected_images": 32,
+                                           "fill_gb_estimate": 0.001}})  # fmt: skip
     rep = _small_probe(paths.datasets)
     val = rep["genimage"]["subsets"]["Validation"]
     assert val["generators_missing"] == [] and len(val["fill_tars"]) == 3

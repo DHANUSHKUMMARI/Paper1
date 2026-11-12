@@ -300,7 +300,7 @@ def make_genimage_validation(
 def dry_run_overrides(val_images: int) -> dict[str, dict[str, Any]]:
     """Registry parameters scaled to the fake world (tests and notebook dry runs)."""
     return {
-        "genimage_val": {"expected_images": val_images},
+        "genimage_val": {"expected_images": val_images, "fill_gb_estimate": 0.001},
         "genimage_sd14": {"per_class": 5, "shard_images": 4, "subset_gb_estimate": 0.001},
         "sidset": {"caps": {"train": 6, "validation": 3}},
     }

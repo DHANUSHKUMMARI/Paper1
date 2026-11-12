@@ -3,6 +3,69 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — real Drive quota, Drive upload cache, tar-to-loose conversion — 2026-11-12
+
+Third Colab download run (15:4x UTC, commit `ad3b07d`, before PR #5): the Validation fill worked
+(the tar version: `genimage_val_{glide,sd14,vqdm}.tar`, 12,000 images each) but verification stopped
+at `96411 images, expected 100000`; the SD v1.4 subset stopped with "needs 23.1 GB on Drive, only
+14.6 GB free". Finding: on Colab, the free space of the Drive mount is the machine's own disk, not
+the Drive quota. Evidence from the run records: writing 26.5 GB of DiffSeg30k zips to Drive moved
+"Drive free" from 109.6 to 104.8 GB together with the local disk (115.4 → 110.4), and the 96.5 GB SD
+v1.4 archive on the local disk brought "Drive free" to 14.6 GB. Fixes:
+
+- Drive space is read from the Google Drive quota through the Drive API whenever the data folder is
+  on the Colab mount (`env.drive_quota`); if it cannot be read, the step stops (`SpaceUnknownError`).
+- Before each write to Drive, the step waits (up to 30 min) until the local disk can hold the
+  Drive upload cache, instead of failing next to a large local archive.
+- A failed verification records its measured numbers (`details`), and the Validation error lists
+  real/generated counts per generator.
+- Fill tar files from that run are unpacked into the loose layout (each file checked against its
+  recorded SHA-256), then removed; nothing is downloaded again.
+- Notebook `00c` reports the Drive quota (used and free) and the local disk separately.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 147 passed, 0 failed, 0 skipped (7 new) |
+| Space-related tests with free space limited to 8.1 GB (CI runner) | 14 passed |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
+## Milestone 2, step 5 (Validation fill as loose files, not tar) — 2026-11-12
+
+Change of decision (12 Nov 2026): the five generators already on Drive are loose files, so GLIDE,
+SD v1.4 and VQDM are now written as loose files in the same layout (the archive's own paths,
+`GenImage/<Generator>/val/{ai,nature}`) instead of one tar file each. Each file is written as
+`.part` and renamed; `fill_plan.csv` lists every file and size and `fill_manifest_<generator>.json`
+its SHA-256. Every run re-checks the filled files' sizes, so a file cut short on Drive is rewritten
+(this replaces the damaged-tar repair of PR #4). `stage("genimage_val")` reads everything in place.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 141 passed, 0 failed, 0 skipped |
+| Fill tests with free space limited to 8.1 GB (as on the CI runner) | 6 passed |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
+Fill tests now check: files land in the existing layout, the 20 loose images already there are not
+touched, no tar or `.part` file is left, SHA-256 manifest written, archive deleted, second run makes
+no network call, nothing to stage; resume after an interrupted download; a generator missing from
+the archive is named; space check before any download; a filled file cut short is rewritten.
+
+## Milestone 2, fix — stale code in a reused Colab runtime — 2026-11-12
+
+Second Colab run of `00c_data_download.ipynb` (15:13 UTC, commit `ad3b07d`): both datasets failed in
+1.4 min. `genimage_sd14`: `MissingSecretError` (Kaggle secret not visible to the notebook).
+`genimage_val`: the same error text as the first run, including the SD v1.5 symptom fixed in PR #3,
+and Cell 2 printed the old registry text. Cause: the runtime from the first run was reused, so
+Python still held the old `eviground` modules in memory while `git pull` had updated the files.
+Fix: Cell 1 of every notebook now drops loaded `eviground` modules after pulling; Cell 2 of `00c`
+prints which code file is in use.
+
+| Check | Result |
+|-------|--------|
+| Module purge (sandbox: patch a loaded module, run Cell 1's lines, import again) | fresh module loaded, `fill_from` present |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
 ## Milestone 2, step 4 (fill the missing GenImage generators as tar files) — 2026-11-12
 
 Decision of 12 Nov 2026 ("recommended, tar"): GLIDE, SD v1.4 and VQDM, missing from the Validation

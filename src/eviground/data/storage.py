@@ -29,7 +29,18 @@ class InsufficientSpaceError(RuntimeError):
 
 
 class VerificationError(RuntimeError):
-    """Downloaded or written data does not match what was expected; ``_DONE`` is not written."""
+    """Downloaded or written data does not match what was expected; ``_DONE`` is not written.
+
+    ``details`` (optional) carries the measured numbers into the run record.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details
+
+
+class SpaceUnknownError(RuntimeError):
+    """Free space could not be measured, so a step that needs it does not start."""
 
 
 # --------------------------------------------------------------------------------------

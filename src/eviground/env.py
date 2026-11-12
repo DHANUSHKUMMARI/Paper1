@@ -158,6 +158,40 @@ def runtime_secrets(names: Sequence[str]) -> Iterator[None]:
                 os.environ[name] = old
 
 
+def drive_quota() -> dict[str, int | None] | None:
+    """Google Drive storage quota in bytes, read through the Drive API (Colab only).
+
+    On Colab, ``shutil.disk_usage`` of the Drive mount reports the virtual machine's own
+    disk, not the Drive quota (seen on 12 Nov 2026: 26.5 GB written to Drive moved the
+    "Drive free" figure by only 5 GB, together with the local disk). This asks Google
+    instead. The first call shows Colab's sign-in prompt. Returns None outside Colab or if
+    the quota cannot be read; ``free`` is None for an unlimited plan.
+    """
+    if not in_colab() or dry_run():
+        return None
+    try:
+        from google.colab import auth  # type: ignore[import-not-found]
+        from googleapiclient.discovery import build  # type: ignore[import-not-found]
+
+        auth.authenticate_user()
+        quota = build("drive", "v3", cache_discovery=False).about().get(
+            fields="storageQuota").execute()["storageQuota"]  # fmt: skip
+    except Exception as exc:  # no secret involved; report the type only
+        log.warning("could not read the Google Drive quota: %s", type(exc).__name__)
+        return None
+    limit = int(quota["limit"]) if quota.get("limit") else None
+    usage = int(quota.get("usage", 0))
+    return {"limit": limit, "usage": usage, "free": None if limit is None else limit - usage}
+
+
+def drive_free_bytes() -> int | None:
+    """Free bytes in the Google Drive quota (None if unknown; very large if unlimited)."""
+    quota = drive_quota()
+    if quota is None:
+        return None
+    return quota["free"] if quota["free"] is not None else 1 << 62
+
+
 def git_commit(repo: Path | None = None) -> str | None:
     """Short commit hash of the checked-out code, or None outside a git checkout."""
     try:

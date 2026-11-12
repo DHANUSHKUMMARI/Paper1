@@ -30,10 +30,13 @@ from __future__ import annotations
 
 import csv
 import datetime
+import hashlib
 import io
 import logging
+import os
 import re
 import tarfile
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -47,12 +50,16 @@ from eviground.data.registry import PROFILES, REGISTRY, DatasetSpec
 from eviground.data.sources import NetworkSources, Sources
 from eviground.data.storage import (
     DEFAULT_RESERVE_GB,
+    GB,
     ArchiveReader,
+    InsufficientSpaceError,
+    SpaceUnknownError,
     VerificationError,
     check_space,
     copy_files,
     extract_archive,
     read_json,
+    safe_member_name,
     sha256_file,
     tar_index,
     verify_tar,
@@ -60,7 +67,7 @@ from eviground.data.storage import (
     write_tar_shard,
     write_text_atomic,
 )
-from eviground.env import Paths, get_paths, git_commit
+from eviground.env import DRIVE_MOUNT, Paths, drive_free_bytes, get_paths, git_commit
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +89,10 @@ class Context:
     paths: Paths
     sources_factory: Callable[[], Sources]
     reserve_gb: float = DEFAULT_RESERVE_GB
+    # Free bytes in the Drive quota; None = measure the file system (tests, local runs).
+    drive_free: Callable[[], int | None] | None = None
+    cache_wait_s: float = 1800.0  # how long to wait for Colab's Drive upload cache
+    sleep: Callable[[float], None] = time.sleep
     _sources: Sources | None = field(default=None, init=False)
 
     @property
@@ -91,9 +102,47 @@ class Context:
         return self._sources
 
     def drive_space(self, need: float, what: str) -> dict[str, float]:
-        return check_space(
-            self.paths.datasets, need, what=what, where="Drive", reserve_gb=self.reserve_gb
-        )
+        if self.drive_free is None:
+            return check_space(
+                self.paths.datasets, need, what=what, where="Drive", reserve_gb=self.reserve_gb
+            )
+        free = self.drive_free()
+        if free is None:
+            raise SpaceUnknownError(
+                f"{what}: could not read your Google Drive quota, so nothing was written. "
+                "Allow Colab's Google sign-in prompt and run the cell again."
+            )
+        info = {
+            "need_gb": round(need / GB, 2),
+            "free_gb": round(free / GB, 2),
+            "reserve_gb": self.reserve_gb,
+        }
+        if free - need < self.reserve_gb * GB:
+            raise InsufficientSpaceError(
+                f"{what} needs {need / GB:.1f} GB on Drive (your Google Drive quota) and a "
+                f"{self.reserve_gb:.0f} GB reserve must stay free, but only {free / GB:.1f} GB "
+                f"is free. Nothing was written for this step. Free at least "
+                f"{(need + self.reserve_gb * GB - free) / GB:.1f} GB on Drive and run it again; "
+                "finished parts are kept and skipped."
+            )
+        return info
+
+    def wait_for_cache(self, need: float, what: str) -> None:
+        """Wait until the local disk can hold ``need`` more bytes of Drive's upload cache.
+
+        On Colab, files written to Drive sit on the local disk until they are uploaded, so
+        large writes next to a large local archive wait for the cache to drain.
+        """
+        deadline = time.monotonic() + self.cache_wait_s
+        while True:
+            try:
+                self.local_space(need, f"{what} (Drive upload cache)")
+                return
+            except InsufficientSpaceError:
+                if time.monotonic() >= deadline:
+                    raise
+                os.sync()
+                self.sleep(15)
 
     def local_space(self, need: float, what: str) -> dict[str, float]:
         return check_space(
@@ -158,9 +207,6 @@ def _is_image(name: str) -> bool:
 # --------------------------------------------------------------------------------------
 
 
-FILL_PREFIX = "genimage_val_"
-
-
 def _assign(rel: str, classes: dict[str, int]) -> tuple[str | None, str | None]:
     """Generator and class of an image from its folder names (never its file name)."""
     from eviground.data.probe import GENIMAGE_GENERATORS
@@ -173,80 +219,63 @@ def _assign(rel: str, classes: dict[str, int]) -> tuple[str | None, str | None]:
 
 
 def _count_validation(folder: Path, classes: dict[str, int]) -> dict[str, Any]:
-    """Images per generator and class: loose files plus members of our fill tar files."""
+    """Images per generator and class in the Validation folder (all loose files)."""
     from eviground.data.probe import GENIMAGE_GENERATORS
 
     counts: Counter[tuple[str, str]] = Counter()
     unassigned = n_images = total_bytes = 0
-    sources: Counter[str] = Counter()
-
-    def add(rel: str, size: int, source: str) -> None:
-        nonlocal unassigned, n_images, total_bytes
+    for path in folder.rglob("*"):
+        if not (path.is_file() and _is_image(path.name)):
+            continue
         n_images += 1
-        total_bytes += size
-        sources[source] += 1
-        gen, cls = _assign(rel, classes)
+        total_bytes += path.stat().st_size
+        gen, cls = _assign(path.relative_to(folder).as_posix(), classes)
         if gen and cls:
             counts[(gen, cls)] += 1
         else:
             unassigned += 1
-
-    for path in folder.rglob("*"):
-        if path.is_file() and _is_image(path.name):
-            add(path.relative_to(folder).as_posix(), path.stat().st_size, "loose")
-    unreadable = []
-    for tar in sorted(folder.glob(f"{FILL_PREFIX}*.tar")):
-        try:
-            index = tar_index(tar)
-        except (OSError, tarfile.TarError):  # damaged on Drive: its generator counts as
-            unreadable.append(tar.name)  # missing, so the fill step rewrites it
-            continue
-        for name, size in index.items():
-            if _is_image(name):
-                add(name, size, tar.name)
     per_gen = {g: {c: counts[(g, c)] for c in classes} for g in GENIMAGE_GENERATORS}
     return {
         "images": n_images,
         "bytes": total_bytes,
         "per_generator": per_gen,
         "unassigned_images": unassigned,
-        "per_source": dict(sources),
-        "unreadable_tars": unreadable,
     }
+
+
+def _fill_pending(folder: Path, plan: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Planned fill files that are missing or have the wrong size on Drive."""
+    out = []
+    for r in plan:
+        target = folder / r["name"]
+        if not (target.is_file() and target.stat().st_size == int(r["bytes"])):
+            out.append(r)
+    return out
 
 
 def _fill_validation(
     ctx: Context, spec: DatasetSpec, folder: Path, missing: list[str]
 ) -> dict[str, Any]:
-    """Add missing generators from the Kaggle Validation archive, one tar file each.
+    """Add missing generators from the Kaggle Validation archive as loose files.
 
-    The archive goes to the local disk (not extracted); only the missing generators'
-    images are written to Drive, then the archive is deleted. Resumable: the plan is saved
-    first and finished tar files are skipped.
+    The archive goes to the local disk (not extracted). The missing generators' images are
+    written into the Validation folder under the archive's own paths, i.e. the same layout
+    as the generators already there (``GenImage/<Generator>/val/{ai,nature}``), each file
+    as ``.part`` then renamed. The plan is saved first; files already present with the
+    right size are skipped, so the step resumes. The archive is deleted at the end.
     """
     p = spec.params
     classes = p["class_dirs"]
     archive = ctx.paths.local_data / "downloads" / "genimage_val_fill.zip"
     plan_path = folder / "fill_plan.csv"
     plan = _read_csv(plan_path)
-
-    def tar_of(gen: str) -> Path:
-        return folder / f"{FILL_PREFIX}{gen}.tar"
-
-    def expected(rows: list[dict[str, str]]) -> dict[str, dict[str, int]]:
-        out: dict[str, dict[str, int]] = {}
-        for r in rows:
-            out.setdefault(r["generator"], {})[r["name"]] = int(r["bytes"])
-        return out
-
-    shards = expected(plan) if plan else {}
-    pending = [g for g, exp in shards.items() if verify_tar(tar_of(g), exp)]
+    pending = _fill_pending(folder, plan) if plan is not None else None
     top_dirs: dict[str, int] = {}
     if plan is None or pending:
         if not archive.is_file():
             need = (
-                sum(sum(shards[g].values()) for g in pending)
-                if plan
+                sum(int(r["bytes"]) for r in pending)
+                if pending is not None
                 else p["fill_gb_estimate"] * 1e9
             )
             ctx.drive_space(need, "the missing GenImage Validation generators (estimate)")
@@ -267,59 +296,136 @@ def _fill_validation(
                         continue
                     gen, cls = _assign(m.name, classes)
                     if gen in missing and cls:
-                        rows.append({"generator": gen, "name": m.name, "bytes": m.size})
-                write_text_atomic(
-                    plan_path,
-                    _csv_text(
-                        ["generator", "name", "bytes"],
-                        [[r["generator"], r["name"], r["bytes"]] for r in rows],
-                    ),
-                )
+                        rows.append([gen, safe_member_name(m.name), m.size])
+                write_text_atomic(plan_path, _csv_text(["generator", "name", "bytes"], rows))
                 plan = _read_csv(plan_path) or []
-                shards = expected(plan)
-                pending = sorted(shards)
+                pending = _fill_pending(folder, plan)
+            by_gen: dict[str, list[dict[str, str]]] = {}
+            for r in pending:
+                by_gen.setdefault(r["generator"], []).append(r)
             ctx.drive_space(
-                sum(sum(shards[g].values()) + TAR_OVERHEAD * len(shards[g]) for g in pending),
-                "the missing GenImage Validation generators",
+                sum(int(r["bytes"]) for r in pending), "the missing GenImage Validation generators"
             )
-            for gen in pending:
-                exp = shards[gen]
-                need = sum(exp.values()) + TAR_OVERHEAD * len(exp)
-                ctx.drive_space(need, tar_of(gen).name)
-                ctx.local_space(need, f"{tar_of(gen).name} (Drive write cache)")
-                records = write_tar_shard(tar_of(gen), reader.iter_read(exp), exp)
-                write_json_atomic(tar_of(gen).with_name(tar_of(gen).name + ".json"), records)
-                log.info("wrote %s (%d images)", tar_of(gen).name, len(exp))
+            for gen, rows in sorted(by_gen.items()):
+                need = sum(int(r["bytes"]) for r in rows)
+                ctx.drive_space(need, f"GenImage Validation {gen}")
+                ctx.wait_for_cache(need, f"GenImage Validation {gen}")
+                records = {}
+                for name, data in reader.iter_read(r["name"] for r in rows):
+                    target = folder / safe_member_name(name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = target.with_name(target.name + ".part")
+                    tmp.write_bytes(data)
+                    os.replace(tmp, target)
+                    records[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                manifest = folder / f"fill_manifest_{gen}.json"
+                write_json_atomic(manifest, {**(read_json(manifest) or {}), **records})
+                log.info("wrote %d %s images into the Validation folder", len(rows), gen)
+    still = _fill_pending(folder, plan)
+    if still:
+        raise VerificationError(
+            f"{len(still)} filled files missing or wrong size, "
+            f"e.g. {[r['name'] for r in still[:3]]}"
+        )
     for leftover in (archive, archive.with_name(archive.name + ".part")):
         leftover.unlink(missing_ok=True)
+    found = Counter(r["generator"] for r in plan)
     return {
         "source": f"kaggle:{p['fill_from']}",
-        "tars": {tar_of(g).name: len(exp) for g, exp in sorted(shards.items())},
-        "absent_from_archive": sorted(set(missing) - set(shards)),
+        "files_per_generator": dict(sorted(found.items())),
+        "absent_from_archive": sorted(set(missing) - set(found)),
         "archive_top_folders": top_dirs,
     }
+
+
+LEGACY_FILL_TAR = "genimage_val_*.tar"
+
+
+def _convert_fill_tars(ctx: Context, folder: Path) -> dict[str, int]:
+    """Turn fill tar files from an earlier run into loose files, then remove them.
+
+    A run on 12 Nov 2026 (before the switch to loose files) stored GLIDE, SD v1.4 and VQDM
+    as ``genimage_val_<generator>.tar``. Their members are written to the Validation folder
+    under their own paths (the layout of the other generators), each checked against the
+    SHA-256 recorded when the tar was written; the tar and its record are deleted only
+    after every member is in place with the right size. Nothing is downloaded.
+    """
+    done: dict[str, int] = {}
+    for tar in sorted(folder.glob(LEGACY_FILL_TAR)):
+        gen = tar.stem.removeprefix("genimage_val_")
+        side_path = tar.with_name(tar.name + ".json")
+        sha = {r["name"]: r["sha256"] for r in (read_json(side_path) or [])}
+        try:
+            index = {n: b for n, b in tar_index(tar).items() if _is_image(n)}
+        except (OSError, tarfile.TarError):
+            log.warning("%s is unreadable; its generator will be refilled", tar.name)
+            continue
+        todo = {
+            n: b
+            for n, b in index.items()
+            if not ((folder / n).is_file() and (folder / n).stat().st_size == b)
+        }
+        need = sum(todo.values())
+        ctx.drive_space(need, f"unpacking {tar.name}")
+        ctx.wait_for_cache(need, f"unpacking {tar.name}")
+        records = {}
+        with ArchiveReader(tar) as reader:
+            for name, data in reader.iter_read(todo):
+                digest = hashlib.sha256(data).hexdigest()
+                if name in sha and sha[name] != digest:
+                    raise VerificationError(f"{tar.name}: {name} does not match its SHA-256")
+                target = folder / safe_member_name(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_name(target.name + ".part")
+                tmp.write_bytes(data)
+                os.replace(tmp, target)
+                records[name] = {"bytes": len(data), "sha256": digest}
+        bad = [
+            n
+            for n, b in index.items()
+            if not ((folder / n).is_file() and (folder / n).stat().st_size == b)
+        ]
+        if bad:
+            raise VerificationError(f"{tar.name}: {len(bad)} files not in place, e.g. {bad[:3]}")
+        manifest = folder / f"fill_manifest_{gen}.json"
+        known = read_json(manifest) or {}
+        for n, b in index.items():
+            known.setdefault(n, records.get(n) or {"bytes": b, "sha256": sha.get(n, "")})
+        write_json_atomic(manifest, known)
+        tar.unlink()
+        side_path.unlink(missing_ok=True)
+        done[tar.name] = len(index)
+        log.info(
+            "unpacked %s into the Validation folder (%d images); tar removed", tar.name, len(index)
+        )
+    return done
 
 
 def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, Any]:
     """GenImage Validation: verify what is on Drive; fill missing generators if allowed.
 
-    Images are counted per generator and class in the loose folders and in our fill tar
-    files. Generators with no images are added from ``params["fill_from"]`` (a Kaggle
-    archive) when set. Then all generators must be present and the total must equal
-    ``expected_images``.
+    Images are counted per generator and class in the (loose) Validation folder.
+    Generators with no images, and earlier filled files now missing or cut short, are
+    (re)written from ``params["fill_from"]`` (a Kaggle archive) when set. Then all
+    generators must be present and the total must equal ``expected_images``.
     """
     if not folder.is_dir():
         raise VerificationError(f"{folder} does not exist")
     classes = spec.params["class_dirs"]
+    converted = _convert_fill_tars(ctx, folder)
     summary = _count_validation(folder, classes)
     missing_gens = sorted(
         g for g, by in summary["per_generator"].items() if any(n == 0 for n in by.values())
     )
+    plan = _read_csv(folder / "fill_plan.csv")
+    damaged = bool(plan) and bool(_fill_pending(folder, plan))  # a filled file cut short
     fill: dict[str, Any] | None = None
-    if missing_gens and spec.params.get("fill_from"):
-        fill = _fill_validation(ctx, spec, folder, missing_gens)
+    if (missing_gens or damaged) and spec.params.get("fill_from"):
+        targets = sorted(set(missing_gens) | {r["generator"] for r in plan or []})
+        fill = _fill_validation(ctx, spec, folder, targets)
         summary = _count_validation(folder, classes)
     summary["filled"] = fill
+    summary["converted_tars"] = converted
     missing = [
         f"{g}/{c}" for g, by in summary["per_generator"].items() for c, n in by.items() if n == 0
     ]
@@ -334,15 +440,22 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
     n_images = summary["images"]
     if n_images != spec.params["expected_images"]:
         problems.append(f"{n_images} images, expected {spec.params['expected_images']}")
-    if summary["unreadable_tars"]:
-        problems.append(f"unreadable tar files: {', '.join(summary['unreadable_tars'])}")
     if summary["unassigned_images"]:
         problems.append(
             f"{summary['unassigned_images']} images not under exactly one "
             "generator and class folder"
         )
     if problems:
-        raise VerificationError("GenImage Validation: " + "; ".join(problems))
+        counts = ", ".join(
+            f"{g} {by.get('nature', 0)}/{by.get('ai', 0)}"
+            for g, by in summary["per_generator"].items()
+        )
+        raise VerificationError(
+            "GenImage Validation: "
+            + "; ".join(problems)
+            + f" [real/generated per generator: {counts}]",
+            details=summary,
+        )
     return summary
 
 
@@ -455,7 +568,7 @@ def step_kaggle_subset(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
                 exp = shards[k]
                 need = sum(exp.values()) + TAR_OVERHEAD * len(exp)
                 ctx.drive_space(need, f"shard {_shard_name(k)}")
-                ctx.local_space(need, f"shard {_shard_name(k)} (Drive write cache)")
+                ctx.wait_for_cache(need, f"shard {_shard_name(k)}")
                 records = write_tar_shard(folder / _shard_name(k), reader.iter_read(exp), exp)
                 write_json_atomic(folder / f"{_shard_name(k)}.json", records)
                 log.info("wrote %s (%d images)", _shard_name(k), len(exp))
@@ -537,7 +650,7 @@ def step_hf_files(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, An
         if not ok:
             if not (target.is_file() and target.stat().st_size == size):
                 ctx.drive_space(size, f"{repo} {name}")
-                ctx.local_space(0, f"{repo} {name} (Drive write cache)")
+                ctx.wait_for_cache(0, f"{repo} {name}")
                 got = ctx.sources.hf_download(repo, name, folder)
                 if Path(got) != target:
                     raise VerificationError(f"downloaded to {got}, expected {target}")
@@ -861,6 +974,8 @@ def ensure_data(
     stage_local: bool = False,
     raise_errors: bool = True,
     overrides: dict[str, dict[str, Any]] | None = None,
+    drive_free: Callable[[], int | None] | None | str = "auto",
+    cache_wait_s: float = 1800.0,
 ) -> dict[str, Any]:
     """Make sure each dataset is on Drive and verified; optionally unpack it locally.
 
@@ -870,6 +985,8 @@ def ensure_data(
     carrying the full report is raised at the end. ``overrides`` replaces registry
     parameters per dataset (tests and dry runs use tiny subsets); the key ``method``
     selects another step (the SID-Set parquet download is kept as a tested fallback).
+    ``drive_free="auto"`` reads the Google Drive quota through the Drive API when the data
+    folder is on Colab's Drive mount (the mount's own free space is the machine's disk).
     """
     paths = paths or get_paths()
     if sources is None:
@@ -878,7 +995,16 @@ def ensure_data(
         factory = sources  # type: ignore[assignment]
     else:
         factory = lambda: sources  # noqa: E731
-    ctx = Context(paths=paths, sources_factory=factory, reserve_gb=reserve_gb)
+    if drive_free == "auto":
+        on_drive = DRIVE_MOUNT in Path(paths.root).parents or Path(paths.root) == DRIVE_MOUNT
+        drive_free = drive_free_bytes if on_drive else None
+    ctx = Context(
+        paths=paths,
+        sources_factory=factory,
+        reserve_gb=reserve_gb,
+        drive_free=drive_free,
+        cache_wait_s=cache_wait_s,
+    )
     report: dict[str, Any] = {}
     for key in datasets or PROFILES[profile]:
         spec = REGISTRY[key]
@@ -903,6 +1029,8 @@ def ensure_data(
                 entry["staged"] = stage(key, paths=paths, reserve_gb=reserve_gb)
         except Exception as exc:  # report every dataset, then raise once
             entry.update(status="error", error=f"{type(exc).__name__}: {exc}")
+            if getattr(exc, "details", None):
+                entry["details"] = exc.details
             log.error("%s: %s", key, entry["error"])
         report[key] = entry
     failed = {k: v["error"] for k, v in report.items() if v["status"] == "error"}
@@ -922,23 +1050,8 @@ def stage(
     if done is None:
         raise VerificationError(f"{key}: no verified _DONE on Drive; run ensure_data first")
     method = done.get("method", spec.method)  # the step that produced the verified data
-    if method == "verify_folder":  # loose folders are read in place; fill tars are unpacked
-        tars = sorted(folder.glob(f"{FILL_PREFIX}*.tar"))
-        if not tars:
-            return {"staged": False, "reason": "read in place on Drive"}
-        dest = paths.local_data / key
-        files = nbytes = 0
-        for arc in tars:
-            res = extract_archive(arc, dest, reserve_gb=reserve_gb)
-            files, nbytes = files + res["files"], nbytes + res["bytes"]
-        return {
-            "staged": True,
-            "archives": [t.name for t in tars],
-            "files": files,
-            "bytes": nbytes,
-            "dest": str(dest),
-            "loose_read_in_place": str(folder),
-        }
+    if method == "verify_folder":  # all loose files: read in place on Drive
+        return {"staged": False, "reason": "read in place on Drive"}
     dest = paths.local_data / key
     if method == "verify_sid_folder":  # loose files on Drive: copy the listed ones
         files = _sid_listed_files(folder, list(spec.params["caps"]))

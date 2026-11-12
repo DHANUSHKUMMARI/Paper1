@@ -338,5 +338,5 @@ def test_probe_counts_filled_generators(tmp_path: Path) -> None:
                                            "fill_gb_estimate": 0.001}})  # fmt: skip
     rep = _small_probe(paths.datasets)
     val = rep["genimage"]["subsets"]["Validation"]
-    assert val["generators_missing"] == [] and len(val["fill_tars"]) == 3
+    assert val["generators_missing"] == [] and val["fill_tars"] == []
     assert _status(rep, "GenImage Validation")["status"] == "present"

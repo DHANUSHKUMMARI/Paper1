@@ -442,26 +442,30 @@ def _partial_validation(tmp: Path, **kw) -> tuple[Paths, FakeSources, Path]:
     return paths, make_fake_world(tmp / "remote", **kw), folder
 
 
-def test_validation_fill_adds_missing_generators_as_tars(tmp_path: Path) -> None:
+def test_validation_fill_adds_missing_generators_as_loose_files(tmp_path: Path) -> None:
     paths, sources, folder = _partial_validation(tmp_path)
-    loose_before = sorted(p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
-    ov = FILL_OV
+    before = {
+        p: p.stat().st_mtime_ns for p in folder.rglob("*") if p.is_file() and p.name != "_DONE"
+    }  # _DONE becomes the verified record
     summary = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
-                          overrides=ov)["genimage_val"]["summary"]  # fmt: skip
-    assert sorted(summary["filled"]["tars"]) == [
-        "genimage_val_glide.tar", "genimage_val_sd14.tar", "genimage_val_vqdm.tar"]  # fmt: skip
-    assert summary["filled"]["absent_from_archive"] == []
+                          overrides=FILL_OV)["genimage_val"]["summary"]  # fmt: skip
+    fill = summary["filled"]
+    assert fill["files_per_generator"] == {"glide": 4, "sd14": 4, "vqdm": 4}
+    assert fill["absent_from_archive"] == []
     assert all(by == {"nature": 2, "ai": 2} for by in summary["per_generator"].values())
-    assert summary["per_source"]["loose"] == 20 and summary["unassigned_images"] == 0
-    loose_after = sorted(p.relative_to(folder) for p in folder.rglob("*")
-                         if p.is_file() and p.suffix.lower() in (".png", ".jpeg"))  # fmt: skip
-    assert [p for p in loose_before if p.suffix.lower() in (".png", ".jpeg")] == loose_after
+    assert summary["unassigned_images"] == 0 and summary["images"] == 32
+    # same layout as the generators already there; nothing else touched; no tar files
+    assert (folder / "GenImage/glide/val/ai/000_glide.PNG").is_file()
+    assert (folder / "GenImage/stable_diffusion_v_1_4/val/nature").is_dir()
+    assert {p: p.stat().st_mtime_ns for p in before} == before
+    assert not list(folder.glob("*.tar")) and not list(folder.rglob("*.part"))
+    manifest = json.loads((folder / "fill_manifest_glide.json").read_text())
+    assert len(manifest) == 4 and all(len(v["sha256"]) == 64 for v in manifest.values())
     assert not list((paths.local_data / "downloads").glob("genimage_val_fill*"))
     assert ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network,
-                       overrides=ov)["genimage_val"]["status"] == "done"  # fmt: skip
-    staged = stage("genimage_val", paths=paths)
-    assert staged["files"] == 12 and len(staged["archives"]) == 3
-    assert (paths.local_data / "genimage_val/GenImage/glide/val/ai/000_glide.PNG").is_file()
+                       overrides=FILL_OV)["genimage_val"]["status"] == "done"  # fmt: skip
+    assert stage("genimage_val", paths=paths) == {"staged": False,
+                                                   "reason": "read in place on Drive"}  # fmt: skip
 
 
 def test_validation_fill_resumes_after_interruption(tmp_path: Path) -> None:
@@ -489,7 +493,7 @@ def test_validation_fill_reports_generator_absent_from_archive(tmp_path: Path) -
     msg = err.value.report["genimage_val"]["error"]
     assert "vqdm not found in kaggle:vtphatt2/GenImage-Validation" in msg
     assert "GenImage/VQDM" not in msg and "GenImage/glide" in msg  # top folders listed
-    assert (folder / "genimage_val_glide.tar").is_file()  # what exists is kept
+    assert (folder / "GenImage/glide/val/ai/000_glide.PNG").is_file()  # what exists is kept
     assert read_done(folder) is None
 
 
@@ -501,17 +505,19 @@ def test_validation_fill_checks_space_first(tmp_path: Path, monkeypatch) -> None
                     overrides=FILL_OV)  # fmt: skip
     assert "InsufficientSpaceError" in err.value.report["genimage_val"]["error"]
     assert not any(c.startswith("kaggle") for c in sources.calls)
-    assert not list(folder.glob("*.tar"))
+    assert not (folder / "GenImage/glide").exists() and not (folder / "fill_plan.csv").exists()
 
 
-def test_validation_fill_repairs_a_damaged_tar(tmp_path: Path) -> None:
-    """Review of PR #4: a truncated fill tar is rewritten on the next run, not a crash."""
+def test_validation_fill_repairs_a_damaged_file(tmp_path: Path) -> None:
+    """A filled file cut short on Drive is rewritten on the next run (review of PR #4)."""
     paths, sources, folder = _partial_validation(tmp_path)
     ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=FILL_OV)
-    good = (folder / "genimage_val_vqdm.tar").read_bytes()
-    (folder / "genimage_val_vqdm.tar").write_bytes(good[:700])  # damaged on Drive
+    target = folder / "GenImage/VQDM/val/ai/001_VQDM.PNG"
+    good = target.read_bytes()
+    target.write_bytes(good[:50])  # damaged on Drive; the generator still "has images"
     (folder / "_DONE").unlink()
     report = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
                          overrides=FILL_OV)  # fmt: skip
     assert report["genimage_val"]["status"] == "verified"
-    assert (folder / "genimage_val_vqdm.tar").read_bytes() == good
+    assert target.read_bytes() == good
+    assert sources.calls.count("kaggle_download vtphatt2/GenImage-Validation") == 2

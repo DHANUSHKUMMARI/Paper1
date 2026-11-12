@@ -41,8 +41,8 @@ REGISTRY: dict[str, DatasetSpec] = {
             "expected_images": 100_000,
             "generators": 8,
             # Drive held 5 of 8 generators (12 Nov 2026); the missing ones (GLIDE, SD v1.4,
-            # VQDM) are added from this Kaggle archive as one tar file each (decision of
-            # 12 Nov 2026). None = verify only.
+            # VQDM) are added from this Kaggle archive as loose files in the same layout as
+            # the other five (decision of 12 Nov 2026). None = verify only.
             "fill_from": "vtphatt2/GenImage-Validation",
             "fill_gb_estimate": 12.0,
             "class_dirs": {"nature": LABELS["real"], "ai": LABELS["generated"]},

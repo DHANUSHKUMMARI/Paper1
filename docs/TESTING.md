@@ -3,6 +3,27 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, step 5 (Validation fill as loose files, not tar) — 2026-11-12
+
+Change of decision (12 Nov 2026): the five generators already on Drive are loose files, so GLIDE,
+SD v1.4 and VQDM are now written as loose files in the same layout (the archive's own paths,
+`GenImage/<Generator>/val/{ai,nature}`) instead of one tar file each. Each file is written as
+`.part` and renamed; `fill_plan.csv` lists every file and size and `fill_manifest_<generator>.json`
+its SHA-256. Every run re-checks the filled files' sizes, so a file cut short on Drive is rewritten
+(this replaces the damaged-tar repair of PR #4). `stage("genimage_val")` reads everything in place.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 141 passed, 0 failed, 0 skipped |
+| Fill tests with free space limited to 8.1 GB (as on the CI runner) | 6 passed |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
+Fill tests now check: files land in the existing layout, the 20 loose images already there are not
+touched, no tar or `.part` file is left, SHA-256 manifest written, archive deleted, second run makes
+no network call, nothing to stage; resume after an interrupted download; a generator missing from
+the archive is named; space check before any download; a filled file cut short is rewritten.
+
 ## Milestone 2, fix — stale code in a reused Colab runtime — 2026-11-12
 
 Second Colab run of `00c_data_download.ipynb` (15:13 UTC, commit `ad3b07d`): both datasets failed in

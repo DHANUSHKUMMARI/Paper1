@@ -20,6 +20,7 @@ from eviground.data.download import (
 )
 from eviground.data.fake_sources import (
     DIFFSEG_REPO,
+    GENIMAGE_MIRROR_DIRS,
     FakeSources,
     dry_run_overrides,
     make_fake_world,
@@ -383,3 +384,34 @@ def test_missing_kaggle_secret_stops_cleanly(tmp_path: Path, monkeypatch, caplog
 def test_report_is_json(done_world) -> None:
     json.dumps(done_world[3])
     assert DIFFSEG_REPO in REGISTRY["diffseg30k"].source
+
+
+# The Kaggle mirror's real layout on Drive (12 Nov 2026): Validation/GenImage/<Generator>/val/...
+
+
+def test_genimage_validation_mirror_names(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    folder = paths.datasets / REGISTRY["genimage_val"].folder
+    n = make_genimage_validation(folder, generator_dirs=GENIMAGE_MIRROR_DIRS, prefix="GenImage")
+    stray = folder / "GenImage/BigGAN/val/ai/999_sdv4_00000.png"  # a name that mentions SD v1.4
+    stray.write_bytes((folder / "GenImage/BigGAN/val/ai/000_BigGAN.PNG").read_bytes())
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network,
+                         overrides={"genimage_val": {"expected_images": n + 1}})  # fmt: skip
+    summary = report["genimage_val"]["summary"]
+    assert summary["unassigned_images"] == 0
+    assert summary["per_generator"]["sd14"] == {"nature": 2, "ai": 2}
+    assert summary["per_generator"]["sd15"] == {"nature": 2, "ai": 2}
+    assert summary["per_generator"]["biggan"] == {"nature": 2, "ai": 3}  # by folder, not name
+
+
+def test_genimage_validation_reports_missing_mirror_generators(tmp_path: Path) -> None:
+    """What Drive holds on 12 Nov 2026: 5 of 8 generators."""
+    paths = _paths(tmp_path)
+    folder = paths.datasets / REGISTRY["genimage_val"].folder
+    present = ("ADM", "BigGAN", "Midjourney", "stable_diffusion_v_1_5", "wukong")
+    make_genimage_validation(folder, generator_dirs=present, prefix="GenImage")
+    with pytest.raises(DataStepError) as err:
+        ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network)
+    msg = err.value.report["genimage_val"]["error"]
+    assert "no images for glide/nature, glide/ai, sd14/nature, sd14/ai, vqdm/nature, vqdm/ai" in msg
+    assert "not under exactly one generator" not in msg

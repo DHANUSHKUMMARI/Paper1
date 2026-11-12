@@ -64,8 +64,9 @@ GENIMAGE_GENERATORS: dict[str, str] = {
     "biggan": r"biggan",
     "glide": r"glide",
     "midjourney": r"midjourney",
-    "sd14": r"sdv4|sd[-_ .]?v?1[-_.]?4|stable[-_ ]?diffusion[-_ ]?v?1[-_.]4",
-    "sd15": r"sdv5|sd[-_ .]?v?1[-_.]?5|stable[-_ ]?diffusion[-_ ]?v?1[-_.]5",
+    # GenImage: imagenet_ai_0419_sdv4; Kaggle mirror: stable_diffusion_v_1_4
+    "sd14": r"sdv4|sd[-_ .]?v?[-_ .]?1[-_.]?4|stable[-_ ]?diffusion[-_ ]?v?[-_ ]?1[-_.]4",
+    "sd15": r"sdv5|sd[-_ .]?v?[-_ .]?1[-_.]?5|stable[-_ ]?diffusion[-_ ]?v?[-_ ]?1[-_.]5",
     "vqdm": r"vqdm",
     "wukong": r"wukong",
 }

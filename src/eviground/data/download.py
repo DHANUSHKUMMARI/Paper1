@@ -35,6 +35,8 @@ import io
 import logging
 import os
 import re
+import tarfile
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -48,7 +50,10 @@ from eviground.data.registry import PROFILES, REGISTRY, DatasetSpec
 from eviground.data.sources import NetworkSources, Sources
 from eviground.data.storage import (
     DEFAULT_RESERVE_GB,
+    GB,
     ArchiveReader,
+    InsufficientSpaceError,
+    SpaceUnknownError,
     VerificationError,
     check_space,
     copy_files,
@@ -56,12 +61,13 @@ from eviground.data.storage import (
     read_json,
     safe_member_name,
     sha256_file,
+    tar_index,
     verify_tar,
     write_json_atomic,
     write_tar_shard,
     write_text_atomic,
 )
-from eviground.env import Paths, get_paths, git_commit
+from eviground.env import DRIVE_MOUNT, Paths, drive_free_bytes, get_paths, git_commit
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +89,10 @@ class Context:
     paths: Paths
     sources_factory: Callable[[], Sources]
     reserve_gb: float = DEFAULT_RESERVE_GB
+    # Free bytes in the Drive quota; None = measure the file system (tests, local runs).
+    drive_free: Callable[[], int | None] | None = None
+    cache_wait_s: float = 1800.0  # how long to wait for Colab's Drive upload cache
+    sleep: Callable[[float], None] = time.sleep
     _sources: Sources | None = field(default=None, init=False)
 
     @property
@@ -92,9 +102,47 @@ class Context:
         return self._sources
 
     def drive_space(self, need: float, what: str) -> dict[str, float]:
-        return check_space(
-            self.paths.datasets, need, what=what, where="Drive", reserve_gb=self.reserve_gb
-        )
+        if self.drive_free is None:
+            return check_space(
+                self.paths.datasets, need, what=what, where="Drive", reserve_gb=self.reserve_gb
+            )
+        free = self.drive_free()
+        if free is None:
+            raise SpaceUnknownError(
+                f"{what}: could not read your Google Drive quota, so nothing was written. "
+                "Allow Colab's Google sign-in prompt and run the cell again."
+            )
+        info = {
+            "need_gb": round(need / GB, 2),
+            "free_gb": round(free / GB, 2),
+            "reserve_gb": self.reserve_gb,
+        }
+        if free - need < self.reserve_gb * GB:
+            raise InsufficientSpaceError(
+                f"{what} needs {need / GB:.1f} GB on Drive (your Google Drive quota) and a "
+                f"{self.reserve_gb:.0f} GB reserve must stay free, but only {free / GB:.1f} GB "
+                f"is free. Nothing was written for this step. Free at least "
+                f"{(need + self.reserve_gb * GB - free) / GB:.1f} GB on Drive and run it again; "
+                "finished parts are kept and skipped."
+            )
+        return info
+
+    def wait_for_cache(self, need: float, what: str) -> None:
+        """Wait until the local disk can hold ``need`` more bytes of Drive's upload cache.
+
+        On Colab, files written to Drive sit on the local disk until they are uploaded, so
+        large writes next to a large local archive wait for the cache to drain.
+        """
+        deadline = time.monotonic() + self.cache_wait_s
+        while True:
+            try:
+                self.local_space(need, f"{what} (Drive upload cache)")
+                return
+            except InsufficientSpaceError:
+                if time.monotonic() >= deadline:
+                    raise
+                os.sync()
+                self.sleep(15)
 
     def local_space(self, need: float, what: str) -> dict[str, float]:
         return check_space(
@@ -261,7 +309,7 @@ def _fill_validation(
             for gen, rows in sorted(by_gen.items()):
                 need = sum(int(r["bytes"]) for r in rows)
                 ctx.drive_space(need, f"GenImage Validation {gen}")
-                ctx.local_space(need, f"GenImage Validation {gen} (Drive write cache)")
+                ctx.wait_for_cache(need, f"GenImage Validation {gen}")
                 records = {}
                 for name, data in reader.iter_read(r["name"] for r in rows):
                     target = folder / safe_member_name(name)
@@ -290,6 +338,69 @@ def _fill_validation(
     }
 
 
+LEGACY_FILL_TAR = "genimage_val_*.tar"
+
+
+def _convert_fill_tars(ctx: Context, folder: Path) -> dict[str, int]:
+    """Turn fill tar files from an earlier run into loose files, then remove them.
+
+    A run on 12 Nov 2026 (before the switch to loose files) stored GLIDE, SD v1.4 and VQDM
+    as ``genimage_val_<generator>.tar``. Their members are written to the Validation folder
+    under their own paths (the layout of the other generators), each checked against the
+    SHA-256 recorded when the tar was written; the tar and its record are deleted only
+    after every member is in place with the right size. Nothing is downloaded.
+    """
+    done: dict[str, int] = {}
+    for tar in sorted(folder.glob(LEGACY_FILL_TAR)):
+        gen = tar.stem.removeprefix("genimage_val_")
+        side_path = tar.with_name(tar.name + ".json")
+        sha = {r["name"]: r["sha256"] for r in (read_json(side_path) or [])}
+        try:
+            index = {n: b for n, b in tar_index(tar).items() if _is_image(n)}
+        except (OSError, tarfile.TarError):
+            log.warning("%s is unreadable; its generator will be refilled", tar.name)
+            continue
+        todo = {
+            n: b
+            for n, b in index.items()
+            if not ((folder / n).is_file() and (folder / n).stat().st_size == b)
+        }
+        need = sum(todo.values())
+        ctx.drive_space(need, f"unpacking {tar.name}")
+        ctx.wait_for_cache(need, f"unpacking {tar.name}")
+        records = {}
+        with ArchiveReader(tar) as reader:
+            for name, data in reader.iter_read(todo):
+                digest = hashlib.sha256(data).hexdigest()
+                if name in sha and sha[name] != digest:
+                    raise VerificationError(f"{tar.name}: {name} does not match its SHA-256")
+                target = folder / safe_member_name(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                tmp = target.with_name(target.name + ".part")
+                tmp.write_bytes(data)
+                os.replace(tmp, target)
+                records[name] = {"bytes": len(data), "sha256": digest}
+        bad = [
+            n
+            for n, b in index.items()
+            if not ((folder / n).is_file() and (folder / n).stat().st_size == b)
+        ]
+        if bad:
+            raise VerificationError(f"{tar.name}: {len(bad)} files not in place, e.g. {bad[:3]}")
+        manifest = folder / f"fill_manifest_{gen}.json"
+        known = read_json(manifest) or {}
+        for n, b in index.items():
+            known.setdefault(n, records.get(n) or {"bytes": b, "sha256": sha.get(n, "")})
+        write_json_atomic(manifest, known)
+        tar.unlink()
+        side_path.unlink(missing_ok=True)
+        done[tar.name] = len(index)
+        log.info(
+            "unpacked %s into the Validation folder (%d images); tar removed", tar.name, len(index)
+        )
+    return done
+
+
 def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, Any]:
     """GenImage Validation: verify what is on Drive; fill missing generators if allowed.
 
@@ -301,6 +412,7 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
     if not folder.is_dir():
         raise VerificationError(f"{folder} does not exist")
     classes = spec.params["class_dirs"]
+    converted = _convert_fill_tars(ctx, folder)
     summary = _count_validation(folder, classes)
     missing_gens = sorted(
         g for g, by in summary["per_generator"].items() if any(n == 0 for n in by.values())
@@ -313,6 +425,7 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
         fill = _fill_validation(ctx, spec, folder, targets)
         summary = _count_validation(folder, classes)
     summary["filled"] = fill
+    summary["converted_tars"] = converted
     missing = [
         f"{g}/{c}" for g, by in summary["per_generator"].items() for c, n in by.items() if n == 0
     ]
@@ -333,7 +446,16 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
             "generator and class folder"
         )
     if problems:
-        raise VerificationError("GenImage Validation: " + "; ".join(problems))
+        counts = ", ".join(
+            f"{g} {by.get('nature', 0)}/{by.get('ai', 0)}"
+            for g, by in summary["per_generator"].items()
+        )
+        raise VerificationError(
+            "GenImage Validation: "
+            + "; ".join(problems)
+            + f" [real/generated per generator: {counts}]",
+            details=summary,
+        )
     return summary
 
 
@@ -446,7 +568,7 @@ def step_kaggle_subset(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
                 exp = shards[k]
                 need = sum(exp.values()) + TAR_OVERHEAD * len(exp)
                 ctx.drive_space(need, f"shard {_shard_name(k)}")
-                ctx.local_space(need, f"shard {_shard_name(k)} (Drive write cache)")
+                ctx.wait_for_cache(need, f"shard {_shard_name(k)}")
                 records = write_tar_shard(folder / _shard_name(k), reader.iter_read(exp), exp)
                 write_json_atomic(folder / f"{_shard_name(k)}.json", records)
                 log.info("wrote %s (%d images)", _shard_name(k), len(exp))
@@ -528,7 +650,7 @@ def step_hf_files(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, An
         if not ok:
             if not (target.is_file() and target.stat().st_size == size):
                 ctx.drive_space(size, f"{repo} {name}")
-                ctx.local_space(0, f"{repo} {name} (Drive write cache)")
+                ctx.wait_for_cache(0, f"{repo} {name}")
                 got = ctx.sources.hf_download(repo, name, folder)
                 if Path(got) != target:
                     raise VerificationError(f"downloaded to {got}, expected {target}")
@@ -852,6 +974,8 @@ def ensure_data(
     stage_local: bool = False,
     raise_errors: bool = True,
     overrides: dict[str, dict[str, Any]] | None = None,
+    drive_free: Callable[[], int | None] | None | str = "auto",
+    cache_wait_s: float = 1800.0,
 ) -> dict[str, Any]:
     """Make sure each dataset is on Drive and verified; optionally unpack it locally.
 
@@ -861,6 +985,8 @@ def ensure_data(
     carrying the full report is raised at the end. ``overrides`` replaces registry
     parameters per dataset (tests and dry runs use tiny subsets); the key ``method``
     selects another step (the SID-Set parquet download is kept as a tested fallback).
+    ``drive_free="auto"`` reads the Google Drive quota through the Drive API when the data
+    folder is on Colab's Drive mount (the mount's own free space is the machine's disk).
     """
     paths = paths or get_paths()
     if sources is None:
@@ -869,7 +995,16 @@ def ensure_data(
         factory = sources  # type: ignore[assignment]
     else:
         factory = lambda: sources  # noqa: E731
-    ctx = Context(paths=paths, sources_factory=factory, reserve_gb=reserve_gb)
+    if drive_free == "auto":
+        on_drive = DRIVE_MOUNT in Path(paths.root).parents or Path(paths.root) == DRIVE_MOUNT
+        drive_free = drive_free_bytes if on_drive else None
+    ctx = Context(
+        paths=paths,
+        sources_factory=factory,
+        reserve_gb=reserve_gb,
+        drive_free=drive_free,
+        cache_wait_s=cache_wait_s,
+    )
     report: dict[str, Any] = {}
     for key in datasets or PROFILES[profile]:
         spec = REGISTRY[key]
@@ -894,6 +1029,8 @@ def ensure_data(
                 entry["staged"] = stage(key, paths=paths, reserve_gb=reserve_gb)
         except Exception as exc:  # report every dataset, then raise once
             entry.update(status="error", error=f"{type(exc).__name__}: {exc}")
+            if getattr(exc, "details", None):
+                entry["details"] = exc.details
             log.error("%s: %s", key, entry["error"])
         report[key] = entry
     failed = {k: v["error"] for k, v in report.items() if v["status"] == "error"}

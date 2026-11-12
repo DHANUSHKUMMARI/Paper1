@@ -11,9 +11,11 @@ folder keeps only small files needed to reproduce it exactly (`manifests/`).
 
 ## Storage rules (Research Specification, section 13, revision 45)
 
-- Drive has about 110 GB free and Colab's local disk about 115 GB. Free space on **both** is checked
-  before every download and before every shard; a step that would not fit stops with a message
-  and writes nothing.
+- Free space on **both** Drive and Colab's local disk (about 115 GB) is checked before every
+  download and before every shard; a step that would not fit stops with a message and writes
+  nothing. On Colab the Drive mount reports the machine's own disk as its free space, so the Drive
+  side is read from the Google Drive quota through the Drive API. Before each write to Drive the
+  step also waits for the local Drive upload cache to have room.
 - Source archives stay on Drive and are unpacked on the local disk each session
   (`eviground.data.download.stage()`). No loose-file copies and no duplicate shards on Drive.
 - Every download step is resumable, verifies file counts, sizes (and checksums where the source

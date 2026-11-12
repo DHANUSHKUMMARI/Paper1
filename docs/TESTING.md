@@ -3,6 +3,33 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — real Drive quota, Drive upload cache, tar-to-loose conversion — 2026-11-12
+
+Third Colab download run (15:4x UTC, commit `ad3b07d`, before PR #5): the Validation fill worked
+(the tar version: `genimage_val_{glide,sd14,vqdm}.tar`, 12,000 images each) but verification stopped
+at `96411 images, expected 100000`; the SD v1.4 subset stopped with "needs 23.1 GB on Drive, only
+14.6 GB free". Finding: on Colab, the free space of the Drive mount is the machine's own disk, not
+the Drive quota. Evidence from the run records: writing 26.5 GB of DiffSeg30k zips to Drive moved
+"Drive free" from 109.6 to 104.8 GB together with the local disk (115.4 → 110.4), and the 96.5 GB SD
+v1.4 archive on the local disk brought "Drive free" to 14.6 GB. Fixes:
+
+- Drive space is read from the Google Drive quota through the Drive API whenever the data folder is
+  on the Colab mount (`env.drive_quota`); if it cannot be read, the step stops (`SpaceUnknownError`).
+- Before each write to Drive, the step waits (up to 30 min) until the local disk can hold the
+  Drive upload cache, instead of failing next to a large local archive.
+- A failed verification records its measured numbers (`details`), and the Validation error lists
+  real/generated counts per generator.
+- Fill tar files from that run are unpacked into the loose layout (each file checked against its
+  recorded SHA-256), then removed; nothing is downloaded again.
+- Notebook `00c` reports the Drive quota (used and free) and the local disk separately.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 147 passed, 0 failed, 0 skipped (7 new) |
+| Space-related tests with free space limited to 8.1 GB (CI runner) | 14 passed |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
 ## Milestone 2, step 5 (Validation fill as loose files, not tar) — 2026-11-12
 
 Change of decision (12 Nov 2026): the five generators already on Drive are loose files, so GLIDE,

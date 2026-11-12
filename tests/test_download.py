@@ -268,7 +268,7 @@ def test_space_check_stops_before_writing(tmp_path: Path, monkeypatch, disk: str
     monkeypatch.setattr(storage, "free_bytes", fake_free)
     with pytest.raises(DataStepError) as err:
         ensure_data(datasets=["genimage_sd14", "diffseg30k"], paths=paths, sources=sources,
-                    overrides=ov)  # fmt: skip
+                    overrides=ov, cache_wait_s=0)  # fmt: skip
     where = "Drive" if disk == "drive" else "the local disk"
     for key in ("genimage_sd14", "diffseg30k"):
         msg = err.value.report[key]["error"]
@@ -521,3 +521,99 @@ def test_validation_fill_repairs_a_damaged_file(tmp_path: Path) -> None:
     assert report["genimage_val"]["status"] == "verified"
     assert target.read_bytes() == good
     assert sources.calls.count("kaggle_download vtphatt2/GenImage-Validation") == 2
+
+
+# Drive quota (12 Nov 2026: the Colab mount's free space is the machine's disk, not Drive)
+
+
+def test_drive_quota_is_used_when_given(tmp_path: Path) -> None:
+    paths, sources, ov = _world(tmp_path)
+    report = ensure_data(datasets=["diffseg30k"], paths=paths, sources=sources, overrides=ov,
+                         drive_free=lambda: 1_000, raise_errors=False)  # fmt: skip
+    msg = report["diffseg30k"]["error"]
+    assert "InsufficientSpaceError" in msg and "your Google Drive quota" in msg
+    assert not list((paths.datasets / "02_DiffSeg30k").glob("*.zip"))
+    report = ensure_data(datasets=["diffseg30k"], paths=paths, sources=sources, overrides=ov,
+                         drive_free=lambda: None, raise_errors=False)  # fmt: skip
+    assert "SpaceUnknownError" in report["diffseg30k"]["error"]
+    report = ensure_data(datasets=["diffseg30k"], paths=paths, sources=sources, overrides=ov,
+                         drive_free=lambda: 10**15)  # fmt: skip
+    assert report["diffseg30k"]["status"] == "verified"
+
+
+def test_drive_quota_auto_only_on_the_colab_mount(tmp_path: Path, monkeypatch) -> None:
+    from eviground.data import download
+
+    called = []
+    monkeypatch.setattr(download, "drive_free_bytes", lambda: called.append(1) or 10**15)
+    paths, sources, ov = _world(tmp_path)
+    ensure_data(datasets=["diffseg30k"], paths=paths, sources=sources, overrides=ov)
+    assert called == []  # a temp folder is not Google Drive: measured as a file system
+
+
+def test_cache_wait_then_write(tmp_path: Path, monkeypatch) -> None:
+    from eviground.data.download import Context
+
+    frees = iter([1, 1, 10**15])
+    monkeypatch.setattr(storage, "free_bytes", lambda p: next(frees))
+    slept = []
+    ctx = Context(paths=_paths(tmp_path), sources_factory=_no_network, sleep=slept.append)
+    ctx.wait_for_cache(10, "x")
+    assert len(slept) == 2
+    monkeypatch.setattr(storage, "free_bytes", lambda p: 1)
+    ctx.cache_wait_s = 0
+    with pytest.raises(storage.InsufficientSpaceError, match="Drive upload cache"):
+        ctx.wait_for_cache(10, "x")
+
+
+def test_validation_error_reports_counts(tmp_path: Path) -> None:
+    paths, _sources, folder = _partial_validation(tmp_path)
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network,
+                         raise_errors=False,
+                         overrides={"genimage_val": {"fill_from": None}})  # fmt: skip
+    entry = report["genimage_val"]
+    assert "real/generated per generator: adm 2/2" in entry["error"]
+    assert entry["details"]["per_generator"]["glide"] == {"nature": 0, "ai": 0}
+
+
+def test_fill_tars_from_an_earlier_run_become_loose_files(tmp_path: Path) -> None:
+    """The run of 12 Nov 2026 wrote genimage_val_<g>.tar; they are unpacked, not refetched."""
+    from eviground.data.download import _assign
+    from eviground.data.fake_sources import make_genimage_val_zip
+    from eviground.data.storage import ArchiveReader, write_tar_shard
+
+    paths, _sources, folder = _partial_validation(tmp_path)
+    archive = make_genimage_val_zip(tmp_path / "val.zip")
+    classes = REGISTRY["genimage_val"].params["class_dirs"]
+    with ArchiveReader(archive) as reader:
+        members = {m.name: m.size for m in reader.members()}
+        for gen in ("glide", "sd14", "vqdm"):
+            exp = {n: b for n, b in members.items() if _assign(n, classes)[0] == gen}
+            recs = write_tar_shard(folder / f"genimage_val_{gen}.tar", reader.iter_read(exp), exp)
+            (folder / f"genimage_val_{gen}.tar.json").write_text(json.dumps(recs))
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network,
+                         overrides=FILL_OV)  # fmt: skip
+    summary = report["genimage_val"]["summary"]
+    assert summary["converted_tars"] == {"genimage_val_glide.tar": 4,
+                                         "genimage_val_sd14.tar": 4,
+                                         "genimage_val_vqdm.tar": 4}  # fmt: skip
+    assert summary["filled"] is None  # nothing downloaded
+    assert not list(folder.glob("*.tar")) and not list(folder.glob("*.tar.json"))
+    assert (folder / "GenImage/glide/val/ai/000_glide.PNG").is_file()
+    manifest = json.loads((folder / "fill_manifest_vqdm.json").read_text())
+    assert len(manifest) == 4 and all(len(v["sha256"]) == 64 for v in manifest.values())
+
+
+def test_fill_tar_with_wrong_content_is_not_trusted(tmp_path: Path) -> None:
+    from eviground.data.storage import write_tar_shard
+
+    paths, _sources, folder = _partial_validation(tmp_path)
+    name = "GenImage/glide/val/ai/000_glide.PNG"
+    write_tar_shard(folder / "genimage_val_glide.tar", [(name, b"bad")], {name: 3})
+    (folder / "genimage_val_glide.tar.json").write_text(
+        json.dumps([{"name": name, "bytes": 3, "sha256": "0" * 64}])
+    )
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=_no_network,
+                         overrides=FILL_OV, raise_errors=False)  # fmt: skip
+    assert "does not match its SHA-256" in report["genimage_val"]["error"]
+    assert (folder / "genimage_val_glide.tar").is_file()  # kept: nothing removed on failure

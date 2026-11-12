@@ -1,5 +1,5 @@
 <!--
-Exported from the Claude doc "Paper 1 - Research Specification" (revision 44) on 11 Nov 2026.
+Exported from the Claude doc "Paper 1 - Research Specification" (revision 45) on 12 Nov 2026.
 The Claude doc is the master copy. If it changes, re-export it and replace this file; do not edit here.
 -->
 
@@ -219,7 +219,7 @@ The LLM may call three tools before writing the report: re-run the detector on a
 | --- | --- |
 | Software | PyTorch 2.x, transformers (CLIP and the LLM), timm (EfficientNet-B0), peft (LoRA), bitsandbytes (4-bit LLM), pytorch-grad-cam (Grad-CAM++) |
 | Hardware | Colab Pro: L4 (22.5 GB) for training and evaluation, T4 (15 GB) for debugging and LLM reports (4-bit, about 6 GB) |
-| Two trained models | **Detection-protocol model:** GenImage SD v1.4 only (real + fully generated), the training set used by published GenImage baselines. **Unified model:** GenImage SD v1.4 + DiffSeg30k (images edited only by the 6 training editors, plus its 5k unedited real images) + SID-Set train subset (10k per class). Same architecture and settings |
+| Two trained models | **Detection-protocol model:** GenImage SD v1.4 only (real + fully generated), the training set used by published GenImage baselines. Storage limit: a fixed random subset of 40,000 real + 40,000 generated SD v1.4 training images is used (seed 42) out of about 162,000 of each; say so in the paper, since published baselines train on the full set. **Unified model:** GenImage SD v1.4 + DiffSeg30k (images edited only by the 6 training editors, plus its 5k unedited real images) + SID-Set train subset (10k per class). Same architecture and settings |
 | Validation (model selection) | A fixed, stratified 10% held out from each training source. No test set is ever used for model selection or threshold tuning |
 | Class and source balance | Weighted sampler, 1 : 1 : 1 over real / fully generated / edited; within a class, each source dataset is drawn equally often |
 | Epoch definition | Unified: 24,000 sampled crops per epoch (8,000 per class), 20 epochs = 15,000 steps. Detection-protocol: 16,000 crops per epoch, 15 epochs = 7,500 steps |
@@ -379,6 +379,8 @@ The specification and reference list were checked against the datasets' own pape
 | 13 | Reference list lacked the works the method itself relies on | 19 references added (list v3, 83 in total) | References |
 
 **Added 11 Nov 2026, while reviewing the Milestone 2 plan.** Item 2 above first said to crop and then re-compress every image. That would leave real JPEGs compressed twice and generated PNGs once. Section 8 (M1) now compresses only lossless-format images, once, before cropping, at the measured quality of the JPEG images in the same source.
+
+**Added 12 Nov 2026, data storage.** The first download failed: the SD v1.4 archive (89.8 GB) cannot be unpacked on Colab's disk, DiffSeg30k is two zip files (not the format the first downloader assumed), and Drive had about 110 GB free. Rules from now on: keep source archives on Drive and unpack them on Colab's local disk each session; never unpack the whole SD v1.4 archive, read the 40,000 + 40,000 subset straight from it; BR-Gen (68.5 GB, test only) is not needed for CP1 and is handled before P3.
 
 ## Sources
 

@@ -3,6 +3,26 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, step 4 (fill the missing GenImage generators as tar files) — 2026-11-12
+
+Decision of 12 Nov 2026 ("recommended, tar"): GLIDE, SD v1.4 and VQDM, missing from the Validation
+folder on Drive, are taken from the Kaggle `vtphatt2/GenImage-Validation` archive (to the local disk,
+not extracted, deleted afterwards) and stored as `genimage_val_<generator>.tar` beside the five loose
+generators. Verification counts loose files and tar members together; `stage("genimage_val")`
+unpacks the tars, the loose folders are read in place. If a generator is not in the archive, the
+step names it and lists the archive's top folders, and no `_DONE` is written.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 140 passed, 0 failed, 0 skipped (5 new) |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
+New tests: the three generators are added as three tar files and the five loose ones are untouched,
+the archive is deleted, a second run makes no network call, staging unpacks the tars; an interrupted
+archive download resumes; a generator absent from the archive is named, existing tars are kept, no
+`_DONE`; too little space stops before any download; the probe reads a filled Validation as complete.
+
 ## Milestone 2, fix — GenImage generator names of the Kaggle mirror — 2026-11-12
 
 First Colab run of `00c_data_download.ipynb` (12 Nov 2026): DiffSeg30k downloaded and verified

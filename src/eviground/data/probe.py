@@ -20,6 +20,7 @@ Nothing under ``datasets/`` is written, moved, extracted or re-encoded.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import os
@@ -32,13 +33,14 @@ import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
 from PIL import Image
 
 from eviground.data.imageinfo import blockiness, header_info, sniff_format
+from eviground.data.storage import ArchiveReader
 
 log = logging.getLogger(__name__)
 
@@ -182,36 +184,47 @@ def _summary(values: Iterable[float]) -> dict[str, float] | None:
     }
 
 
-def _blockiness_of(path: Path) -> float | None:
+def _open_image(source: Path | bytes) -> Image.Image:
+    return Image.open(io.BytesIO(source) if isinstance(source, bytes) else source)
+
+
+def _blockiness_of(source: Path | bytes) -> float | None:
     try:
-        with Image.open(path) as img:
+        with _open_image(source) as img:
             arr = np.asarray(img.convert("RGB"))
         return blockiness(arr)
     except Exception:
         return None
 
 
+Reader = Callable[[str], "Path | bytes"]
+
+
 def group_stats(
-    folder: Path,
+    folder: Path | None,
     names: list[str],
     *,
     sample_headers: int,
     sample_blockiness: int,
     seed: int,
     workers: int = 16,
+    reader: Reader | None = None,
 ) -> dict[str, Any]:
-    """Format, JPEG quality, subsampling, size and blockiness statistics of one folder.
+    """Format, JPEG quality, subsampling, size and blockiness statistics of one group.
 
-    Header facts use a seeded sample of up to ``sample_headers`` files; blockiness decodes
-    the first ``sample_blockiness`` of that sample.
+    A group is a folder on Drive (``folder``) or a folder inside archives (``reader``
+    returns a member's bytes). Header facts use a seeded sample of up to ``sample_headers``
+    files; blockiness decodes the first ``sample_blockiness`` of that sample.
     """
+    read: Reader = reader or (lambda n: folder / n)  # type: ignore[operator]
     rng = np.random.default_rng(seed)
     order = sorted(names)
     idx = rng.permutation(len(order))[: min(sample_headers, len(order))]
     sample = [order[i] for i in sorted(idx)]
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        infos = list(pool.map(lambda n: header_info(folder / n), sample))
-        blocks = list(pool.map(lambda n: _blockiness_of(folder / n), sample[:sample_blockiness]))
+    n_workers = workers if reader is None else 1  # archive handles are not thread-safe
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        infos = list(pool.map(lambda n: header_info(read(n)), sample))
+        blocks = list(pool.map(lambda n: _blockiness_of(read(n)), sample[:sample_blockiness]))
 
     ok = [i for i in infos if "error" not in i]
     errors = [f"{n}: {i['error']}" for n, i in zip(sample, infos, strict=True) if "error" in i]
@@ -246,6 +259,201 @@ def group_stats(
 
 
 # --------------------------------------------------------------------------------------
+# Masks (in folders or inside archives)
+# --------------------------------------------------------------------------------------
+
+
+def _mask_values(source: Path | bytes) -> dict[str, Any]:
+    head = source[:16] if isinstance(source, bytes) else source.read_bytes()[:16]
+    with _open_image(source) as img:
+        mode, size = img.mode, img.size
+        arr = np.asarray(img)
+        palette = img.getpalette() is not None if mode == "P" else None
+    if arr.ndim == 3:  # colour mask: count colour tuples
+        flat = arr.reshape(-1, arr.shape[-1])
+        vals, counts = np.unique(flat, axis=0, return_counts=True)
+        keys = [",".join(str(int(c)) for c in v) for v in vals]
+    else:
+        vals, counts = np.unique(arr, return_counts=True)
+        keys = [str(int(v)) for v in vals]
+    return {
+        "format": sniff_format(head),
+        "mode": mode,
+        "size": size,
+        "palette": palette,
+        "values": dict(zip(keys, (int(c) for c in counts), strict=True)),
+    }
+
+
+def _mask_stem(name: str) -> str:
+    return Path(name).stem.removesuffix("_mask")
+
+
+def mask_stats(
+    masks: list[str],
+    images: list[str],
+    *,
+    read_mask: Reader,
+    read_image: Reader | None,
+    sample: int,
+    seed: int,
+) -> dict[str, Any]:
+    """Mask format, mode, distinct values (sampled) and image/mask pairing (all files)."""
+    stems = {_mask_stem(n): n for n in images}
+    mask_stems = {_mask_stem(m) for m in masks}
+    rng = np.random.default_rng(seed)
+    order = sorted(masks)
+    pick = [order[i] for i in sorted(rng.permutation(len(order))[: min(sample, len(order))])]
+    values_pixels: Counter[str] = Counter()
+    values_masks: Counter[str] = Counter()
+    fmts, modes, size_match, all_zero, errors = Counter(), Counter(), Counter(), 0, []
+    for name in pick:
+        try:
+            mv = _mask_values(read_mask(name))
+        except Exception as exc:
+            errors.append(f"{name}: {type(exc).__name__}")
+            continue
+        fmts[mv["format"]] += 1
+        modes[f"{mv['mode']}{'+palette' if mv['palette'] else ''}"] += 1
+        values_pixels.update(mv["values"])
+        values_masks.update(mv["values"].keys())
+        all_zero += set(mv["values"]) <= {"0", "0,0,0"}
+        partner = stems.get(_mask_stem(name))
+        if partner and read_image is not None:
+            try:
+                with _open_image(read_image(partner)) as im:
+                    size_match[str(im.size == mv["size"])] += 1
+            except Exception:
+                size_match["unreadable"] += 1
+    return {
+        "images": len(images),
+        "masks": len(masks),
+        "masks_without_image": len(mask_stems - set(stems)),
+        "images_without_mask": len(set(stems) - mask_stems),
+        "masks_sampled": len(pick),
+        "mask_format_counts": dict(fmts),
+        "mask_mode_counts": dict(modes),
+        "distinct_values": sorted(values_masks, key=lambda k: [int(x) for x in k.split(",")]),
+        "masks_per_value": dict(values_masks),
+        "pixels_per_value": dict(values_pixels),
+        "all_zero_masks": all_zero,
+        "mask_matches_image_size": dict(size_match),
+        "mask_errors": errors[:5],
+    }
+
+
+# --------------------------------------------------------------------------------------
+# Archives on Drive: list members, sample images and masks without extracting
+# --------------------------------------------------------------------------------------
+
+ARCHIVE_DATASETS = ("01_GenImage", "02_DiffSeg30k", "03_SID-Set")  # BR-Gen parts: listed only
+
+
+def _is_mask_dir(member_dir: str) -> bool:
+    return any("mask" in part.lower() for part in member_dir.split("/"))
+
+
+def probe_archives(
+    root: Path, *, sample_headers: int, sample_blockiness: int, sample_masks: int, seed: int
+) -> dict[str, Any]:
+    """List every zip/tar in the training-data folders and sample what is inside.
+
+    Members are grouped by (Drive folder, folder inside the archive) across all archives
+    of that Drive folder, so the tar shards of one dataset form one group per class.
+    """
+    archives, groups, masks = [], [], []
+    readers: dict[Path, ArchiveReader] = {}
+    found: dict[tuple[str, str], list[tuple[Path, str]]] = {}
+    try:
+        for ds in ARCHIVE_DATASETS:
+            for path in sorted((root / ds).rglob("*")) if (root / ds).is_dir() else []:
+                if not (path.is_file() and path.suffix.lower() in (".zip", ".tar")):
+                    continue
+                entry: dict[str, Any] = {
+                    "path": path.relative_to(root).as_posix(),
+                    "bytes": path.stat().st_size,
+                }
+                try:
+                    reader = readers[path] = ArchiveReader(path)
+                    members = reader.members()
+                except Exception as exc:
+                    entry["error"] = f"{type(exc).__name__}: {exc}"
+                    archives.append(entry)
+                    continue
+                per_dir = Counter(str(PurePosixPath(m.name).parent) for m in members)
+                entry.update(
+                    kind=reader.kind,
+                    members=len(members),
+                    uncompressed_bytes=sum(m.size for m in members),
+                    extensions=dict(
+                        Counter(Path(m.name).suffix.lower() or "<none>" for m in members)
+                    ),
+                    per_folder=dict(sorted(per_dir.items())[:200]),
+                    folders=len(per_dir),
+                )
+                archives.append(entry)
+                drive_dir = path.parent.relative_to(root).as_posix()
+                for m in members:
+                    if Path(m.name).suffix.lower() in IMAGE_SUFFIXES:
+                        member_dir = str(PurePosixPath(m.name).parent)
+                        found.setdefault((drive_dir, member_dir), []).append((path, m.name))
+
+        for i, ((drive_dir, member_dir), items) in enumerate(sorted(found.items())):
+            where = {n: p for p, n in items}
+
+            def read(name: str, where: dict[str, Path] = where) -> bytes:
+                return readers[where[name]].read(name)
+
+            names = sorted(where)
+            base = {
+                "dataset": drive_dir.split("/", 1)[0],
+                "drive_dir": drive_dir,
+                "dir": f"{drive_dir}:{member_dir}",
+                "archives": len({p for p, _ in items}),
+            }
+            if _is_mask_dir(member_dir):
+                img_dir = member_dir.replace("masks", "images").replace("mask", "image")
+                partner = found.get((drive_dir, img_dir), [])
+                pwhere = {n: p for p, n in partner}
+
+                def read_img(name: str, pwhere: dict[str, Path] = pwhere) -> bytes:
+                    return readers[pwhere[name]].read(name)
+
+                masks.append(
+                    {
+                        **base,
+                        "image_dir": img_dir,
+                        **mask_stats(
+                            names,
+                            sorted(pwhere),
+                            read_mask=read,
+                            read_image=read_img,
+                            sample=sample_masks,
+                            seed=seed + i,
+                        ),
+                    }
+                )
+            else:
+                groups.append(
+                    {
+                        **base,
+                        **group_stats(
+                            None,
+                            names,
+                            sample_headers=sample_headers,
+                            sample_blockiness=sample_blockiness,
+                            seed=seed + i,
+                            reader=read,
+                        ),
+                    }
+                )
+    finally:
+        for reader in readers.values():
+            reader.close()
+    return {"archives": archives, "groups": groups, "masks": masks}
+
+
+# --------------------------------------------------------------------------------------
 # Dataset-specific probes
 # --------------------------------------------------------------------------------------
 
@@ -265,8 +473,17 @@ def _csv_rows(path: Path) -> list[dict[str, str]] | None:
         return None
 
 
+def _verified(folder: Path) -> dict[str, Any] | None:
+    """The ``_DONE`` record written by ensure_data after verification, else None."""
+    try:
+        done = json.loads((folder / "_DONE").read_text())
+    except (OSError, ValueError):
+        return None
+    return done if isinstance(done, dict) and done.get("verified") is True else None
+
+
 def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, list[str]]) -> dict:
-    """Which subsets and generators are present; image counts per folder."""
+    """Validation folder (generators found), the SD v1.4 subset tars, any legacy SD v1.4 copy."""
     gi = root / "01_GenImage"
     out: dict[str, Any] = {"exists": gi.is_dir(), "subsets": {}}
     if not gi.is_dir():
@@ -294,6 +511,7 @@ def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, 
             "tar": tar.is_file(),
             "tar_bytes": tar.stat().st_size if tar.is_file() else None,
             "done_marker": _read_text(d / "_DONE"),
+            "verified": _verified(d) is not None,
             "images": sum(img_dirs.values()),
             "image_folders": img_dirs,
             "generators_found": sorted(found),
@@ -302,103 +520,54 @@ def probe_genimage(root: Path, records: list[dict[str, Any]], images: dict[str, 
             "images_per_generator": {g: n for g, n in per_gen.items() if n},
             "train_images": sum(n for k, n in img_dirs.items() if "/train" in f"/{k}/"),
         }
+    sub = gi / "SD_v1.4_subset"
+    done = _verified(sub)
+    out["sd14_subset"] = {
+        "folder": sub.is_dir(),
+        "tars": sorted(p.name for p in sub.glob("*.tar")) if sub.is_dir() else [],
+        "manifest": (sub / "manifest.csv").is_file(),
+        "verified": done is not None,
+        "per_label": (done or {}).get("summary", {}).get("per_label"),
+    }
     return out
 
 
-def _mask_values(path: Path) -> dict[str, Any]:
-    head = path.read_bytes()[:16]
-    with Image.open(path) as img:
-        mode, size = img.mode, img.size
-        arr = np.asarray(img)
-        palette = img.getpalette() is not None if mode == "P" else None
-    if arr.ndim == 3:  # colour mask: count colour tuples
-        flat = arr.reshape(-1, arr.shape[-1])
-        vals, counts = np.unique(flat, axis=0, return_counts=True)
-        keys = [",".join(str(int(c)) for c in v) for v in vals]
-    else:
-        vals, counts = np.unique(arr, return_counts=True)
-        keys = [str(int(v)) for v in vals]
-    return {
-        "format": sniff_format(head),
-        "mode": mode,
-        "size": size,
-        "palette": palette,
-        "values": dict(zip(keys, (int(c) for c in counts), strict=True)),
-    }
-
-
 def probe_diffseg(root: Path, *, sample_masks: int, seed: int) -> dict[str, Any]:
-    """Per split: images, masks, manifest rows, mask format and distinct mask values."""
+    """The published zips (preferred) and any folders left by the retired downloader."""
     ds = root / "02_DiffSeg30k"
-    out: dict[str, Any] = {"exists": ds.is_dir(), "splits": {}}
+    out: dict[str, Any] = {"exists": ds.is_dir(), "zips": {}, "legacy_folders": {}}
     if not ds.is_dir():
         return out
-    rng = np.random.default_rng(seed)
-    splits = sorted(
-        {p.parent.name for p in ds.glob("*/images")}
-        | {p.parent.name for p in ds.glob("*/masks")}
-        | {p.name[: -len("_manifest.csv")] for p in ds.glob("*_manifest.csv")}
-    )
-    for split in splits:
-        img_dir, mask_dir = ds / split / "images", ds / split / "masks"
+    for z in sorted(ds.glob("*.zip")):
+        stamp = _read_text(ds / f"{z.name}.verified.json", limit=10_000)
+        out["zips"][z.name] = {"bytes": z.stat().st_size, "checksum_verified": stamp is not None}
+    out["verified"] = _verified(ds) is not None
+    for split_dir in sorted(p for p in ds.iterdir() if p.is_dir()):
+        img_dir, mask_dir = split_dir / "images", split_dir / "masks"
         imgs = sorted(p.name for p in img_dir.iterdir()) if img_dir.is_dir() else []
-        masks = sorted(p.name for p in mask_dir.iterdir()) if mask_dir.is_dir() else []
-        rows = _csv_rows(ds / f"{split}_manifest.csv")
-        info: dict[str, Any] = {
-            "images": len(imgs),
-            "masks": len(masks),
-            "manifest_rows": None if rows is None else len(rows),
-        }
-        stems = {Path(n).stem: n for n in imgs}
-        unpaired = [m for m in masks if Path(m).stem.removesuffix("_mask") not in stems]
-        info["masks_without_image"] = len(unpaired)
-        info["images_without_mask"] = len(
-            set(stems) - {Path(m).stem.removesuffix("_mask") for m in masks}
+        msks = sorted(p.name for p in mask_dir.iterdir()) if mask_dir.is_dir() else []
+        rows = _csv_rows(ds / f"{split_dir.name}_manifest.csv")
+        info = mask_stats(
+            msks,
+            imgs,
+            read_mask=lambda n, d=mask_dir: d / n,
+            read_image=lambda n, d=img_dir: d / n,
+            sample=sample_masks,
+            seed=seed,
         )
-        pick = sorted(rng.permutation(len(masks))[: min(sample_masks, len(masks))])
-        values_pixels: Counter[str] = Counter()
-        values_masks: Counter[str] = Counter()
-        fmts, modes, size_match, all_zero, errors = Counter(), Counter(), Counter(), 0, []
-        for i in pick:
-            name = masks[i]
-            try:
-                mv = _mask_values(mask_dir / name)
-            except Exception as exc:
-                errors.append(f"{name}: {type(exc).__name__}")
-                continue
-            fmts[mv["format"]] += 1
-            modes[f"{mv['mode']}{'+palette' if mv['palette'] else ''}"] += 1
-            values_pixels.update(mv["values"])
-            values_masks.update(mv["values"].keys())
-            all_zero += set(mv["values"]) <= {"0", "0,0,0"}
-            stem = Path(name).stem.removesuffix("_mask")
-            if stem in stems:
-                try:
-                    with Image.open(img_dir / stems[stem]) as im:
-                        size_match[str(im.size == mv["size"])] += 1
-                except Exception:
-                    size_match["unreadable"] += 1
-        info.update(
-            masks_sampled=len(pick),
-            mask_format_counts=dict(fmts),
-            mask_mode_counts=dict(modes),
-            distinct_values=sorted(values_masks, key=lambda k: [int(x) for x in k.split(",")]),
-            masks_per_value=dict(values_masks),
-            pixels_per_value=dict(values_pixels),
-            all_zero_masks=all_zero,
-            mask_matches_image_size=dict(size_match),
-            mask_errors=errors[:5],
-        )
-        out["splits"][split] = info
+        info["manifest_rows"] = None if rows is None else len(rows)
+        out["legacy_folders"][split_dir.name] = info
     return out
 
 
 def probe_sidset(root: Path, images: dict[str, list[str]]) -> dict[str, Any]:
-    """Per split and label: folder image/mask counts, manifest counts, against the caps."""
+    """Per split and label: counts from the manifest (tar layout) or the legacy folders."""
     sd = root / "03_SID-Set"
     out: dict[str, Any] = {"exists": sd.is_dir(), "splits": {}}
     if not sd.is_dir():
         return out
+    out["verified"] = _verified(sd) is not None
+    out["tars"] = len(list(sd.glob("*.tar")))
     for split, cap in SID_CAPS.items():
         rows = _csv_rows(sd / f"{split}_manifest.csv")
         by_label = Counter(r.get("label") for r in rows) if rows else Counter()
@@ -407,8 +576,8 @@ def probe_sidset(root: Path, images: dict[str, list[str]]) -> dict[str, Any]:
         for lab, name in SID_LABELS.items():
             folders[name] = {
                 "label": lab,
-                "images": len(images.get(f"03_SID-Set/{split}/{name}/images", [])),
-                "masks": len(images.get(f"03_SID-Set/{split}/{name}/masks", [])),
+                "legacy_images": len(images.get(f"03_SID-Set/{split}/{name}/images", [])),
+                "legacy_masks": len(images.get(f"03_SID-Set/{split}/{name}/masks", [])),
                 "manifest_rows": by_label.get(str(lab), 0),
                 "manifest_rows_with_mask": masks_by_label.get(str(lab), 0),
                 "cap": cap,
@@ -445,6 +614,7 @@ def probe_chameleon(root: Path) -> dict[str, Any]:
             }
             out["zip"] = {
                 "path": z.relative_to(root).as_posix(),
+                "bytes": z.stat().st_size,
                 "images": len(names),
                 "per_class": counts,
             }
@@ -478,7 +648,12 @@ def probe_brgen(root: Path) -> dict[str, Any]:
 
 
 def assess_medium(probe: dict[str, Any]) -> list[dict[str, Any]]:
-    """One row per expected item of the medium profile: present, partial or missing."""
+    """One row per expected item of the medium profile.
+
+    Status: ``present`` (complete; for downloads also verified by ensure_data),
+    ``partial``, ``missing``, ``archive`` (BR-Gen split zip, test only) or
+    ``not verified`` (files there, but ensure_data has not verified them yet).
+    """
     rows: list[dict[str, Any]] = []
 
     def add(item: str, status: str, expected: str, present: str) -> None:
@@ -492,85 +667,108 @@ def assess_medium(probe: dict[str, Any]) -> list[dict[str, Any]]:
         n = len(val["generators_found"])
         add(
             "GenImage Validation",
-            # the downloader writes _DONE only after a subset has been copied completely
+            # the old downloader wrote _DONE only after a subset had been copied completely
             "present" if n == 8 and val["done_marker"] else "partial",
             "8 generators, _DONE marker",
             f"{n} found ({', '.join(val['generators_found'])}); missing: "
             f"{', '.join(val['generators_missing']) or 'none'}; {val['images']} images; "
-            f"_DONE marker {'present' if val['done_marker'] else 'absent'}"
+            f"_DONE marker {'present' if val['done_marker'] else 'absent'}; "
+            f"verified by ensure_data: {'yes' if val['verified'] else 'no'}"
             + (
                 f"; folders without images: {', '.join(val['generators_without_images'])}"
                 if val["generators_without_images"]
                 else ""
             ),
         )
-    sd = gi.get("subsets", {}).get("SD_v1.4", {})
-    if not sd or not (sd.get("folder") or sd.get("tar")):
-        add("GenImage SD v1.4 (train)", "missing", "train set, real + generated", "nothing")
-    elif sd.get("tar"):
-        add("GenImage SD v1.4 (train)", "archive", "train set", f"{sd['tar_bytes']} bytes tar")
+    sub = gi.get("sd14_subset", {})
+    legacy = gi.get("subsets", {}).get("SD_v1.4", {})
+    legacy_note = (
+        f"; legacy SD_v1.4 folder: {legacy.get('images', 0)} images" if legacy.get("folder") else ""
+    )
+    if sub.get("verified"):
+        add(
+            "GenImage SD v1.4 subset",
+            "present",
+            "40,000 real + 40,000 generated (seed 42)",
+            f"{len(sub['tars'])} tar files, per label {sub['per_label']}{legacy_note}",
+        )
+    elif sub.get("tars"):
+        add(
+            "GenImage SD v1.4 subset",
+            "partial",
+            "40,000 real + 40,000 generated (seed 42)",
+            f"{len(sub['tars'])} tar files, not verified yet{legacy_note}",
+        )
     else:
         add(
-            "GenImage SD v1.4 (train)",
-            "present" if sd["train_images"] and sd["done_marker"] else "partial",
-            "train set, real + generated, _DONE marker",
-            f"{sd['train_images']} train images, {sd['images']} images in total; "
-            f"_DONE marker {'present' if sd['done_marker'] else 'absent'}",
+            "GenImage SD v1.4 subset",
+            "missing",
+            "40,000 real + 40,000 generated (seed 42)",
+            f"no subset{legacy_note}",
         )
 
     dfs = probe["diffseg30k"]
     info = (probe.get("hf_cards", {}).get(HF_REPOS["diffseg30k"]) or {}).get("split_sizes") or {}
-    if not dfs.get("exists"):
-        add("DiffSeg30k", "missing", "about 30k images + masks (official 8:2 split)", "no folder")
-    elif not dfs["splits"]:
-        add("DiffSeg30k", "missing", "about 30k images + masks", "folder without splits")
-    local_splits = dfs.get("splits", {}) if dfs.get("exists") else {}
-    for split in sorted(set(local_splits) | set(info)):  # card splits missing on Drive too
-        exp = info.get(split)
-        s = local_splits.get(split)
-        if s is None:
-            add(f"DiffSeg30k {split}", "missing", f"{exp} pairs (dataset card)", "no folder")
-            continue
-        unpaired = s["masks_without_image"] + s["images_without_mask"]
-        complete = (
-            s["images"] > 0
-            and s["images"] == s["masks"]
-            and unpaired == 0
-            and (exp is None or s["images"] >= exp)
+    zips = dfs.get("zips", {})
+    expected = {"train.zip", "validation.zip"} | {f"{s}.zip" for s in info}
+    for name in sorted(expected):
+        z = zips.get(name)
+        split = name.removesuffix(".zip")
+        groups = [
+            m
+            for m in probe.get("archives", {}).get("masks", [])
+            if m["drive_dir"] == "02_DiffSeg30k"
+            and m["archives"] >= 1
+            and m["dir"].split(":", 1)[1].split("/", 1)[0] == split
+        ]
+        unpaired = sum(m["masks_without_image"] + m["images_without_mask"] for m in groups)
+        exp = f"{name} as published" + (
+            f" ({info[split]} examples on the card)" if split in info else ""
         )
-        status = "present" if complete else ("missing" if s["images"] == 0 else "partial")
-        add(
-            f"DiffSeg30k {split}",
-            status,
-            f"{exp} pairs (dataset card)" if exp else "all pairs of the split",
-            f"{s['images']} images, {s['masks']} masks, {unpaired} unpaired, "
-            f"manifest rows {s['manifest_rows']}",
-        )
+        if z is None:
+            add(f"DiffSeg30k {name}", "missing", exp, "no file")
+        elif not z["checksum_verified"]:
+            add(f"DiffSeg30k {name}", "not verified", exp, f"{z['bytes']} bytes")
+        else:
+            add(
+                f"DiffSeg30k {name}",
+                "present" if unpaired == 0 else "partial",
+                exp,
+                f"{z['bytes']} bytes, checksum verified, {unpaired} unpaired image/mask names",
+            )
 
     sid = probe["sidset"]
     if not sid.get("exists"):
         add("SID-Set", "missing", "10k/label train, 2k/label validation", "no folder")
     for split, s in sid.get("splits", {}).items():
         for name, lab in s["labels"].items():
-            ok = lab["images"] >= lab["cap"] and (name != "tampered" or lab["masks"] >= lab["cap"])
-            status = "present" if ok else ("missing" if lab["images"] == 0 else "partial")
+            n, cap = lab["manifest_rows"], lab["cap"]
+            mask_ok = name != "tampered" or lab["manifest_rows_with_mask"] >= cap
+            if sid.get("verified") and n >= cap and mask_ok:
+                status = "present"
+            elif n == 0:
+                status = "missing"
+            else:
+                status = "partial" if sid.get("verified") else "not verified"
             add(
                 f"SID-Set {split}/{name}",
                 status,
-                f"{lab['cap']} images" + (" + masks" if name == "tampered" else ""),
-                f"{lab['images']} images, {lab['masks']} masks",
+                f"{cap} images" + (" + masks" if name == "tampered" else ""),
+                f"{n} in manifest, {lab['manifest_rows_with_mask']} with mask; legacy loose "
+                f"files: {lab['legacy_images']} images, {lab['legacy_masks']} masks",
             )
 
     br = probe["brgen"]
     if not br.get("exists"):
-        add("BR-Gen", "missing", "HF snapshot", "no folder")
+        add("BR-Gen", "missing", "test only, handled before P3 (not CP1)", "no folder")
     else:
         status = "present" if br["images"] else ("archive" if br["archives"] else "missing")
         add(
             "BR-Gen",
             status,
-            "images + masks (test only)",
-            f"{br['images']} images; {len(br['archives'])} archive files",
+            "test only, handled before P3 (not CP1)",
+            f"{br['images']} images; {len(br['archives'])} archive files, "
+            f"{sum(a['bytes'] for a in br['archives']) / 1e9:.1f} GB",
         )
 
     ch = probe["chameleon"]
@@ -749,6 +947,16 @@ def run_probe(
         ("sidset", lambda: probe_sidset(root, images)),
         ("chameleon", lambda: probe_chameleon(root)),
         ("brgen", lambda: probe_brgen(root)),
+        (
+            "archives",
+            lambda: probe_archives(
+                root,
+                sample_headers=sample_headers,
+                sample_blockiness=sample_blockiness,
+                sample_masks=sample_masks,
+                seed=seed,
+            ),
+        ),
     ):
         try:
             report[key] = fn()
@@ -777,8 +985,8 @@ def format_summary(report: dict[str, Any]) -> str:
     lines.append("medium profile:")
     for row in report.get("medium_profile", []):
         lines.append(f"  [{row['status']:>8}] {row['item']}: {row['present']}")
-    lines.append("image folders (sampled): format / JPEG quality / blockiness median")
-    for g in report.get("groups", []):
+    lines.append("image groups (sampled): format / JPEG quality / blockiness median")
+    for g in report.get("groups", []) + report.get("archives", {}).get("groups", []):
         q = g["jpeg_quality_hist"]
         top_q = max(q, key=q.get) if q else "-"
         b = g["blockiness"]["median"] if g["blockiness"] else float("nan")
@@ -786,10 +994,17 @@ def format_summary(report: dict[str, Any]) -> str:
             f"  {g['dir']:<60} n={g['n_images']:>7} {g['format_counts']} "
             f"q_mode={top_q} block={b:.3f}"
         )
-    for split, s in report.get("diffseg30k", {}).get("splits", {}).items():
+    for a in report.get("archives", {}).get("archives", []):
         lines.append(
-            f"DiffSeg30k {split}: mask values {s.get('distinct_values')} "
-            f"formats {s.get('mask_format_counts')} modes {s.get('mask_mode_counts')}"
+            f"archive {a['path']}: {a.get('members', a.get('error'))} members, "
+            f"{a.get('folders')} folders, {a['bytes'] / 1e9:.2f} GB"
+        )
+    for m in report.get("archives", {}).get("masks", []):
+        lines.append(
+            f"masks {m['dir']}: {m['masks']} masks / {m['images']} images, values "
+            f"{m['distinct_values']}, formats {m['mask_format_counts']}, "
+            f"modes {m['mask_mode_counts']}, unpaired "
+            f"{m['masks_without_image'] + m['images_without_mask']}"
         )
     if report.get("errors"):
         lines.append(f"errors: {report['errors']}")

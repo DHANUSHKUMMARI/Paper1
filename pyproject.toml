@@ -13,6 +13,8 @@ dependencies = [
     "pillow>=10.0",
     "pyyaml>=6.0",
     "omegaconf>=2.3",
+    "pyarrow>=14",          # SID-Set parquet shards (data layer)
+    "huggingface_hub>=0.24", # DiffSeg30k / SID-Set downloads (Colab only; imported lazily)
 ]
 
 [project.optional-dependencies]

@@ -84,8 +84,13 @@ def make_synthetic_dataset(
         Image.fromarray(mask).save(root / mask_rel)
         Image.fromarray(base).save(root / base_rel)
         records.append(
-            {"path": rel, "label": 2, "mask": mask_rel, "base": base_rel,
-             "source": "synthetic/edited"}  # fmt: skip
+            {
+                "path": rel,
+                "label": 2,
+                "mask": mask_rel,
+                "base": base_rel,
+                "source": "synthetic/edited",
+            }  # fmt: skip
         )
 
     with open(root / "manifest.csv", "w", newline="") as handle:
@@ -116,13 +121,16 @@ def make_fake_drive(datasets_root: Path | str, per_folder: int = 4, seed: int = 
     - 01_GenImage/Validation/<generator>/val/{ai: PNG 320x320, nature: JPEG q96 4:2:0,
       one of them 200 px on its short side}; ``_DONE`` holds the Kaggle slug, as the
       downloader writes it. No SD_v1.4.
-    - 02_DiffSeg30k/<split>/{images,masks} with the downloader's names, ``<split>_manifest.csv``;
-      mask values per split from ``FAKE_MASK_VALUES``, plus one all-zero (unedited) mask.
+    - 02_DiffSeg30k/{train,validation}.zip with <split>/{images,masks}/ inside (mask values
+      per split from ``FAKE_MASK_VALUES``, one all-zero mask), plus the empty folders and
+      header-only manifests the retired downloader left.
     - 03_SID-Set/<split>/<label>/images (+ masks for tampered) and manifests.
     - 04_BR-Gen: two archive parts. 05_Chameleon/test/{0_real,1_fake} and Chameleon.zip.
     - 06_MMTD-Set: one JSON file.
     """
     import zipfile
+
+    from eviground.data.fake_sources import make_diffseg_zip
 
     root = Path(datasets_root)
     rng = np.random.default_rng(seed)
@@ -138,22 +146,12 @@ def make_fake_drive(datasets_root: Path | str, per_folder: int = 4, seed: int = 
     (gi / "_DONE").write_text("vtphatt2/GenImage-Validation")
 
     ds = root / "02_DiffSeg30k"
-    for split, values in FAKE_MASK_VALUES.items():
-        rows = []
-        for i in range(per_folder):
-            stem = f"{split}_{i:06d}"
-            img = _real(rng, 256)
-            mask = np.zeros((256, 256), dtype=np.uint8)
-            if i > 0:  # image 0 stays unedited (all-zero mask)
-                for k, v in enumerate(values):
-                    mask[20 + 60 * k : 70 + 60 * k, 30:120] = v
-            _save(img, ds / split / "images" / f"{stem}.png", "PNG")
-            _save(mask, ds / split / "masks" / f"{stem}_mask.png", "PNG")
-            rows.append([f"{split}/images/{stem}.png", f"{split}/masks/{stem}_mask.png"])
-        with open(ds / f"{split}_manifest.csv", "w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(["image", "mask"])
-            writer.writerows(rows)
+    for split in FAKE_MASK_VALUES:  # the published zips, as ensure_data stores them
+        make_diffseg_zip(ds / f"{split}.zip", split, per_folder, seed=seed)
+        # what the retired downloader left: empty split folders and header-only manifests
+        (ds / split / "images").mkdir(parents=True, exist_ok=True)
+        (ds / split / "masks").mkdir(parents=True, exist_ok=True)
+        (ds / f"{split}_manifest.csv").write_text("image,mask\n")
 
     sid = root / "03_SID-Set"
     labels = {0: "real", 1: "full_synthetic", 2: "tampered"}

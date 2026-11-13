@@ -13,6 +13,8 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-12 | Download 2 (`00c`, commit `ad3b07d`, reused runtime) | none (CPU runtime) | 0.023 | not recorded | not recorded | Both failed: old code still in memory; Kaggle secret not visible |
 | 2026-11-12 | Download 3 (`00c`, commit `ad3b07d`): genimage_val, genimage_sd14 | none (CPU runtime) | 0.534 | not recorded | not recorded | Validation fill wrote 3 tar files (36,000 images), count 96,411 vs 100,000 expected; SD v1.4 archive downloaded (96.5 GB) but subset stopped by the wrong "Drive free" figure (machine disk) |
 | 2026-11-13 | Download 4 (`00c`, commit `74e08af`): genimage_sd14 | none (CPU runtime) | 0.186 (since the last run of Cell 2) | not recorded | not recorded | SD v1.4 subset verified: 80,000 images (40,000 + 40,000), 8 tar files, 22.9 GB; local archive deleted |
+| 2026-11-13 | Download 5 (`00c`, commit `dc87494`): genimage_val | none (CPU runtime) | 0.385 | not recorded | not recorded | SD v1.4 fill tar found unreadable, 12,000 images refilled from the archive (25.4 GB download, local only); count 96,411: Midjourney 6,000 real / 2,411 generated |
+| 2026-11-13 | Download 6 (`00c`, after PR #7): genimage_val | none (CPU runtime) | 0.653 (39.2 min) | not recorded | not recorded | 3,589 missing Midjourney images added; Drive equals the archive counts; **verified: 100,000 images, 8 generators** |
 
 ## Runs
 
@@ -26,5 +28,9 @@ runtimes and `CU_PER_HOUR` was left empty; read the balance in Colab to fill thi
 
 - The run records' "Drive free" figures before 13 Nov are the Colab machine's disk, not the Drive
   quota (see `docs/TESTING.md`, 12 Nov). Drive usage on 12 Nov: 134.28 GB of 5 TB (read by Dhanush).
-- State after download 4: DiffSeg30k, SID-Set and the SD v1.4 subset verified (`_DONE`); GenImage
-  Validation pending (tar-to-loose conversion of the three filled generators and the count check).
+- State after download 6 (13 Nov 2026): all four CP1 datasets verified (`_DONE`): GenImage
+  Validation (100,000 images; per generator 6,000 real + 6,000 generated, SD v1.5 8,000 + 8,000, as in
+  the Kaggle archive), GenImage SD v1.4 subset (40,000 + 40,000), DiffSeg30k (both zips, SHA-256),
+  SID-Set (10,000 / 2,000 per class). Drive quota after the run: 244.0 GB used of about 5.5 TB.
+- Leftover: `01_GenImage/Validation/genimage_val_sd14.tar` (3.2 GB, unreadable) and its `.json`; SD v1.4
+  was refilled as loose files, so both can be deleted.

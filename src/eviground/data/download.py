@@ -23,6 +23,9 @@ Per dataset (see :mod:`eviground.data.registry`):
   from validation, written by the retired downloader); verified in place and copied to the
   local disk by :func:`stage`. The parquet download into tar files
   (``hf_parquet_subset``) is kept as a tested fallback.
+- ``coco_val2017``: ``val2017.zip`` and ``annotations_trainval2017.zip`` downloaded to Drive
+  as published (resumable), CRC-tested, members counted, SHA-256 recorded. Only the images are
+  unpacked by :func:`stage`.
 - ``brgen``, ``chameleon``: not downloaded (out of CP1).
 """
 
@@ -717,6 +720,76 @@ def step_hf_files(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, An
 
 
 # --------------------------------------------------------------------------------------
+# COCO val2017: public zips by URL
+# --------------------------------------------------------------------------------------
+
+
+def _check_zip(path: Path, rule: dict[str, Any]) -> dict[str, Any]:
+    """CRC-test every member and check the expected members; raises VerificationError."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            bad = zf.testzip()
+            names = zf.namelist()
+    except zipfile.BadZipFile as exc:
+        raise VerificationError(f"{path.name}: not a readable zip ({exc})") from None
+    if bad is not None:
+        raise VerificationError(f"{path.name}: CRC error in member {bad}")
+    out: dict[str, Any] = {"members": len(names)}
+    want = rule.get("members")
+    if want:
+        hits = [
+            n for n in names if n.startswith(want["prefix"]) and n.lower().endswith(want["suffix"])
+        ]
+        out["matching_members"] = len(hits)
+        if len(hits) != want["count"]:
+            raise VerificationError(
+                f"{path.name}: {len(hits)} members {want['prefix']}*{want['suffix']}, "
+                f"expected {want['count']}"
+            )
+    missing = [n for n in rule.get("required", []) if n not in names]
+    if missing:
+        raise VerificationError(f"{path.name}: missing {missing}")
+    return out
+
+
+def step_url_files(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[str, Any]:
+    """Download each file to Drive (resumable), CRC-test it, check its members, record SHA-256."""
+    summary: dict[str, Any] = {}
+    for name, rule in spec.params["files"].items():
+        target, stamp = folder / name, folder / f"{name}.verified.json"
+        known = read_json(stamp)
+        if not (
+            target.is_file()
+            and isinstance(known, dict)
+            and known.get("bytes") == target.stat().st_size
+        ):
+            if not target.is_file():
+                ctx.drive_space(rule.get("gb_estimate", 1.0) * GB, name)
+                ctx.wait_for_cache(rule.get("gb_estimate", 1.0) * GB, name)
+
+                def before_write(need: int, total: int, _name: str = name) -> None:
+                    ctx.drive_space(need, _name)
+
+                ctx.sources.url_download(rule["url"], target, before_write)
+            try:
+                checked = _check_zip(target, rule)
+            except VerificationError:
+                target.unlink(missing_ok=True)
+                raise
+            known = {
+                "bytes": target.stat().st_size,
+                "sha256": sha256_file(target),
+                "url": rule["url"],
+                **checked,
+            }
+            write_json_atomic(stamp, known)
+        summary[name] = known
+    return summary
+
+
+# --------------------------------------------------------------------------------------
 # SID-Set: per-class caps from whole parquet shards, stored as tar files
 # --------------------------------------------------------------------------------------
 
@@ -1005,6 +1078,7 @@ STEPS: dict[str, Callable[[Context, DatasetSpec, Path], dict[str, Any]]] = {
     "kaggle_subset": step_kaggle_subset,
     "hf_files": step_hf_files,
     "hf_parquet_subset": step_hf_parquet_subset,
+    "url_files": step_url_files,
 }
 
 
@@ -1109,7 +1183,12 @@ def stage(
         res = copy_files(folder, files, dest, reserve_gb=reserve_gb)
         write_json_atomic(dest / "_STAGED.json", {**res, "dest": str(dest)})
         return {"staged": True, "skipped": res["copied"] == 0, **res, "dest": str(dest)}
-    archives = sorted(folder.glob("*.zip") if method == "hf_files" else folder.glob("*.tar"))
+    if method in ("hf_files", "url_files"):
+        archives = sorted(folder.glob("*.zip"))
+        if "stage" in spec.params:  # e.g. COCO: the annotations are read from their zip
+            archives = [a for a in archives if a.name in spec.params["stage"]]
+    else:
+        archives = sorted(folder.glob("*.tar"))
     dest = paths.local_data / key
     marker = read_json(dest / "_STAGED.json")
     names = [a.name for a in archives]

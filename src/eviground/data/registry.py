@@ -19,7 +19,7 @@ class DatasetSpec:
 
     key: str
     folder: str
-    method: str  # verify_folder | verify_sid_folder | kaggle_subset | hf_files |
+    method: str  # verify_folder | verify_sid_folder | kaggle_subset | hf_files | url_files |
     #              hf_parquet_subset | deferred
     source: str
     role: str
@@ -99,6 +99,40 @@ REGISTRY: dict[str, DatasetSpec] = {
             "id_column": "img_id",
         },
     ),
+    "coco_val2017": DatasetSpec(
+        key="coco_val2017",
+        folder="06_COCO",
+        method="url_files",
+        source="https://cocodataset.org (images.cocodataset.org)",
+        role="Real negatives for DiffSeg30k (about 4,850, prepared like its base images) and the "
+        "150 real photos reserved for the Claims-Edit case study (decision of 13 Nov 2026)",
+        licence="COCO images: Flickr terms of use; annotations CC-BY-4.0",
+        citation="Lin et al., Microsoft COCO, ECCV 2014",
+        params={
+            # COCO publishes no checksums: each zip is CRC-tested, its members counted and its
+            # SHA-256 recorded on the first verification.
+            "files": {
+                "val2017.zip": {
+                    "url": "http://images.cocodataset.org/zips/val2017.zip",
+                    "members": {"prefix": "val2017/", "suffix": ".jpg", "count": 5000},
+                    "gb_estimate": 0.82,
+                },
+                "annotations_trainval2017.zip": {
+                    "url": "http://images.cocodataset.org/annotations/annotations_trainval2017.zip",
+                    "required": ["annotations/instances_val2017.json"],
+                    "gb_estimate": 0.26,
+                },
+            },
+            "stage": ["val2017.zip"],  # the annotations are read from the zip, not unpacked
+            "claims_edit": {
+                "n": 150,
+                "categories": ["car", "couch", "chair", "dining table", "laptop"],
+                "min_area_share": 0.05,
+                "seed": 42,
+            },
+            "negatives_size": 1024,
+        },
+    ),
     "brgen": DatasetSpec(
         key="brgen",
         folder="04_BR-Gen",
@@ -122,4 +156,6 @@ REGISTRY: dict[str, DatasetSpec] = {
 # What ensure_data() fetches or verifies per profile (CP1 needs these four).
 PROFILES: dict[str, list[str]] = {
     "medium": ["genimage_val", "genimage_sd14", "diffseg30k", "sidset"],
+    # CP1 adds the COCO real negatives (decision of 13 Nov 2026)
+    "cp1": ["genimage_val", "genimage_sd14", "diffseg30k", "sidset", "coco_val2017"],
 }

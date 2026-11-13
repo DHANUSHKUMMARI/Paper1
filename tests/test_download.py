@@ -617,3 +617,49 @@ def test_fill_tar_with_wrong_content_is_not_trusted(tmp_path: Path) -> None:
                          overrides=FILL_OV, raise_errors=False)  # fmt: skip
     assert "does not match its SHA-256" in report["genimage_val"]["error"]
     assert (folder / "genimage_val_glide.tar").is_file()  # kept: nothing removed on failure
+
+
+# A generator copied only partly (Drive, 13 Nov 2026: Midjourney 6,000 real / 2,411 generated)
+
+
+def _all_but_partial_midjourney(tmp: Path) -> tuple[Paths, FakeSources, Path]:
+    paths = _paths(tmp)
+    folder = paths.datasets / REGISTRY["genimage_val"].folder
+    make_genimage_validation(folder, per_class=2, generator_dirs=GENIMAGE_MIRROR_DIRS,
+                             prefix="GenImage")  # fmt: skip
+    (folder / "GenImage/Midjourney/val/ai/001_Midjourney.PNG").unlink()  # interrupted copy
+    return paths, make_fake_world(tmp / "remote"), folder
+
+
+def test_validation_completes_a_partial_generator_only(tmp_path: Path) -> None:
+    paths, sources, folder = _all_but_partial_midjourney(tmp_path)
+    before = {p: p.stat().st_mtime_ns for p in folder.rglob("*")
+              if p.is_file() and p.name != "_DONE"}  # fmt: skip
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                         overrides=FILL_OV)  # fmt: skip
+    summary = report["genimage_val"]["summary"]
+    assert report["genimage_val"]["status"] == "verified"
+    assert summary["filled"]["files_per_generator"] == {"midjourney": 1}  # only what was missing
+    assert summary["per_generator"]["midjourney"] == {"nature": 2, "ai": 2}
+    assert (folder / "GenImage/Midjourney/val/ai/001_Midjourney.PNG").is_file()
+    assert {p: p.stat().st_mtime_ns for p in before} == before  # nothing else rewritten
+    counts = json.loads((folder / "archive_counts.json").read_text())
+    assert counts["midjourney"] == {"nature": 2, "ai": 2} and len(counts) == 8
+    assert not list((paths.local_data / "downloads").glob("genimage_val_fill*"))
+
+
+def test_validation_checks_against_the_archive_counts(tmp_path: Path) -> None:
+    paths, sources, folder = _all_but_partial_midjourney(tmp_path)
+    ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=FILL_OV)
+    (folder / "_DONE").unlink()
+    (folder / "GenImage/BigGAN/val/ai/000_BigGAN.PNG").unlink()  # lost later on Drive
+    calls = len(sources.calls)
+    report = ensure_data(datasets=["genimage_val"], paths=paths, sources=sources,
+                         overrides=FILL_OV)  # fmt: skip
+    assert report["genimage_val"]["status"] == "verified"  # refilled from the archive
+    assert sources.calls[calls:] == ["kaggle_download vtphatt2/GenImage-Validation"]
+    # complete against the recorded archive counts: no download at all
+    (folder / "_DONE").unlink()
+    calls = len(sources.calls)
+    ensure_data(datasets=["genimage_val"], paths=paths, sources=sources, overrides=FILL_OV)
+    assert sources.calls[calls:] == []

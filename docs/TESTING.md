@@ -3,6 +3,28 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — complete a partially copied generator (Midjourney) — 2026-11-13
+
+Colab run of 13 Nov (`00c`, `['genimage_val']`): the SD v1.4 fill tar had been left unreadable on
+Drive and was refilled from the archive; the count then stopped at 96,411 of 100,000 with
+`adm 6000/6000, biggan 6000/6000, glide 6000/6000, midjourney 6000/2411, sd14 6000/6000,
+sd15 8000/8000, vqdm 6000/6000, wukong 6000/6000` (real/generated). Midjourney's generated images
+were only partly copied by the retired downloader (2,411 of 6,000); with SD v1.5 at 8,000 + 8,000 the
+total is 100,000.
+
+Change: whenever the Kaggle Validation archive is listed, its images per generator and class are
+saved to `archive_counts.json`; the fill plans only images that are absent from Drive in generators
+holding fewer images than the archive (existing files are never overwritten; a different size is
+only counted and reported); verification requires Drive to equal the archive counts. Once the counts
+are recorded, a complete folder is verified without any download.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` | 149 passed, 0 failed, 0 skipped (2 new; both fail on the previous code) |
+| Space-related tests with 8.1 GB free (CI runner) | 17 passed |
+| Notebook dry runs (`00`, `00c`, then `00b`) | 3 passed |
+
 ## Milestone 2, fix — real Drive quota, Drive upload cache, tar-to-loose conversion — 2026-11-12
 
 Third Colab download run (15:4x UTC, commit `ad3b07d`, before PR #5): the Validation fill worked

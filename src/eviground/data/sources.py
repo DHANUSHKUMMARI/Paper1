@@ -41,6 +41,8 @@ class Sources(Protocol):
 
     def hf_parquet_column(self, repo: str, filename: str, column: str) -> list[Any]: ...
 
+    def url_download(self, url: str, dest: Path, before_write: SpaceCheck) -> int: ...
+
 
 def kaggle_auth_header() -> str:
     """Authorization header value from KAGGLE_API_TOKEN, or KAGGLE_USERNAME + KAGGLE_KEY."""
@@ -107,11 +109,24 @@ class NetworkSources:
             raise
 
     def kaggle_download(self, slug: str, dest: Path, before_write: SpaceCheck) -> int:
-        """Download the dataset archive to ``dest`` without extracting it; resumable.
+        """Download the dataset archive to ``dest`` without extracting it; resumable."""
+        return self._resumable(
+            lambda have: self._kaggle_response(slug, have), dest, before_write, f"kaggle {slug}"
+        )
 
-        Bytes go to ``dest.part``; an interrupted download continues from its size with an
-        HTTP Range request. ``dest`` appears only when the byte count equals the total.
-        """
+    def url_download(self, url: str, dest: Path, before_write: SpaceCheck) -> int:
+        """Download a public file (no credentials) to ``dest``; resumable."""
+
+        def open_at(have: int) -> Any:
+            return _open(url, {"Range": f"bytes={have}-"} if have else {}, follow=True)
+
+        return self._resumable(open_at, dest, before_write, url)
+
+    def _resumable(
+        self, open_at: Callable[[int], Any], dest: Path, before_write: SpaceCheck, label: str
+    ) -> int:
+        """Bytes go to ``dest.part``; an interrupted download continues from its size with an
+        HTTP Range request. ``dest`` appears only when the byte count equals the total."""
         dest = Path(dest)
         part = dest.with_name(dest.name + ".part")
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -119,7 +134,7 @@ class NetworkSources:
         for attempt in range(self.retries + 1):
             have = part.stat().st_size if part.exists() else 0
             try:
-                resp = self._kaggle_response(slug, have)
+                resp = open_at(have)
                 with resp:
                     if resp.status == 206:
                         total = int(resp.headers["Content-Range"].rsplit("/", 1)[1])
@@ -129,9 +144,7 @@ class NetworkSources:
                     if not checked:
                         before_write(total - have, total)
                         checked = True
-                    log.info(
-                        "kaggle %s: %.1f of %.1f GB already here", slug, have / 1e9, total / 1e9
-                    )
+                    log.info("%s: %.2f of %.2f GB already here", label, have / 1e9, total / 1e9)
                     with open(part, mode) as out:
                         while block := resp.read(CHUNK):
                             out.write(block)
@@ -142,15 +155,15 @@ class NetworkSources:
                 if isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500:
                     raise  # not found / bad request: retrying will not help
                 log.warning(
-                    "kaggle download interrupted (%s); retry %d of %d",
+                    "download interrupted (%s); retry %d of %d",
                     type(exc).__name__,
                     attempt + 1,
                     self.retries,
                 )
                 time.sleep(min(60, 2**attempt))
         raise RuntimeError(
-            f"Kaggle download of {slug} did not complete after "
-            f"{self.retries} retries; run the step again to resume."
+            f"Download of {label} did not complete after {self.retries} retries; "
+            "run the step again to resume."
         )
 
     # -- Hugging Face ------------------------------------------------------------------

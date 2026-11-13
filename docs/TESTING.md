@@ -3,6 +3,68 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, step 4 — checkpoint CP1 code (spec revision 49) — 2026-11-13 — branch `claude/nice-curie-3tzxzr`
+
+New: `hashing.py` (file / pixel SHA-256, 64-bit DCT pHash, chunked Hamming search),
+`harmonize.py` (the per-source table of spec section 8), `crops.py`, `sampler.py` (shares of
+section 9), `splits.py` (10% stratified split, DiffSeg30k editor map and hold-out), `shortcut.py`
+(lookup-table metadata classifier, weighted threshold classifier), `cp1.py` (`run_cp1`), the
+`coco_val2017` download step (`url_files`, resumable, CRC-tested), `fake_cp1.py` (a fake Drive with
+the layouts the probe found) and `notebooks/01_cp1_data_integrity.ipynb`.
+
+### How to run
+
+```
+ruff check src tests && ruff format --check src tests
+python -m pytest -q
+EVIGROUND_DRY_RUN=1 python -m pytest -q --nbmake notebooks/00_setup_and_data.ipynb \
+    notebooks/00c_data_download.ipynb notebooks/00b_data_probe.ipynb \
+    notebooks/01_cp1_data_integrity.ipynb
+python -m eviground.utils.repo_audit --history
+```
+
+### Results (sandbox: Python 3.13.18, 4 CPU cores, no GPU)
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` / `ruff format --check src tests` | All checks passed / 40 files already formatted |
+| `pytest` | 205 passed, 0 failed (149 before; 56 new: 36 in `test_cp1_core.py`, 20 in `test_cp1.py`) |
+| `pytest` with 8.1 GB free simulated (CI runner) | all passed |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+| Repository audit (full history) | ok |
+
+### What the new tests cover
+
+- Harmonization: every row of the spec table (GenImage, SID-Set incl. at-target / below-75 / other
+  subsampling, DiffSeg30k and COCO); the written JPEG has exactly the planned quality and
+  subsampling; the same image always gets the same draw; compression raises blockiness.
+- Hashes: pixel hash equal for the same pixels in different files; pHash near for a recompressed
+  or resized copy (<= 2 bits), far for another image (> 10 bits); Hamming search and counts.
+- Splits: 10% per stratum, independent of input order; DiffSeg30k roles for every case (training
+  editors, Glide/Kolors in train and validation, empty mask, value outside 0-8).
+- Sampler: quotas per class and source, seeded draws; crops: 256 without padding, edited share
+  1-90% in at most 10 tries.
+- Metadata classifier: finds a leaking feature (single-feature and drop-one scores), ~0.5 on noise;
+  on the fake world the raw-file positive control scores > 0.9 while the harmonized criterion
+  features (one format, one crop size) stay <= 0.60.
+- CP1 end to end on the fake Drive: COCO download, CRC failure, wrong member count, interrupted
+  download resumed with HTTP Range (also the real `NetworkSources` against a local HTTP server);
+  Claims-Edit reservation rules; class counts against the manifests (and a deliberate mismatch);
+  a cross-split exact duplicate (FAIL); a recompressed copy of a test image among the COCO
+  negatives (dropped); near-duplicates over 1% of a test set (stop); a mask value 9 (stop); a
+  corrupt image (excluded, counted); the scan resumed from its cache with no re-scan; the same
+  result with 1 or 2 worker processes.
+- Pooled blockiness uses the sampler's mix of sources, each measured image once with a weight.
+  Found while testing: redrawing values from a small group puts copies in both cross-validation
+  folds and made a no-difference case score 0.62; fixed with weights and covered by two tests.
+
+### Not testable here
+
+Real images and their volumes (about 256,000 scanned, about 70 GB staged), Colab's CPU and Drive
+(FUSE) speed, the COCO host, real JPEG headers with non-standard tables (quality then reported as
+the nearest standard quality, flagged as not exact). Scan cost measured here on one core: 5 ms
+(ImageNet JPEG), 11 ms (512² PNG), 42 ms (1024² PNG), 32 ms (COCO photo incl. preparation).
+
 ## Milestone 2, fix — complete a partially copied generator (Midjourney) — 2026-11-13
 
 Colab run of 13 Nov (`00c`, `['genimage_val']`): the SD v1.4 fill tar had been left unreadable on

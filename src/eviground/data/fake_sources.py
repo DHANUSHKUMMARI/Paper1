@@ -132,9 +132,11 @@ class FakeSources:
         kaggle: dict[str, Path] | None = None,
         hf: dict[str, dict[str, Path]] | None = None,
         fail_after: int | None = None,
+        urls: dict[str, Path] | None = None,
     ) -> None:
         self.kaggle = kaggle or {}
         self.hf = hf or {}
+        self.urls = urls or {}
         self.fail_after = fail_after
         self._failed: set[str] = set()
         self.calls: list[str] = []
@@ -157,6 +159,18 @@ class FakeSources:
         total = src.stat().st_size
         before_write(total - have, total)
         self._copy(slug, src, part, have)
+        os.replace(part, dest)
+        return total
+
+    def url_download(self, url: str, dest: Path, before_write: SpaceCheck) -> int:
+        self.calls.append(f"url_download {url}")
+        src = self.urls[url]
+        part = Path(dest).with_name(Path(dest).name + ".part")
+        part.parent.mkdir(parents=True, exist_ok=True)
+        have = part.stat().st_size if part.exists() else 0
+        total = src.stat().st_size
+        before_write(total - have, total)
+        self._copy(url, src, part, have)
         os.replace(part, dest)
         return total
 

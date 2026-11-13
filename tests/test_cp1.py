@@ -1,0 +1,503 @@
+"""CP1 end to end on a fake Drive with the real layouts, plus the COCO download step."""
+
+from __future__ import annotations
+
+import http.server
+import io
+import json
+import shutil
+import threading
+import zipfile
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from eviground.data import cp1
+from eviground.data.download import DataStepError, ensure_data, read_done
+from eviground.data.fake_cp1 import COCO_URLS, cp1_overrides, make_cp1_world
+from eviground.data.sources import NetworkSources
+from eviground.env import Paths
+
+COCO_N = 40
+CARD = {"train": 18, "validation": 12}
+
+
+def _world(tmp: Path, **kw):
+    paths = Paths(root=tmp / "drive" / "Paper 1", local_data=tmp / "local")
+    sources = make_cp1_world(paths.datasets, tmp / "remote", coco_images=COCO_N, **kw)
+    return paths, sources
+
+
+def _ensure(paths, sources):
+    return ensure_data(
+        "cp1",
+        paths=paths,
+        sources=sources,
+        overrides=cp1_overrides(COCO_N),
+        stage_local=True,
+        reserve_gb=0,
+        drive_free=None,
+    )
+
+
+def _cfg(**kw) -> cp1.CP1Config:
+    base = {
+        "workers": 1,
+        "crops_per_class": 60,
+        "blockiness_per_group": 20,
+        "diffseg_card_splits": CARD,
+    }
+    return cp1.CP1Config(**{**base, **kw})
+
+
+@pytest.fixture(scope="module")
+def run(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("cp1")
+    paths, sources = _world(tmp)
+    _ensure(paths, sources)
+    res = cp1.run_cp1(paths, _cfg(), out_dir=tmp / "out", cache_dir=tmp / "cache", progress=None)
+    return tmp, paths, res
+
+
+# --- COCO download ------------------------------------------------------------------------
+
+
+def test_coco_downloaded_verified_and_staged(run):
+    tmp, paths, _ = run
+    done = read_done(paths.datasets / "06_COCO")
+    assert done["method"] == "url_files"
+    s = done["summary"]["val2017.zip"]
+    assert s["matching_members"] == COCO_N and len(s["sha256"]) == 64
+    assert "annotations/instances_val2017.json" not in str(list((tmp / "local").rglob("*.json")))
+    assert len(list((tmp / "local/coco_val2017/val2017").glob("*.jpg"))) == COCO_N
+
+
+def test_coco_wrong_member_count_is_rejected_and_removed(tmp_path):
+    paths, sources = _world(tmp_path)
+    with pytest.raises(DataStepError) as err:
+        ensure_data(
+            datasets=["coco_val2017"],
+            paths=paths,
+            sources=sources,
+            overrides=cp1_overrides(COCO_N + 1),
+            reserve_gb=0,
+            drive_free=None,
+        )
+    assert "expected 41" in str(err.value)
+    assert not (paths.datasets / "06_COCO/val2017.zip").exists()
+    assert read_done(paths.datasets / "06_COCO") is None
+
+
+def test_coco_corrupt_zip_is_rejected(tmp_path):
+    paths, sources = _world(tmp_path)
+    bad = tmp_path / "bad.zip"
+    data = bytearray(sources.urls[COCO_URLS["val2017.zip"]].read_bytes())
+    data[200:260] = b"\0" * 60  # damage a member's compressed bytes
+    bad.write_bytes(bytes(data))
+    sources.urls[COCO_URLS["val2017.zip"]] = bad
+    with pytest.raises(DataStepError) as err:
+        ensure_data(
+            datasets=["coco_val2017"],
+            paths=paths,
+            sources=sources,
+            overrides=cp1_overrides(COCO_N),
+            reserve_gb=0,
+            drive_free=None,
+        )
+    assert "val2017.zip" in str(err.value)
+    assert not (paths.datasets / "06_COCO/val2017.zip").exists()
+
+
+def test_coco_interrupted_download_resumes_and_skips_when_done(tmp_path):
+    paths, sources = _world(tmp_path)
+    sources.fail_after = 1000
+    kw = {
+        "paths": paths,
+        "sources": sources,
+        "overrides": cp1_overrides(COCO_N),
+        "reserve_gb": 0,
+        "drive_free": None,
+        "raise_errors": False,
+    }
+    rep = ensure_data(datasets=["coco_val2017"], **kw)
+    assert rep["coco_val2017"]["status"] == "error"
+    assert (paths.datasets / "06_COCO/val2017.zip.part").stat().st_size == 1000
+    for _ in range(3):  # each of the two files is interrupted once, then resumes
+        rep = ensure_data(datasets=["coco_val2017"], **kw)
+        if rep["coco_val2017"]["status"] == "verified":
+            break
+    assert rep["coco_val2017"]["status"] == "verified"
+    assert sources.calls.count(f"url_download {COCO_URLS['val2017.zip']}") == 2
+    n_calls = len(sources.calls)
+    rep = ensure_data(datasets=["coco_val2017"], **kw)
+    assert rep["coco_val2017"]["status"] == "done" and len(sources.calls) == n_calls
+
+
+class _RangeHandler(http.server.BaseHTTPRequestHandler):
+    payload = b""
+    cut_first = 0  # close the first response after this many bytes
+    served: list[str] = []
+
+    def do_GET(self):  # noqa: N802
+        rng = self.headers.get("Range")
+        start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+        body = self.payload[start:]
+        self.served.append(rng or "full")
+        self.send_response(206 if rng else 200)
+        if rng:
+            self.send_header(
+                "Content-Range", f"bytes {start}-{len(self.payload) - 1}/{len(self.payload)}"
+            )
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if type(self).cut_first:
+            n, type(self).cut_first = type(self).cut_first, 0
+            self.wfile.write(body[:n])
+            self.wfile.flush()
+            self.connection.shutdown(2)
+            return
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+def test_network_url_download_resumes_with_range(tmp_path, monkeypatch):
+    """The real downloader (no fake) against a local HTTP server that drops the connection."""
+    for var in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    payload = bytes(range(256)) * 4000
+    _RangeHandler.payload, _RangeHandler.cut_first, _RangeHandler.served = payload, 300_000, []
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/val2017.zip"
+        checks = []
+        src = NetworkSources(retries=3)
+        monkeypatch.setattr("eviground.data.sources.time.sleep", lambda s: None)
+        total = src.url_download(
+            url, tmp_path / "f.zip", lambda need, tot: checks.append((need, tot))
+        )
+    finally:
+        server.shutdown()
+    assert total == len(payload)
+    assert (tmp_path / "f.zip").read_bytes() == payload
+    assert not (tmp_path / "f.zip.part").exists()
+    assert _RangeHandler.served[0] == "full" and _RangeHandler.served[1].startswith("bytes=")
+    assert checks == [(len(payload), len(payload))]  # the space check ran once, before writing
+
+
+# --- Claims-Edit reservation ----------------------------------------------------------------
+
+
+def test_reserve_claims_edit_rules():
+    inst = {
+        "images": [{"id": i, "width": 100, "height": 100} for i in range(1, 21)],
+        "categories": [
+            {"id": 3, "name": "car"},
+            {"id": 62, "name": "chair"},
+            {"id": 1, "name": "person"},
+        ],
+        "annotations": [
+            *[{"image_id": i, "category_id": 3, "area": 900, "iscrowd": 0} for i in range(1, 8)],
+            *[{"image_id": i, "category_id": 62, "area": 600, "iscrowd": 0} for i in range(5, 12)],
+            {"image_id": 12, "category_id": 3, "area": 100, "iscrowd": 0},  # too small
+            {"image_id": 13, "category_id": 3, "area": 5000, "iscrowd": 1},  # crowd
+            {"image_id": 14, "category_id": 1, "area": 5000, "iscrowd": 0},  # other category
+        ],
+    }
+    params = {"n": 8, "categories": ["car", "chair"], "min_area_share": 0.05, "seed": 42}
+    got = cp1.reserve_claims_edit(inst, params)
+    assert len(got) == len(set(got)) == 8
+    assert set(got) <= set(range(1, 12))
+    assert got == cp1.reserve_claims_edit(inst, params)
+    with pytest.raises(ValueError):
+        cp1.reserve_claims_edit(inst, {**params, "n": 12})
+
+
+# --- the CP1 run ------------------------------------------------------------------------------
+
+
+def test_run_cp1_result_record(run):
+    tmp, _, res = run
+    assert set(res["criteria"]) == {
+        "no_cross_split_duplicates",
+        "class_counts_equal_manifests",
+        "metadata_classifier_le_60",
+    }
+    assert res["criteria"]["no_cross_split_duplicates"] is True
+    assert res["criteria"]["class_counts_equal_manifests"] is True
+    assert res["verdict"] in ("PASS", "FAIL", "STOP_AND_ASK")
+    json.dumps(res)  # JSON-ready
+    for name in (
+        "cp1_grid_real.png",
+        "cp1_grid_generated.png",
+        "cp1_grid_edited.png",
+        "cp1_grid_edited_masks.png",
+        "manifest_cp1.csv.gz",
+    ):
+        assert (tmp / "out" / name).is_file()
+    with Image.open(tmp / "out/cp1_grid_real.png") as g:
+        assert g.size == (1024, 1024)
+
+
+def test_roles_splits_and_holdout(run):
+    _, _, res = run
+    roles = res["diffseg30k_masks"]["roles"]
+    # fake editor sets: train cycles 9 sets (2 hold-out, 1 empty), validation 6 (4 hold-out)
+    assert roles == {
+        "train/excluded_holdout": 4,
+        "train/excluded_no_edit": 2,
+        "train/train_pool": 12,
+        "validation/test_P2": 8,
+        "validation/unused_validation": 4,
+    }
+    by = res["counts"]["by_source_split_label"]
+    assert by["coco/test/real"] == 6 and len(res["coco_negatives"]["reserved_claims_edit_ids"]) == 6
+    assert by["genimage_val/test/real"] == by["genimage_val/test/generated"] == 16
+    assert by["sidset/test/edited"] == 5
+    assert res["diffseg30k_masks"]["distinct_values"] == list(range(9))
+    assert res["diffseg30k_masks"]["values_outside_0_8"] == []
+    assert res["sidset_masks"]["train"]["with_values_other_than_0_255"] == 10
+
+
+def test_harmonization_follows_spec_table(run):
+    _, _, res = run
+    plan = res["harmonization_plan"]
+    assert plan["genimage/real"].get("keep:real_jpeg", 0) > 0
+    assert set(plan["genimage/generated"]) == {"compress:lossless"}
+    assert plan["sidset/real"]["skip:below_q75"] > 0 and plan["sidset/real"]["keep:at_target"] > 0
+    assert plan["sidset/real"]["compress:above_q75"] > 0
+    assert plan["sidset/edited"]["keep:at_target"] > 0
+    assert set(plan["coco/real"]) == {"compress:lossless"}
+    dist = res["quality_distribution_genimage_real"]
+    assert dist["top_quality"] == 96
+
+
+def test_metadata_classifier_on_harmonized_crops(run):
+    _, _, res = run
+    meta = res["metadata_classifier"]
+    rep = meta["criterion"]["real_vs_not_real"]
+    assert rep["features"] == ["format", "jpeg_quality", "crop_w", "crop_h"]
+    assert rep["distinct_values"]["format"] == 1  # every training file is JPEG after harmonization
+    assert rep["distinct_values"]["crop_w"] == rep["distinct_values"]["crop_h"] == 1
+    assert meta["criterion_score"] <= 0.60
+    # the positive control: raw file facts and original size do give the label away
+    assert meta["diagnostics"]["raw_files_positive_control"] > 0.9
+    assert res["crops"]["errors"] == {}
+    assert res["crops"]["per_class_source"]["real/coco"] == 20
+
+
+def test_scan_is_resumed_from_cache(tmp_path, monkeypatch):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    first = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o1", cache_dir=tmp_path / "c", progress=None
+    )
+
+    def boom(row):
+        raise AssertionError("scanned again")
+
+    real_scan_row = cp1.scan_row
+    monkeypatch.setattr(cp1, "scan_row", boom)
+    second = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o2", cache_dir=tmp_path / "c", progress=None
+    )
+    assert first["exact_duplicates"] == second["exact_duplicates"]
+    assert first["metadata_classifier"] == second["metadata_classifier"]
+    # a file replaced in place (here: a SID-Set validation image copied over a train image)
+    # must be scanned again, not served from the cache
+    monkeypatch.setattr(cp1, "scan_row", real_scan_row)
+    sid = paths.local_data / "sidset"
+    src = sorted((sid / "validation/real/images").iterdir())[0]
+    dst = sorted((sid / "train/real/images").iterdir())[0]
+    shutil.copyfile(src, dst)
+    third = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o3", cache_dir=tmp_path / "c", progress=None
+    )
+    assert third["exact_duplicates"]["sha256"]["cross_split_groups"] == 1
+
+
+def test_cross_split_duplicate_is_caught(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    # a SID-Set validation (test) image copied over a SID-Set train image
+    sid = paths.local_data / "sidset"
+    src = sorted((sid / "validation/real/images").iterdir())[0]
+    dst = sorted((sid / "train/real/images").iterdir())[0]
+    shutil.copyfile(src, dst)
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    assert res["exact_duplicates"]["sha256"]["cross_split_groups"] == 1
+    assert res["criteria"]["no_cross_split_duplicates"] is False
+    assert res["verdict"] == "FAIL"
+
+
+def test_coco_negative_near_duplicate_of_test_is_dropped(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    test_img = sorted(
+        (paths.datasets / "01_GenImage/Validation/GenImage/ADM/val/nature").iterdir()
+    )[0]
+    coco_dir = paths.local_data / "coco_val2017/val2017"
+    reserved = set(
+        cp1.reserve_claims_edit(
+            cp1.coco_instances(paths.datasets), cp1_overrides(COCO_N)["coco_val2017"]["claims_edit"]
+        )
+    )
+    victim = next(p for p in sorted(coco_dir.glob("*.jpg")) if int(p.stem) not in reserved)
+    with Image.open(test_img) as im:
+        buf = io.BytesIO()
+        im.convert("RGB").save(buf, "JPEG", quality=85)  # recompressed copy: near, not exact
+    victim.write_bytes(buf.getvalue())
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    flt = res["coco_negatives"]["near_dup_filter"]
+    assert flt["dropped"] == 1 and flt["dropped_by_test_set"] == {"test_P1": 1}
+    assert res["counts"]["by_role"]["coco/excluded_near_dup_test"] == 1
+    assert res["exact_duplicates"]["cross_split_total"] == 0
+
+
+def test_near_duplicates_over_one_percent_stop(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    # recompressed copies of SID-Set train images placed in the SID-Set test split
+    sid = paths.local_data / "sidset"
+    trains = sorted((sid / "train/full_synthetic/images").iterdir())
+    tests = sorted((sid / "validation/full_synthetic/images").iterdir())
+    for a, b in zip(trains[:2], tests[:2], strict=True):
+        with Image.open(a) as im:
+            im.save(b, "PNG", compress_level=9)  # same name/format, other bytes, same pixels
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    p3 = res["near_duplicates"]["test_P3b"]
+    assert p3["counts"]["<=0"] >= 2 and p3["stop_and_ask"] is True
+    assert res["stop_and_ask"]["near_duplicates_over_1pct"] is True
+    # same pixels: the pixel hash catches them as exact cross-split duplicates too
+    assert res["exact_duplicates"]["pixel_sha256"]["cross_split_groups"] == 2
+    assert res["verdict"] == "FAIL"
+
+
+def test_class_count_mismatch_is_reported(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    victim = sorted((paths.local_data / "diffseg30k/train_copy").glob("*.image.png"))[0]
+    victim.unlink()
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    bad = [t for t in res["class_counts"]["table"] if not t["equal"]]
+    assert bad == [
+        {
+            "source": "diffseg30k",
+            "dataset_split": "train",
+            "label": "edited",
+            "expected": 18,
+            "found": 17,
+            "equal": False,
+        }
+    ]
+    assert res["criteria"]["class_counts_equal_manifests"] is False
+
+
+def test_process_pool_gives_same_result(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    one = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o1", cache_dir=tmp_path / "c1", progress=None
+    )
+    two = cp1.run_cp1(
+        paths, _cfg(workers=2), out_dir=tmp_path / "o2", cache_dir=tmp_path / "c2", progress=None
+    )
+    for key in (
+        "exact_duplicates",
+        "near_duplicates",
+        "harmonization_plan",
+        "metadata_classifier",
+        "blockiness",
+    ):
+        assert one[key] == two[key], key
+
+
+def test_corrupt_image_is_excluded_not_fatal(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    victim = sorted((paths.local_data / "sidset/train/real/images").iterdir())[0]
+    victim.write_bytes(b"\xff\xd8\xff\xe0 broken")
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    assert res["counts"]["by_role"]["sidset/excluded_unreadable"] == 1
+    assert sum(res["counts"]["scan_errors"].values()) == 1
+
+
+def test_zip_member_listing_of_fake_matches_probe_layout(tmp_path):
+    paths, _ = _world(tmp_path)
+    with zipfile.ZipFile(paths.datasets / "02_DiffSeg30k/train.zip") as zf:
+        names = zf.namelist()
+    assert {n.split("/")[0] for n in names} == {"train_copy"}
+    assert sum(n.endswith(".image.png") for n in names) == sum(
+        n.endswith(".mask.png") for n in names
+    )
+    assert sum(n.endswith(".jsonl") for n in names) == 1
+
+
+def test_mask_value_outside_card_map_stops(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    mask = sorted((paths.local_data / "diffseg30k/train_copy").glob("*.mask.png"))[0]
+    with Image.open(mask) as m:
+        arr = np.asarray(m).copy()
+    arr[:4, :4] = 9
+    Image.fromarray(arr).save(mask)
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    assert res["diffseg30k_masks"]["values_outside_0_8"] == [9]
+    assert res["stop_and_ask"]["diffseg_mask_values_outside_0_8"] is True
+    assert res["counts"]["by_role"]["diffseg30k/excluded_unknown_value"] == 1
+    assert res["verdict"] == "STOP_AND_ASK"
+
+
+def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
+    """Sources differ in level, classes within a source do not: the pooled comparison must not
+    flag a class difference just because one source was measured more often in one class."""
+    rng = np.random.default_rng(0)
+
+    def g(level, n):
+        return list(rng.normal(level, 0.01, n))
+
+    groups = {  # SID-Set level 1.2, every other source 1.0; SID-Set real measured 10x more
+        "genimage/real": g(1.0, 20),
+        "sidset/real": g(1.2, 200),
+        "coco/real": g(1.0, 20),
+        "genimage/generated": g(1.0, 20),
+        "sidset/generated": g(1.2, 20),
+        "diffseg30k/edited": g(1.0, 20),
+        "sidset/edited": g(1.2, 20),
+    }
+    samples = [
+        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+        for k, vs in groups.items()
+        for v in vs
+    ]
+    res = cp1.blockiness_check(samples, seed=42)
+    assert res["separation"]["all sources (sampler mix): real vs not real"] < 0.6
+    for pair in ("real vs generated", "real vs edited", "generated vs edited"):
+        assert res["separation"][f"all sources (sampler mix): {pair}"] < 0.6, pair
+    assert res["stop_and_ask"] is False
+    groups["sidset/edited"] = g(1.3, 20)  # a real class difference inside SID-Set
+    samples = [
+        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+        for k, vs in groups.items()
+        for v in vs
+    ]
+    res = cp1.blockiness_check(samples, seed=42)
+    assert res["separation"]["sidset: edited vs real"] > 0.95
+    assert res["stop_and_ask"] is True

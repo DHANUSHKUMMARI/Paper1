@@ -310,3 +310,17 @@ def test_threshold_cv():
     d = shortcut.describe(sep)
     assert d["n"] == 400 and d["p10"] < d["median"] < d["p90"]
     assert shortcut.describe([]) == {"n": 0}
+
+
+def test_weighted_balanced_accuracy_and_threshold():
+    assert shortcut.balanced_accuracy(["a", "a", "b"], ["a", "b", "b"], [3, 1, 1]) == 0.875
+    rng = np.random.default_rng(3)
+    # class b = two sources; source 2 (level 1.3) is over-measured but its sampler weight is
+    # small, so with weights the threshold must mostly see source 1 (level 1.0, as class a)
+    a = list(rng.normal(1.0, 0.02, 200))
+    b = list(rng.normal(1.0, 0.02, 200)) + list(rng.normal(1.3, 0.02, 400))
+    y = ["a"] * 200 + ["b"] * 600
+    unweighted = shortcut.threshold_cv(a + b, y)
+    w = [1 / 200] * 200 + [0.95 / 200] * 200 + [0.05 / 400] * 400
+    weighted = shortcut.threshold_cv(a + b, y, weights=w)
+    assert unweighted > 0.8 and weighted < 0.6

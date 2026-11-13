@@ -24,9 +24,16 @@ CRITERION = 0.60
 FOLDS = 5
 
 
-def balanced_accuracy(y: Sequence[Hashable], pred: Sequence[Hashable]) -> float:
+def balanced_accuracy(
+    y: Sequence[Hashable], pred: Sequence[Hashable], weights: Sequence[float] | None = None
+) -> float:
+    """Mean per-class recall; with ``weights``, each row counts with its weight."""
     y, pred = np.asarray(y, dtype=object), np.asarray(pred, dtype=object)
-    recalls = [float(np.mean(pred[y == c] == c)) for c in sorted(set(y.tolist()), key=str)]
+    w = np.ones(y.size) if weights is None else np.asarray(weights, dtype=np.float64)
+    recalls = []
+    for c in sorted(set(y.tolist()), key=str):
+        m = y == c
+        recalls.append(float(w[m & (pred == c)].sum() / w[m].sum()))
     return float(np.mean(recalls)) if recalls else float("nan")
 
 
@@ -108,12 +115,21 @@ def feature_report(
 
 
 def threshold_cv(
-    values: Sequence[float], y: Sequence[Hashable], folds: int = FOLDS, seed: int = 42
+    values: Sequence[float],
+    y: Sequence[Hashable],
+    folds: int = FOLDS,
+    seed: int = 42,
+    weights: Sequence[float] | None = None,
 ) -> float:
     """Balanced accuracy of the best single threshold on one numeric value (binary ``y``),
-    cross-validated. Used to say whether blockiness separates two classes."""
+    cross-validated. Used to say whether blockiness separates two classes.
+
+    ``weights`` give each row its share (e.g. a source's share in the sampler) without
+    repeating rows: repeated rows would sit in both training and test folds and make chance
+    differences look real."""
     v = np.asarray(values, dtype=np.float64)
     y = np.asarray(y, dtype=object)
+    w = np.ones(v.size) if weights is None else np.asarray(weights, dtype=np.float64)
     classes = sorted(set(y.tolist()), key=str)
     if len(classes) != 2:
         raise ValueError("threshold_cv needs exactly two classes")
@@ -127,13 +143,13 @@ def threshold_cv(
             for hi_class in classes:
                 lo_class = classes[1] if hi_class == classes[0] else classes[0]
                 p = np.where(v[tr] > c, hi_class, lo_class)
-                s = balanced_accuracy(y[tr], p)
+                s = balanced_accuracy(y[tr], p, w[tr])
                 if s > best[0]:
                     best = (s, c, hi_class)
         _, c, hi_class = best
         lo_class = classes[1] if hi_class == classes[0] else classes[0]
         pred[te] = np.where(v[te] > c, hi_class, lo_class)
-    return balanced_accuracy(y, pred)
+    return balanced_accuracy(y, pred, w)
 
 
 def describe(values: Sequence[float]) -> dict[str, float | int]:

@@ -47,4 +47,4 @@ jobs:
       - name: Notebook dry runs
         env:
           EVIGROUND_DRY_RUN: "1"
-        run: pytest -q --nbmake notebooks/00_setup_and_data.ipynb notebooks/00c_data_download.ipynb notebooks/00b_data_probe.ipynb
+        run: pytest -q --nbmake notebooks/00_setup_and_data.ipynb notebooks/00c_data_download.ipynb notebooks/00b_data_probe.ipynb notebooks/01_cp1_data_integrity.ipynb

@@ -31,7 +31,8 @@ folder keeps only small files needed to reproduce it exactly (`manifests/`).
 | `diffseg30k` | Hugging Face `Chaos2629/Diffseg30k` | `02_DiffSeg30k/` | `train.zip` (21.6 GB) and `validation.zip` (4.88 GB) as published, SHA-256 checked | Apache-2.0 | Local AI edits + masks; Glide/Kolors editor hold-out (P2) |
 | `sidset` | Hugging Face `saberzl/SID_Set` (already on Drive) | `03_SID-Set/` | The existing loose files from the retired downloader, `<split>/<class>/images/` and tampered `masks/`, with `train_manifest.csv` and `validation_manifest.csv`: 10,000 per class from train, 2,000 per class from validation. Verified in place, never downloaded again; copied to the local disk each session | CC-BY-4.0 | Real / synthetic / tampered; validation = P3b test set |
 | `brgen` | Hugging Face `clpbc/BR-Gen` (68.5 GB split zip) | `04_BR-Gen/` | Not downloaded for CP1; a subset plan is proposed before P3 | See dataset card | P3 cross-dataset test |
-| `chameleon` | Manual (AIDE repository links) | `05_Chameleon/` | Unpacked by hand (`test/0_real`, `test/1_fake`); counts checked by the probe | See source | P4 hard test set |
+| `chameleon` | Manual (AIDE repository links) | `05_Chameleon/` | Partly unpacked by hand (1,412 of 26,033 images, 13 Nov 2026); the zip is being put back. Not needed for CP1 | See source | P4 hard test set |
+| `coco_val2017` | images.cocodataset.org (`val2017.zip`, `annotations_trainval2017.zip`) | `06_COCO/` | Both zips as published, CRC-tested, 5,000 images counted, SHA-256 recorded; only the images are unpacked locally | Images: Flickr terms; annotations CC-BY-4.0 | 150 photos reserved for Claims-Edit (P7); the other ~4,850 are real negatives for DiffSeg30k, prepared like its base images (shorter side to 1024, centre crop 1024) |
 
 How the subsets are chosen:
 
@@ -48,6 +49,30 @@ How the subsets are chosen:
   needed, `hf_parquet_subset` (kept and tested) takes whole parquet files in a seeded order into
   tar files.
 
+- **COCO Claims-Edit reservation** (before anything else): images with a non-crowd instance of
+  car, couch, chair, dining table or laptop covering at least 5% of the image; the categories take
+  turns drawing from a seeded permutation (seed 42) until 150 are reserved. They are a test set
+  (P7) and never used for training. COCO negatives with a near-duplicate (pHash Hamming <= 6, raw or
+  prepared) in any test set are dropped.
+
+## Harmonization of the training data (spec section 8, M1, revision 49)
+
+Within each source every class ends with the compression history of its most compressed class.
+Compression happens once, on the whole image, before the 256 crop
+(`eviground.data.harmonize.plan_image`; the same image always gets the same quality, seed 42).
+
+| Source | Harmonization |
+|---|---|
+| GenImage SD v1.4 | Generated PNGs -> JPEG with (quality, subsampling) drawn from the measured distribution of the real training JPEGs; real images untouched |
+| SID-Set | Real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 / 4:2:0 untouched; JPEGs below 75 skipped and counted |
+| DiffSeg30k and COCO negatives | All PNG after preparation -> JPEG with the GenImage real distribution |
+
+Images with a side under 256 are skipped and counted. Sampler (spec section 9): real = GenImage,
+SID-Set, COCO one third each; generated = GenImage two thirds, SID-Set one third; edited =
+DiffSeg30k two thirds, SID-Set one third. DiffSeg30k training images contain only the 6 training
+editors (mask values 1, 3, 4, 5, 7, 8); validation images with any Glide (6) or Kolors (2) pixel
+are the P2 test set. Validation: 10% of each training source, stratified, seed 42.
+
 Leftovers of the retired downloader (`notebooks/tools/README.md`) are left untouched and are
 reported by the probe as "legacy": the empty DiffSeg30k folders and header-only manifests.
 
@@ -59,5 +84,8 @@ reported by the probe as "legacy": the empty DiffSeg30k folders and header-only 
    needs about 90 GB of the local disk.
 2. `notebooks/00b_data_probe.ipynb`: read-only; records what is on Drive, including the
    contents of the zip and tar files, mask formats and values, JPEG qualities and blockiness.
+3. `notebooks/01_cp1_data_integrity.ipynb`: downloads COCO once, stages everything locally and
+   runs checkpoint CP1 (`eviground.data.cp1.run_cp1`); writes
+   `runs/checkpoints/cp1_data_integrity.json`, the sample grids and `manifest_cp1.csv.gz`.
 
 Cite each dataset's original paper.

@@ -10,6 +10,7 @@ import threading
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -433,3 +434,58 @@ def test_zip_member_listing_of_fake_matches_probe_layout(tmp_path):
         n.endswith(".mask.png") for n in names
     )
     assert sum(n.endswith(".jsonl") for n in names) == 1
+
+
+def test_mask_value_outside_card_map_stops(tmp_path):
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    mask = sorted((paths.local_data / "diffseg30k/train_copy").glob("*.mask.png"))[0]
+    with Image.open(mask) as m:
+        arr = np.asarray(m).copy()
+    arr[:4, :4] = 9
+    Image.fromarray(arr).save(mask)
+    res = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+    )
+    assert res["diffseg30k_masks"]["values_outside_0_8"] == [9]
+    assert res["stop_and_ask"]["diffseg_mask_values_outside_0_8"] is True
+    assert res["counts"]["by_role"]["diffseg30k/excluded_unknown_value"] == 1
+    assert res["verdict"] == "STOP_AND_ASK"
+
+
+def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
+    """Sources differ in level, classes within a source do not: the pooled comparison must not
+    flag a class difference just because one source was measured more often in one class."""
+    rng = np.random.default_rng(0)
+
+    def g(level, n):
+        return list(rng.normal(level, 0.01, n))
+
+    groups = {  # SID-Set level 1.2, every other source 1.0; SID-Set real measured 10x more
+        "genimage/real": g(1.0, 20),
+        "sidset/real": g(1.2, 200),
+        "coco/real": g(1.0, 20),
+        "genimage/generated": g(1.0, 20),
+        "sidset/generated": g(1.2, 20),
+        "diffseg30k/edited": g(1.0, 20),
+        "sidset/edited": g(1.2, 20),
+    }
+    samples = [
+        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+        for k, vs in groups.items()
+        for v in vs
+    ]
+    res = cp1.blockiness_check(samples, seed=42)
+    assert res["separation"]["all sources (sampler mix): real vs not real"] < 0.6
+    for pair in ("real vs generated", "real vs edited", "generated vs edited"):
+        assert res["separation"][f"all sources (sampler mix): {pair}"] < 0.6, pair
+    assert res["stop_and_ask"] is False
+    groups["sidset/edited"] = g(1.3, 20)  # a real class difference inside SID-Set
+    samples = [
+        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+        for k, vs in groups.items()
+        for v in vs
+    ]
+    res = cp1.blockiness_check(samples, seed=42)
+    assert res["separation"]["sidset: edited vs real"] > 0.95
+    assert res["stop_and_ask"] is True

@@ -738,6 +738,25 @@ def metadata_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
     return out
 
 
+def _sampler_weighted(
+    groups: dict[str, list[float]], min_group: int = 10
+) -> tuple[list[float], list[str], list[float]] | None:
+    """Every measured value once, weighted so that each (class, source) group carries its
+    share in the unified sampler (weights within a class sum to 1)."""
+    values: list[float] = []
+    labels: list[str] = []
+    weights: list[float] = []
+    for label, shares in sampler.SHARES["unified"].items():
+        for source, share in sorted(shares.items()):
+            v = groups.get(f"{source}/{label}", [])
+            if len(v) < min_group:
+                return None
+            values += [float(x) for x in v]
+            labels += [label] * len(v)
+            weights += [share / len(v)] * len(v)
+    return values, labels, weights
+
+
 def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
     ok = [s for s in samples if "error" not in s and s.get("blockiness") is not None]
     groups: dict[str, list[float]] = {}
@@ -767,15 +786,29 @@ def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]
                     out["separation"][f"{src}: {a} vs {b}"] = round(
                         shortcut.threshold_cv(vals, y, seed=seed), 4
                     )
-    real = [s["blockiness"] for s in ok if s["label"] == "real"]
-    fake = [s["blockiness"] for s in ok if s["label"] != "real"]
-    if len(real) >= 10 and len(fake) >= 10:
-        out["separation"]["all sources: real vs not real"] = round(
-            shortcut.threshold_cv(
-                real + fake, ["real"] * len(real) + ["not"] * len(fake), seed=seed
-            ),
-            4,
+    # Pooled over sources, each (class, source) group weighted by its sampler share, so the
+    # comparison sees the same mix of sources as training (SID-Set one third of every class).
+    pooled = _sampler_weighted(groups)
+    if pooled is not None:
+        values, labels, weights = pooled
+        y = ["real" if lab == "real" else "not_real" for lab in labels]
+        out["separation"]["all sources (sampler mix): real vs not real"] = round(
+            shortcut.threshold_cv(values, y, seed=seed, weights=weights), 4
         )
+        pairs = {}
+        for pair in (("real", "generated"), ("real", "edited"), ("generated", "edited")):
+            keep = [i for i, lab in enumerate(labels) if lab in pair]
+            pairs[" vs ".join(pair)] = round(
+                shortcut.threshold_cv(
+                    [values[i] for i in keep],
+                    [labels[i] for i in keep],
+                    seed=seed,
+                    weights=[weights[i] for i in keep],
+                ),
+                4,
+            )
+        for name, score in pairs.items():
+            out["separation"][f"all sources (sampler mix): {name}"] = score
     out["clear_difference"] = {k: v for k, v in out["separation"].items() if v > shortcut.CRITERION}
     out["stop_and_ask"] = bool(out["clear_difference"])
     return out
@@ -1033,6 +1066,7 @@ def run_cp1(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_csv_gz(out_dir / "manifest_cp1.csv.gz", rows, MANIFEST_COLUMNS)
+    masks = diffseg_mask_report(rows, local)
     criteria = {
         "no_cross_split_duplicates": dups["cross_split_total"] == 0,
         "class_counts_equal_manifests": counts["all_equal"],
@@ -1043,6 +1077,8 @@ def run_cp1(
         "near_duplicates_over_1pct": any(
             v.get("stop_and_ask") for k, v in near.items() if isinstance(v, dict)
         ),
+        # mask values outside the card's map: the editor map cannot be trusted (12 Nov 2026)
+        "diffseg_mask_values_outside_0_8": bool(masks["values_outside_0_8"]),
     }
     verdict = (
         "PASS"
@@ -1069,7 +1105,7 @@ def run_cp1(
             "near_dup_filter": coco_filter,
             "prepared_size": prep,
         },
-        "diffseg30k_masks": diffseg_mask_report(rows, local),
+        "diffseg30k_masks": masks,
         "sidset_masks": sid_mask_report(rows),
         "quality_distribution_genimage_real": {**dist.summary(), "table": dist.to_dict()},
         "harmonization_plan": plan,

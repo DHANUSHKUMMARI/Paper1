@@ -435,6 +435,8 @@ def test_corrupt_image_is_excluded_not_fatal(tmp_path):
     )
     assert res["counts"]["by_role"]["sidset/excluded_unreadable"] == 1
     assert sum(res["counts"]["scan_errors"].values()) == 1
+    assert res["stop_and_ask"]["images_not_scanned"] is True
+    assert res["verdict"] in ("STOP_AND_ASK", "FAIL")
 
 
 def test_zip_member_listing_of_fake_matches_probe_layout(tmp_path):
@@ -501,3 +503,34 @@ def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
     res = cp1.blockiness_check(samples, seed=42)
     assert res["separation"]["sidset: edited vs real"] > 0.95
     assert res["stop_and_ask"] is True
+
+
+def test_stuck_drive_read_is_recorded_and_run_finishes(tmp_path, monkeypatch):
+    """A read that never returns (stuck Drive mount) must not stop CP1 (13 Nov 2026)."""
+    import time as _time
+
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    real = cp1.scan_row
+    victim = "/GenImage/glide/val/ai/"
+
+    def stuck(row):
+        if victim in row["path"] and row["path"].endswith("_0.png"):
+            _time.sleep(3600)
+        return real(row)
+
+    monkeypatch.setattr(cp1, "scan_row", stuck)
+    t = _time.monotonic()
+    res = cp1.run_cp1(
+        paths,
+        _cfg(workers=2, stall_s=1.0, scan_retries=2),
+        out_dir=tmp_path / "o",
+        cache_dir=tmp_path / "c",
+        progress=None,
+    )
+    assert _time.monotonic() - t < 120
+    assert res["counts"]["scan_errors"] == {"genimage_val/read timeout": 1}
+    assert res["counts"]["by_role"]["genimage_val/excluded_unreadable"] == 1
+    bad = [t for t in res["class_counts"]["table"] if not t["equal"]]
+    assert bad == []  # the file exists and was indexed; the timeout is reported as an error
+    assert res["stop_and_ask"]["images_not_scanned"] is True

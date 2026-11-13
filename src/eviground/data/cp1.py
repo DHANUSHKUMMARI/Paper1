@@ -40,6 +40,7 @@ from eviground.data import crops, harmonize, hashing, sampler, shortcut, splits
 from eviground.data.download import _assign, _is_image, read_done
 from eviground.data.imageinfo import blockiness, header_info
 from eviground.data.registry import REGISTRY
+from eviground.data.watchdog import run_watched
 from eviground.env import Paths
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,8 @@ class CP1Config:
     near_dup_primary: int = hashing.NEAR_DUP_PRIMARY
     near_dup_test_share: float = 0.01  # more than this share of a test set -> stop and ask
     scan_part_rows: int = 2000
+    stall_s: float = 180.0  # a single image read taking longer is treated as stuck
+    scan_retries: int = 2
     diffseg_card_splits: dict[str, int] | None = None
     coco: dict[str, Any] | None = None  # COCO params; default: the verified _DONE record
 
@@ -367,42 +370,82 @@ def scan(
     workers: int,
     part_rows: int = 2000,
     progress: Callable[[str], None] | None = None,
+    *,
+    stall_s: float = 180.0,
+    retries: int = 2,
+    progress_every: int = 500,
 ) -> dict[str, dict[str, Any]]:
     """uid -> scan facts. Parts of ``part_rows`` images are cached as csv.gz in ``cache``;
     a part is read back instead of scanned again only if its images and their fingerprints
-    (size and modification time of each image and mask) are unchanged."""
+    (size and modification time of each image and mask) are unchanged.
+
+    With ``workers > 1`` the images are read by :func:`run_watched`: a read that has not
+    returned after ``stall_s`` seconds (a stuck Drive mount) is retried in a fresh process,
+    and after ``retries`` stalls the image is recorded with ``error="read timeout"``."""
     cache.mkdir(parents=True, exist_ok=True)
     by_source: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         by_source.setdefault(r["source"], []).append(r)
     results: dict[str, dict[str, Any]] = {}
-    pool = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
-    try:
-        for source in sorted(by_source):
-            src_rows = sorted(by_source[source], key=lambda r: r["uid"])
-            for k in range(0, len(src_rows), part_rows):
-                part = src_rows[k : k + part_rows]
-                path = cache / f"scan_{source}_{k // part_rows:05d}.csv.gz"
-                keys = [(r["uid"], fingerprint(r)) for r in part]
-                if path.is_file():
-                    got = _read_csv_gz(path)
-                    if [(g["uid"], g.get("fingerprint")) for g in got] == keys:
-                        results.update({g["uid"]: _typed(g) for g in got})
-                        continue
-                t0 = time.time()
-                it = pool.map(scan_row, part, chunksize=8) if pool else map(scan_row, part)
-                got = list(it)
-                _write_csv_gz(path, got, SCAN_COLUMNS)
-                results.update({g["uid"]: _typed(g) for g in got})
-                if progress:
+    for source in sorted(by_source):
+        src_rows = sorted(by_source[source], key=lambda r: r["uid"])
+        for k in range(0, len(src_rows), part_rows):
+            part = src_rows[k : k + part_rows]
+            path = cache / f"scan_{source}_{k // part_rows:05d}.csv.gz"
+            keys = [(r["uid"], fingerprint(r)) for r in part]
+            if path.is_file():
+                got = _read_csv_gz(path)
+                if [(g["uid"], g.get("fingerprint")) for g in got] == keys:
+                    results.update({g["uid"]: _typed(g) for g in got})
+                    continue
+            t0 = time.time()
+
+            def tick(
+                done: int,
+                total: int,
+                _k: int = k,
+                _n: int = len(src_rows),
+                _src: str = source,
+                _t0: float = t0,
+            ) -> None:
+                if progress and done % progress_every == 0 and done < total:
                     progress(
-                        f"scan {source}: {k + len(part)}/{len(src_rows)} "
-                        f"({len(part) / max(time.time() - t0, 1e-6):.0f} images/s)"
+                        f"scan {_src}: {_k + done}/{_n} "
+                        f"({done / max(time.time() - _t0, 1e-6):.0f} images/s)"
                     )
-    finally:
-        if pool:
-            pool.shutdown()
+
+            if workers > 1:
+                got = run_watched(
+                    scan_row,
+                    part,
+                    workers,
+                    stall_s=stall_s,
+                    retries=retries,
+                    on_timeout=_timeout_row,
+                    progress=tick,
+                    describe=lambda r: r["uid"],
+                )
+                got = [
+                    g if isinstance(g, dict) else {"uid": r["uid"], "error": f"worker: {g!r}"[:200]}
+                    for g, r in zip(got, part, strict=True)
+                ]
+            else:
+                got = [scan_row(r) for r in part]
+            _write_csv_gz(path, got, SCAN_COLUMNS)
+            results.update({g["uid"]: _typed(g) for g in got})
+            if progress:
+                timeouts = sum(1 for g in got if g.get("error") == "read timeout")
+                progress(
+                    f"scan {source}: {k + len(part)}/{len(src_rows)} "
+                    f"({len(part) / max(time.time() - t0, 1e-6):.0f} images/s"
+                    + (f", {timeouts} read timeouts" if timeouts else "")
+                    + ")"
+                )
     return results
+
+
+def _timeout_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {"uid": row["uid"], "fingerprint": fingerprint(row), "error": "read timeout"}
 
 
 # --------------------------------------------------------------------------------------
@@ -1024,7 +1067,15 @@ def run_cp1(
         if r["source"] == "coco":
             r["_prep_size"] = prep
     say(f"indexed {len(rows)} images: {_counts(rows, 'source')}")
-    facts = scan(rows, cache_dir, cfg.workers, cfg.scan_part_rows, say)
+    facts = scan(
+        rows,
+        cache_dir,
+        cfg.workers,
+        cfg.scan_part_rows,
+        say,
+        stall_s=cfg.stall_s,
+        retries=cfg.scan_retries,
+    )
     for r in rows:
         r.update({k: v for k, v in facts[r["uid"]].items() if k != "uid"})
     assign_diffseg_roles(rows)
@@ -1095,6 +1146,9 @@ def run_cp1(
         ),
         # mask values outside the card's map: the editor map cannot be trusted (12 Nov 2026)
         "diffseg_mask_values_outside_0_8": bool(masks["values_outside_0_8"]),
+        # an image that could not be read (corrupt, or a read that never returned) was left out
+        # of the duplicate checks, so CP1 cannot pass until it is looked at
+        "images_not_scanned": any(r.get("error") for r in rows),
     }
     verdict = (
         "PASS"

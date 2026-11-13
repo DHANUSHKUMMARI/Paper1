@@ -3,6 +3,27 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — CP1 scan stalls on Drive reads — 2026-11-13
+
+Colab report: Cell 4 resumed from the scan cache (COCO, DiffSeg30k, GenImage SD v1.4 done) and printed
+three part lines for GenImage Validation (44,000 / 46,000 / 48,000 of 100,000 at 8, 164 and 135
+images/s), then nothing while the cell kept running; every run got three parts further. GenImage
+Validation is read in place on the Drive mount; one read that never returns blocked the whole
+process pool, which had no timeout. Change: `eviground.data.watchdog.run_watched` knows which image
+each worker is reading; a worker busy with one image for more than 180 s is killed and replaced and
+the image retried; after two stalls the image is recorded as `read timeout`. Progress every 500
+images. Any image that could not be read sets the new stop flag `images_not_scanned`.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` / `ruff format --check src tests` | All checks passed / 42 files already formatted |
+| `pytest` | 217 passed (7 new: 6 in `test_watchdog.py`, 1 in `test_cp1.py`) |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+| Old `scan()` (main before this fix) with one read that never returns, `timeout 60` | still stuck after 60 s (exit 124) |
+| New scan, same situation (`test_stuck_drive_read_is_recorded_and_run_finishes`) | finishes in about 11 s; the image is a `read timeout`, run reports `images_not_scanned` |
+
+Not testable here: why the Drive mount stalls, and whether a retried read succeeds on Colab.
+
 ## Milestone 2, fix — staging speed and progress — 2026-11-13
 
 Colab report (13 Nov, after the merge of PR #8): Cell 3 of `01_cp1_data_integrity.ipynb` was still

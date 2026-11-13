@@ -254,31 +254,36 @@ def _fill_pending(folder: Path, plan: list[dict[str, str]]) -> list[dict[str, st
 
 
 def _fill_validation(
-    ctx: Context, spec: DatasetSpec, folder: Path, missing: list[str]
+    ctx: Context,
+    spec: DatasetSpec,
+    folder: Path,
+    missing: list[str],
+    relist: bool = False,
 ) -> dict[str, Any]:
-    """Add missing generators from the Kaggle Validation archive as loose files.
+    """Complete the Validation folder from the Kaggle Validation archive, as loose files.
 
-    The archive goes to the local disk (not extracted). The missing generators' images are
-    written into the Validation folder under the archive's own paths, i.e. the same layout
-    as the generators already there (``GenImage/<Generator>/val/{ai,nature}``), each file
-    as ``.part`` then renamed. The plan is saved first; files already present with the
-    right size are skipped, so the step resumes. The archive is deleted at the end.
+    The archive goes to the local disk (not extracted). Whenever it is listed, its images
+    per generator and class are saved to ``archive_counts.json``; the files planned are
+    those of generators missing on Drive (``missing``) or holding fewer images than the
+    archive, and only those not already on Drive with the right size. They are written
+    under the archive's own paths, i.e. the layout of the generators already there
+    (``GenImage/<Generator>/val/{ai,nature}``), each as ``.part`` then renamed. The plan
+    is saved first and done files are skipped, so the step resumes; the archive is deleted
+    at the end. ``relist`` forces a listing (needed to find what a partial copy lacks).
     """
     p = spec.params
     classes = p["class_dirs"]
     archive = ctx.paths.local_data / "downloads" / "genimage_val_fill.zip"
     plan_path = folder / "fill_plan.csv"
+    counts_path = folder / "archive_counts.json"
     plan = _read_csv(plan_path)
     pending = _fill_pending(folder, plan) if plan is not None else None
     top_dirs: dict[str, int] = {}
-    if plan is None or pending:
+    size_differs = 0
+    if plan is None or pending or relist:
         if not archive.is_file():
-            need = (
-                sum(int(r["bytes"]) for r in pending)
-                if pending is not None
-                else p["fill_gb_estimate"] * 1e9
-            )
-            ctx.drive_space(need, "the missing GenImage Validation generators (estimate)")
+            need = sum(int(r["bytes"]) for r in pending) if pending else p["fill_gb_estimate"] * 1e9
+            ctx.drive_space(need, "the missing GenImage Validation images (estimate)")
             ctx.sources.kaggle_download(
                 p["fill_from"],
                 archive,
@@ -289,22 +294,46 @@ def _fill_validation(
             top_dirs = dict(
                 Counter("/".join(PurePosixPath(m.name).parts[:2]) for m in members).most_common(20)
             )
-            if plan is None:
-                rows = []
-                for m in members:
-                    if not _is_image(m.name):
-                        continue
-                    gen, cls = _assign(m.name, classes)
-                    if gen in missing and cls:
-                        rows.append([gen, safe_member_name(m.name), m.size])
-                write_text_atomic(plan_path, _csv_text(["generator", "name", "bytes"], rows))
+            assigned = []
+            arch: dict[str, Counter[str]] = {}
+            for m in members:
+                if not _is_image(m.name):
+                    continue
+                gen, cls = _assign(m.name, classes)
+                if gen and cls:
+                    assigned.append((gen, m))
+                    arch.setdefault(gen, Counter())[cls] += 1
+            write_json_atomic(counts_path, {g: dict(c) for g, c in sorted(arch.items())})
+            on_drive = _count_validation(folder, classes)["per_generator"]
+            short = {
+                g
+                for g, c in arch.items()
+                if any(on_drive.get(g, {}).get(k, 0) < n for k, n in c.items())
+            }
+            targets = set(missing) | short
+            known = {r["name"] for r in plan or []}
+            new_rows, size_differs = [], 0
+            for gen, m in assigned:
+                name = safe_member_name(m.name)
+                target = folder / name
+                if gen not in targets or name in known:
+                    continue
+                if not target.exists():  # only add what is absent; never touch existing files
+                    new_rows.append([gen, name, m.size])
+                elif target.is_file() and target.stat().st_size != m.size:
+                    size_differs += 1
+            if plan is None or new_rows:
+                old_rows = [[r["generator"], r["name"], r["bytes"]] for r in plan or []]
+                write_text_atomic(
+                    plan_path, _csv_text(["generator", "name", "bytes"], old_rows + new_rows)
+                )
                 plan = _read_csv(plan_path) or []
-                pending = _fill_pending(folder, plan)
+            pending = _fill_pending(folder, plan)
             by_gen: dict[str, list[dict[str, str]]] = {}
             for r in pending:
                 by_gen.setdefault(r["generator"], []).append(r)
             ctx.drive_space(
-                sum(int(r["bytes"]) for r in pending), "the missing GenImage Validation generators"
+                sum(int(r["bytes"]) for r in pending), "the missing GenImage Validation images"
             )
             for gen, rows in sorted(by_gen.items()):
                 need = sum(int(r["bytes"]) for r in rows)
@@ -321,6 +350,7 @@ def _fill_validation(
                 manifest = folder / f"fill_manifest_{gen}.json"
                 write_json_atomic(manifest, {**(read_json(manifest) or {}), **records})
                 log.info("wrote %d %s images into the Validation folder", len(rows), gen)
+    plan = plan or []
     still = _fill_pending(folder, plan)
     if still:
         raise VerificationError(
@@ -329,12 +359,13 @@ def _fill_validation(
         )
     for leftover in (archive, archive.with_name(archive.name + ".part")):
         leftover.unlink(missing_ok=True)
-    found = Counter(r["generator"] for r in plan)
+    in_archive = set(read_json(counts_path) or {})
     return {
         "source": f"kaggle:{p['fill_from']}",
-        "files_per_generator": dict(sorted(found.items())),
-        "absent_from_archive": sorted(set(missing) - set(found)),
+        "files_per_generator": dict(sorted(Counter(r["generator"] for r in plan).items())),
+        "absent_from_archive": sorted(set(missing) - in_archive) if in_archive else [],
         "archive_top_folders": top_dirs,
+        "existing_files_with_other_size": size_differs if top_dirs else None,
     }
 
 
@@ -419,11 +450,19 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
     )
     plan = _read_csv(folder / "fill_plan.csv")
     damaged = bool(plan) and bool(_fill_pending(folder, plan))  # a filled file cut short
+    arch = read_json(folder / "archive_counts.json")
+    short = sorted(
+        g
+        for g, by in (arch or {}).items()  # fewer images than the archive
+        if any(summary["per_generator"].get(g, {}).get(c, 0) < n for c, n in by.items())
+    )
+    unknown = arch is None and summary["images"] != spec.params["expected_images"]
     fill: dict[str, Any] | None = None
-    if (missing_gens or damaged) and spec.params.get("fill_from"):
-        targets = sorted(set(missing_gens) | {r["generator"] for r in plan or []})
-        fill = _fill_validation(ctx, spec, folder, targets)
+    if (missing_gens or damaged or short or unknown) and spec.params.get("fill_from"):
+        targets = sorted(set(missing_gens) | set(short) | {r["generator"] for r in plan or []})
+        fill = _fill_validation(ctx, spec, folder, targets, relist=bool(short or unknown))
         summary = _count_validation(folder, classes)
+        arch = read_json(folder / "archive_counts.json")
     summary["filled"] = fill
     summary["converted_tars"] = converted
     missing = [
@@ -437,6 +476,16 @@ def step_verify_folder(ctx: Context, spec: DatasetSpec, folder: Path) -> dict[st
             f"{', '.join(fill['absent_from_archive'])} not found in "
             f"{fill['source']} (its top folders: {fill['archive_top_folders']})"
         )
+    if arch:
+        summary["archive_counts"] = arch
+        differ = [
+            f"{g}/{c} {summary['per_generator'].get(g, {}).get(c, 0)} vs {n}"
+            for g, by in arch.items()
+            for c, n in by.items()
+            if summary["per_generator"].get(g, {}).get(c, 0) != n
+        ]
+        if differ:
+            problems.append(f"differs from the archive (Drive vs archive): {', '.join(differ)}")
     n_images = summary["images"]
     if n_images != spec.params["expected_images"]:
         problems.append(f"{n_images} images, expected {spec.params['expected_images']}")

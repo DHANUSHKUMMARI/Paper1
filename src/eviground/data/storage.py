@@ -11,17 +11,68 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import shutil
 import tarfile
+import threading
+import time
 import zipfile
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+log = logging.getLogger(__name__)
+
 GB = 1e9
 DEFAULT_RESERVE_GB = 5.0
+COPY_WORKERS = 16  # parallel copies from the Drive mount (per-file latency, not bandwidth, limits)
+
+
+class Progress:
+    """Thread-safe progress report for long copies: a line every ``every_files`` files or
+    ``every_bytes`` bytes, and at the end (files/s, MB/s, estimated time left)."""
+
+    def __init__(
+        self,
+        what: str,
+        total_files: int,
+        total_bytes: float,
+        report: Callable[[str], None] | None = None,
+        every_files: int = 2000,
+        every_bytes: float = 2 * GB,
+    ) -> None:
+        self.what, self.total_files, self.total_bytes = what, total_files, total_bytes
+        self.report = report or log.info
+        self.every_files, self.every_bytes = every_files, every_bytes
+        self.files = 0
+        self.bytes = 0
+        self._next_files, self._next_bytes = every_files, every_bytes
+        self._t0 = time.monotonic()
+        self._lock = threading.Lock()
+
+    def add(self, nbytes: int) -> None:
+        with self._lock:
+            self.files += 1
+            self.bytes += nbytes
+            done = self.files == self.total_files
+            if not (done or self.files >= self._next_files or self.bytes >= self._next_bytes):
+                return
+            while self._next_files <= self.files:
+                self._next_files += self.every_files
+            while self._next_bytes <= self.bytes:
+                self._next_bytes += self.every_bytes
+            secs = max(time.monotonic() - self._t0, 1e-6)
+            rate = self.bytes / secs
+            left = (self.total_bytes - self.bytes) / rate if rate > 0 else 0.0
+            self.report(
+                f"{self.what}: {self.files}/{self.total_files} files, "
+                f"{self.bytes / GB:.1f}/{self.total_bytes / GB:.1f} GB, "
+                f"{self.files / secs:.0f} files/s, {rate / 1e6:.0f} MB/s, "
+                f"about {left / 60:.0f} min left"
+            )
 
 
 class InsufficientSpaceError(RuntimeError):
@@ -291,6 +342,7 @@ def extract_archive(
     *,
     reserve_gb: float = DEFAULT_RESERVE_GB,
     names: Iterable[str] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Unpack ``archive`` (or only ``names``) into ``dest``; resumable and verified.
 
@@ -300,6 +352,7 @@ def extract_archive(
     files on disk do not match the archive afterwards.
     """
     dest = Path(dest)
+    report = progress
     with ArchiveReader(archive) as reader:
         members = reader.members()
         if names is not None:
@@ -318,12 +371,14 @@ def extract_archive(
             reserve_gb=reserve_gb,
         )
         sizes = {m.name: m.size for m in todo}
+        prog = Progress(f"unpacking {Path(archive).name}", len(todo), sum(sizes.values()), report)
         for name, data in reader.iter_read(sizes):
             target = dest / safe_member_name(name)
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(target.name + ".part")
             tmp.write_bytes(data)
             os.replace(tmp, target)
+            prog.add(len(data))
     bad = [
         m.name
         for m in members
@@ -342,12 +397,16 @@ def copy_files(
     dest: Path | str,
     *,
     reserve_gb: float = DEFAULT_RESERVE_GB,
+    workers: int = COPY_WORKERS,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Copy ``files`` (relative path -> expected size) from ``src_root`` to ``dest``.
 
     Resumable (files already there with the right size are skipped), space-checked for
     what is still missing, each file written as ``.part`` and renamed, and verified by size
-    afterwards. Used to stage datasets that stay as loose files on Drive.
+    afterwards. Used to stage datasets that stay as loose files on Drive. Files are copied
+    by ``workers`` threads: on the Drive mount each file costs a round trip, so one file at a
+    time is slow for tens of thousands of small files. Progress is logged as it goes.
     """
     src_root, dest = Path(src_root), Path(dest)
     todo = {
@@ -362,12 +421,23 @@ def copy_files(
         where="the local disk",
         reserve_gb=reserve_gb,
     )
-    for rel in sorted(todo):
+    prog = Progress(f"copying {src_root.name}", len(todo), sum(todo.values()), progress)
+
+    def one(rel: str) -> None:
         target = dest / safe_member_name(rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(target.name + ".part")
         shutil.copyfile(src_root / rel, tmp)
         os.replace(tmp, target)
+        prog.add(todo[rel])
+
+    if workers > 1 and len(todo) > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for _ in pool.map(one, sorted(todo)):  # re-raises the first error
+                pass
+    else:
+        for rel in sorted(todo):
+            one(rel)
     bad = [
         r for r, s in files.items() if not ((dest / r).is_file() and (dest / r).stat().st_size == s)
     ]

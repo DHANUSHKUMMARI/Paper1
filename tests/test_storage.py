@@ -150,3 +150,85 @@ def test_copy_files_resumable_and_checked(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(InsufficientSpaceError):
         storage.copy_files(src, files, tmp_path / "third")
     assert not (tmp_path / "third").exists()
+
+
+def _loose(src: Path, n: int) -> dict[str, int]:
+    files = {}
+    for i in range(n):
+        rel = f"split/cls/images/{i:05d}.jpg"
+        (src / rel).parent.mkdir(parents=True, exist_ok=True)
+        data = bytes([i % 256]) * (100 + i)
+        (src / rel).write_bytes(data)
+        files[rel] = len(data)
+    return files
+
+
+def test_parallel_copy_same_result_resume_and_progress(tmp_path: Path) -> None:
+    src = tmp_path / "drive"
+    files = _loose(src, 50)
+    lines: list[str] = []
+    res = storage.copy_files(src, files, tmp_path / "a", workers=8, progress=lines.append)
+    assert res["copied"] == 50
+    for rel, size in files.items():
+        assert (tmp_path / "a" / rel).read_bytes() == (src / rel).read_bytes()
+        assert (tmp_path / "a" / rel).stat().st_size == size
+    assert not list((tmp_path / "a").rglob("*.part"))
+    assert lines and lines[-1].startswith("copying drive: 50/50 files")
+    # interrupted session: two files missing, one cut short -> only those three are copied
+    (tmp_path / "a" / "split/cls/images/00003.jpg").unlink()
+    (tmp_path / "a" / "split/cls/images/00007.jpg").unlink()
+    (tmp_path / "a" / "split/cls/images/00011.jpg").write_bytes(b"cut")
+    assert storage.copy_files(src, files, tmp_path / "a", workers=8)["copied"] == 3
+    assert (tmp_path / "a" / "split/cls/images/00011.jpg").read_bytes() == (
+        src / "split/cls/images/00011.jpg"
+    ).read_bytes()
+
+
+def test_parallel_copy_error_reaches_caller(tmp_path: Path) -> None:
+    src = tmp_path / "drive"
+    files = _loose(src, 20)
+    (src / "split/cls/images/00005.jpg").unlink()  # vanished on Drive
+    with pytest.raises(FileNotFoundError):
+        storage.copy_files(src, files, tmp_path / "a", workers=4)
+
+
+def test_parallel_copy_hides_per_file_latency(tmp_path: Path, monkeypatch) -> None:
+    """The Drive mount costs a round trip per file; threads overlap them."""
+    import shutil as _shutil
+    import time as _time
+
+    src = tmp_path / "drive"
+    files = _loose(src, 40)
+    real = _shutil.copyfile
+
+    def slow_copy(a, b, *args, **kw):
+        _time.sleep(0.03)
+        return real(a, b, *args, **kw)
+
+    monkeypatch.setattr(storage.shutil, "copyfile", slow_copy)
+    t = _time.monotonic()
+    storage.copy_files(src, files, tmp_path / "serial", workers=1)
+    serial = _time.monotonic() - t
+    t = _time.monotonic()
+    storage.copy_files(src, files, tmp_path / "parallel", workers=16)
+    parallel = _time.monotonic() - t
+    assert serial > 1.0 and parallel < serial / 3
+
+
+def test_progress_reports_at_intervals_and_end() -> None:
+    lines: list[str] = []
+    p = storage.Progress("x", total_files=10, total_bytes=1000, report=lines.append, every_files=4)
+    for _ in range(10):
+        p.add(100)
+    assert [ln.split(":")[1].split(",")[0].strip() for ln in lines] == [
+        "4/10 files",
+        "8/10 files",
+        "10/10 files",
+    ]
+
+
+def test_extract_archive_reports_progress(tmp_path: Path) -> None:
+    arc = _zip(tmp_path / "d.zip")
+    lines: list[str] = []
+    extract_archive(arc, tmp_path / "local", progress=lines.append)
+    assert lines[-1].startswith("unpacking d.zip: 3/3 files")

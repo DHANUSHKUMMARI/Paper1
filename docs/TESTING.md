@@ -3,6 +3,24 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — staging speed and progress — 2026-11-13
+
+Colab report (13 Nov, after the merge of PR #8): Cell 3 of `01_cp1_data_integrity.ipynb` was still
+running after 3.25 h with no output. Cause: `copy_files` copied SID-Set's 48,003 loose files one at
+a time through the Drive mount (one round trip per file), and neither `copy_files` nor
+`extract_archive` reported progress. Change: `copy_files` copies with 16 threads (same `.part` →
+rename, same size check, resumable); both functions log a line every 2,000 files or 2 GB (files/s,
+MB/s, minutes left); `stage` logs the time per dataset.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` | All checks passed |
+| `pytest` (all) | 210 passed (5 new) |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+| Copy of 200 files with 30 ms simulated latency per file | 1 worker 6.12 s, 4 workers 1.54 s, 16 workers 0.41 s |
+
+Not measurable here: the real Drive mount's per-file latency and how many parallel reads it serves.
+
 ## Milestone 2, step 4 — checkpoint CP1 code (spec revision 49) — 2026-11-13 — branch `claude/nice-curie-3tzxzr`
 
 New: `hashing.py` (file / pixel SHA-256, 64-bit DCT pHash, chunked Hamming search),

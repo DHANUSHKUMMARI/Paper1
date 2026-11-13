@@ -1166,12 +1166,24 @@ def stage(
     key: str, *, paths: Paths | None = None, reserve_gb: float = DEFAULT_RESERVE_GB
 ) -> dict[str, Any]:
     """Unpack a verified dataset's archives from Drive to the local disk (each session)."""
-    paths = paths or get_paths()
+    t0 = time.monotonic()
+    result = _stage(key, paths or get_paths(), reserve_gb)
+    log.info(
+        "%s: staged in %.1f min (%s)",
+        key,
+        (time.monotonic() - t0) / 60,
+        "already there" if result.get("skipped") else result.get("reason", "copied"),
+    )
+    return result
+
+
+def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
     spec = REGISTRY[key]
     folder = paths.datasets / spec.folder
     done = read_done(folder)
     if done is None:
         raise VerificationError(f"{key}: no verified _DONE on Drive; run ensure_data first")
+    log.info("%s: staging to the local disk", key)
     method = done.get("method", spec.method)  # the step that produced the verified data
     if method == "verify_folder":  # all loose files: read in place on Drive
         return {"staged": False, "reason": "read in place on Drive"}

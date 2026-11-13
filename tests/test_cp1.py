@@ -301,12 +301,24 @@ def test_scan_is_resumed_from_cache(tmp_path, monkeypatch):
     def boom(row):
         raise AssertionError("scanned again")
 
+    real_scan_row = cp1.scan_row
     monkeypatch.setattr(cp1, "scan_row", boom)
     second = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o2", cache_dir=tmp_path / "c", progress=None
     )
     assert first["exact_duplicates"] == second["exact_duplicates"]
     assert first["metadata_classifier"] == second["metadata_classifier"]
+    # a file replaced in place (here: a SID-Set validation image copied over a train image)
+    # must be scanned again, not served from the cache
+    monkeypatch.setattr(cp1, "scan_row", real_scan_row)
+    sid = paths.local_data / "sidset"
+    src = sorted((sid / "validation/real/images").iterdir())[0]
+    dst = sorted((sid / "train/real/images").iterdir())[0]
+    shutil.copyfile(src, dst)
+    third = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o3", cache_dir=tmp_path / "c", progress=None
+    )
+    assert third["exact_duplicates"]["sha256"]["cross_split_groups"] == 1
 
 
 def test_cross_split_duplicate_is_caught(tmp_path):

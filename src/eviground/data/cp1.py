@@ -264,9 +264,23 @@ def _mask_facts(path: str) -> dict[str, Any]:
     }
 
 
+def fingerprint(row: dict[str, Any]) -> str:
+    """Size and modification time of the image (and its mask): a cached scan is reused only
+    if these are unchanged, so a file replaced in place is scanned again."""
+    parts = []
+    for key in ("path", "mask_path"):
+        if row.get(key):
+            try:
+                st = os.stat(row[key])
+                parts.append(f"{st.st_size}:{st.st_mtime_ns}")
+            except OSError:
+                parts.append("missing")
+    return "|".join(parts)
+
+
 def scan_row(row: dict[str, Any]) -> dict[str, Any]:
     """Header facts, hashes and mask facts of one image (runs in a worker process)."""
-    out: dict[str, Any] = {"uid": row["uid"]}
+    out: dict[str, Any] = {"uid": row["uid"], "fingerprint": fingerprint(row)}
     try:
         data = Path(row["path"]).read_bytes()
     except OSError as exc:
@@ -292,6 +306,7 @@ def scan_row(row: dict[str, Any]) -> dict[str, Any]:
 
 SCAN_COLUMNS = [
     "uid",
+    "fingerprint",
     "format",
     "width",
     "height",
@@ -354,7 +369,8 @@ def scan(
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """uid -> scan facts. Parts of ``part_rows`` images are cached as csv.gz in ``cache``;
-    a part whose uid list is unchanged is read back instead of scanned again."""
+    a part is read back instead of scanned again only if its images and their fingerprints
+    (size and modification time of each image and mask) are unchanged."""
     cache.mkdir(parents=True, exist_ok=True)
     by_source: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -367,10 +383,10 @@ def scan(
             for k in range(0, len(src_rows), part_rows):
                 part = src_rows[k : k + part_rows]
                 path = cache / f"scan_{source}_{k // part_rows:05d}.csv.gz"
-                uids = [r["uid"] for r in part]
+                keys = [(r["uid"], fingerprint(r)) for r in part]
                 if path.is_file():
                     got = _read_csv_gz(path)
-                    if [g["uid"] for g in got] == uids:
+                    if [(g["uid"], g.get("fingerprint")) for g in got] == keys:
                         results.update({g["uid"]: _typed(g) for g in got})
                         continue
                 t0 = time.time()

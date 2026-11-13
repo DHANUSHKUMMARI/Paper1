@@ -204,7 +204,7 @@ def test_edited_box_share_in_range():
 def test_edited_box_fails_when_impossible():
     rng = np.random.default_rng(1)
     box, share, k = crops.edited_box(np.full((300, 300), 4, np.uint8), rng)
-    assert box is None and share == 1.0 and k == 10
+    assert box is None and share == pytest.approx(1.0) and k == 10
     assert crops.edited_box(np.zeros((100, 300)), rng)[0] is None
 
 
@@ -279,10 +279,10 @@ def test_lookup_cv_detects_and_ignores():
     rng = np.random.default_rng(0)
     y = ["real"] * 300 + ["fake"] * 600
     leak = [("jpeg",) if c == "real" else ("png",) for c in y]
-    assert shortcut.lookup_cv(leak, y) == 1.0
+    assert shortcut.lookup_cv(leak, y) == pytest.approx(1.0)
     noise = [(int(rng.integers(0, 3)),) for _ in y]
     assert 0.4 < shortcut.lookup_cv(noise, y) < 0.6
-    assert shortcut.balanced_accuracy(["a", "a", "b"], ["a", "a", "a"]) == 0.5
+    assert shortcut.balanced_accuracy(["a", "a", "b"], ["a", "a", "a"]) == pytest.approx(0.5)
 
 
 def test_feature_report_finds_leaking_feature():
@@ -294,9 +294,9 @@ def test_feature_report_finds_leaking_feature():
         "crop_w": [256] * 400,
     }
     rep = shortcut.feature_report(feats, y)
-    assert rep["single_feature"]["format"] == 0.5
+    assert rep["single_feature"]["format"] == pytest.approx(0.5)
     assert rep["single_feature"]["quality"] > 0.7
-    assert rep["drop_one"]["quality"] == 0.5
+    assert rep["drop_one"]["quality"] == pytest.approx(0.5)
     assert rep["distinct_values"] == {"format": 1, "quality": 2, "crop_w": 1}
 
 
@@ -313,7 +313,8 @@ def test_threshold_cv():
 
 
 def test_weighted_balanced_accuracy_and_threshold():
-    assert shortcut.balanced_accuracy(["a", "a", "b"], ["a", "b", "b"], [3, 1, 1]) == 0.875
+    weighted_ba = shortcut.balanced_accuracy(["a", "a", "b"], ["a", "b", "b"], [3, 1, 1])
+    assert weighted_ba == pytest.approx(0.875)
     rng = np.random.default_rng(3)
     # class b = two sources; source 2 (level 1.3) is over-measured but its sampler weight is
     # small, so with weights the threshold must mostly see source 1 (level 1.0, as class a)

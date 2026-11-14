@@ -327,3 +327,19 @@ def test_a_shard_from_another_manifest_is_rewritten(packed, tmp_path):  # noqa: 
     again = pack.pack(other, out, progress=None, **kw)
     assert again["shards_skipped"] == 0
     assert again["shards_written"] == first["shards"]
+
+
+def test_stored_offsets_match_the_tar_members(packed):  # noqa: F811
+    import tarfile
+
+    index = pack.read_index(packed["out"] / pack.INDEX_FILE)
+    by_shard: dict[str, list[dict]] = {}
+    for e in index:
+        by_shard.setdefault(e["shard"], []).append(e)
+    for shard, entries in by_shard.items():
+        with tarfile.open(packed["out"] / shard) as tar:
+            members = {m.offset_data: m.size for m in tar.getmembers()}
+        for e in entries:
+            assert members[e["img_offset"]] == e["img_size"]
+            if e["mask_offset"] is not None:
+                assert members[e["mask_offset"]] == e["mask_size"]

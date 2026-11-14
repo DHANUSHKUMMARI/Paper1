@@ -245,14 +245,29 @@ def plan_shards(
     return plan
 
 
-def _add(tar: tarfile.TarFile, name: str, data: bytes) -> tuple[int, int]:
-    info = tarfile.TarInfo(name)
-    info.size = len(data)
-    info.mtime = 0  # deterministic shards
-    # offset_data is only filled in when reading; the data follows this member's header
-    start = tar.offset + len(info.tobuf(tar.format, tar.encoding, tar.errors))
-    tar.addfile(info, io.BytesIO(data))
-    return start, info.size
+TAR_BLOCK = 512
+
+
+class _ShardWriter:
+    """Adds members to a USTAR tar and tracks where each member's data starts. The position is
+    counted here (one 512-byte header per member, data padded to 512 bytes; member names are
+    short, so USTAR needs no extra header) and checked against the tar writer after every
+    member."""
+
+    def __init__(self, tar: tarfile.TarFile) -> None:
+        self.tar = tar
+        self.pos = 0
+
+    def add(self, name: str, data: bytes) -> tuple[int, int]:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        info.mtime = 0  # deterministic shards
+        self.tar.addfile(info, io.BytesIO(data))
+        start = self.pos + TAR_BLOCK
+        self.pos = start + -(-len(data) // TAR_BLOCK) * TAR_BLOCK
+        if self.tar.offset != self.pos:
+            raise RuntimeError(f"unexpected tar layout after {name}")
+        return start, len(data)
 
 
 def write_shard(
@@ -264,12 +279,13 @@ def write_shard(
     path.parent.mkdir(parents=True, exist_ok=True)
     entries = []
     with tarfile.open(tmp, "w", format=tarfile.USTAR_FORMAT) as tar:
+        shard = _ShardWriter(tar)
         for i, (r, p) in enumerate(zip(rows, payloads, strict=True)):
             fmt = image_format(p["img"])
-            img_off, img_size = _add(tar, f"{i:06d}.{fmt}", p["img"])
+            img_off, img_size = shard.add(f"{i:06d}.{fmt}", p["img"])
             mask_off = mask_size = None
             if p["mask"] is not None:
-                mask_off, mask_size = _add(tar, f"{i:06d}.mask.png", p["mask"])
+                mask_off, mask_size = shard.add(f"{i:06d}.mask.png", p["mask"])
             w, h = target_size(r)
             entries.append(
                 {

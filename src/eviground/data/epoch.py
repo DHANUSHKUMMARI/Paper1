@@ -66,7 +66,7 @@ def epoch_plan(
     picks = sampler.draw(sources, labels, n_per_class, seed, profile)
     pools = {
         (label, source): np.flatnonzero((src == source) & (lab == label))
-        for label, source in sampler.quotas(n_per_class, profile)
+        for (label, source), _n in sampler.quotas(n_per_class, profile).items()
     }
     limit = len(picks) if max_replacements is None else max_replacements
     replace_rng = np.random.default_rng([seed, 1])

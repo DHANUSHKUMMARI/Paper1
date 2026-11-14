@@ -50,7 +50,7 @@ class ShardReader:
     def __init__(self, shard_dir: Path, rows: Sequence[dict[str, Any]] | None = None) -> None:
         self.shard_dir = Path(shard_dir)
         self.rows = (
-            list(rows) if rows is not None else pack.read_index(self.shard_dir / "index.parquet")
+            list(rows) if rows is not None else pack.read_index(self.shard_dir / pack.INDEX_FILE)
         )
 
     def image(self, e: dict[str, Any]) -> Image.Image:

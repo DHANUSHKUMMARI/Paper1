@@ -299,3 +299,17 @@ def test_augment_from_config():
     assert Augment.from_config(False) == Augment(enabled=False)
     a = Augment.from_config({"jpeg_p": 0.25, "resize_range": [0.75, 1.25]})
     assert a.jpeg_p == 0.25 and a.resize_range == (0.75, 1.25) and a.enabled
+
+
+def test_shard_paths_cannot_leave_the_shard_folder(tmp_path):
+    assert (
+        pack.inside(tmp_path, "coco/shard-00000.tar")
+        == (tmp_path / "coco/shard-00000.tar").resolve()
+    )
+    for bad in ("../x.tar", "coco/../../x.tar", "/etc/passwd", "."):
+        with pytest.raises(ValueError):
+            pack.inside(tmp_path, bad)
+    with pytest.raises(ValueError, match="source name"):
+        pack.plan_shards([{"source": "../evil", "uid": "a"}], {})
+    with pytest.raises(ValueError):
+        pack.read_image_bytes(tmp_path, {"shard": "../x.tar", "img_offset": 0, "img_size": 1})

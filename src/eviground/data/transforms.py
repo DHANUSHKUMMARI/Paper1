@@ -75,19 +75,24 @@ class Augment:
         return out, flip
 
 
+def is_identity(scale: float) -> bool:
+    """True for the "no resize" factor 1.0 (returned as is by :meth:`Augment.scale`)."""
+    return abs(scale - 1.0) < 1e-12
+
+
 def scaled_size(width: int, height: int, scale: float) -> tuple[int, int]:
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
 def resize_image(img: Image.Image, scale: float) -> Image.Image:
-    if scale == 1.0:
+    if is_identity(scale):
         return img
     return img.resize(scaled_size(*img.size, scale), Image.Resampling.BICUBIC)
 
 
 def resize_mask(mask: np.ndarray, scale: float) -> np.ndarray:
     """Nearest-neighbour resize of a boolean mask."""
-    if scale == 1.0:
+    if is_identity(scale):
         return mask
     h, w = mask.shape
     m = Image.fromarray(mask.astype(np.uint8) * 255)

@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import re
 import tarfile
 import time
 from collections import Counter, defaultdict
@@ -44,6 +45,8 @@ MASK_RULE = (
 )
 SHARD_BYTES = 1_000_000_000
 MARGIN_BYTES = 10_000_000_000
+INDEX_FILE = "index.parquet"
+SOURCE_NAME = re.compile(r"[a-z0-9_]+")
 SPLITS = ("train", "val")
 INDEX_COLUMNS = (
     "uid",
@@ -213,6 +216,16 @@ def check_space(
 # --------------------------------------------------------------------------------------
 
 
+def inside(base: Path, rel: str) -> Path:
+    """``base / rel``, refusing any name that leaves ``base`` (the shard names come from the
+    manifest's source names and from the index)."""
+    root = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(root, rel))
+    if os.path.commonpath([root, full]) != root or full == root:
+        raise ValueError(f"shard path {rel!r} leaves {base}")
+    return Path(full)
+
+
 def plan_shards(
     rows: Sequence[dict[str, Any]], estimate: dict[str, Any], shard_bytes: int = SHARD_BYTES
 ) -> list[tuple[str, int, list[dict[str, Any]]]]:
@@ -223,6 +236,8 @@ def plan_shards(
         by_source[r["source"]].append(r)
     plan = []
     for source, rs in sorted(by_source.items()):
+        if not SOURCE_NAME.fullmatch(source):
+            raise ValueError(f"unexpected source name {source!r} in the manifest")
         est = estimate.get(source, {}).get("estimate_bytes", 0)
         per = max(1, int(len(rs) * shard_bytes / est)) if est else len(rs)
         for k in range(0, len(rs), per):
@@ -355,7 +370,7 @@ def pack(
     written = skipped = 0
     for n, (source, k, rs) in enumerate(plan, 1):
         name = f"{source}/shard-{k:05d}.tar"
-        path = out_dir / name
+        path = inside(out_dir, name)
         done = _shard_done(path)
         if done is not None and len(done) == len(rs):
             entries += done
@@ -366,7 +381,7 @@ def pack(
         entries += got
         written += 1
         say(f"shard {n}/{len(plan)} {name}: {len(rs)} images, {path.stat().st_size / 1e9:.2f} GB")
-    write_index(entries, out_dir / "index.parquet")
+    write_index(entries, out_dir / INDEX_FILE)
     total = sum(p.stat().st_size for p in out_dir.rglob("*.tar"))
     summary = {
         "manifest": str(manifest),
@@ -391,7 +406,7 @@ def pack(
 def read_done(out_dir: Path) -> dict[str, Any] | None:
     """The ``_DONE.json`` summary of a finished pack, or None."""
     path = out_dir / "_DONE.json"
-    if not (path.is_file() and (out_dir / "index.parquet").is_file()):
+    if not (path.is_file() and (out_dir / INDEX_FILE).is_file()):
         return None
     return json.loads(path.read_text())
 
@@ -401,7 +416,7 @@ def read_image_bytes(shard_dir: Path, entry: dict[str, Any], which: str = "img")
     off, size = entry[f"{which}_offset"], entry[f"{which}_size"]
     if off is None or size is None:
         return None
-    with open(shard_dir / entry["shard"], "rb") as fh:
+    with open(inside(shard_dir, entry["shard"]), "rb") as fh:
         fh.seek(int(off))
         return fh.read(int(size))
 
@@ -410,7 +425,7 @@ def verify_sample(
     shard_dir: Path, rows: Sequence[dict[str, Any]], *, per_source: int = 20, seed: int = 42
 ) -> dict[str, Any]:
     """Packed bytes == a fresh harmonization (and edit mask) for a seeded sample per source."""
-    index = {e["uid"]: e for e in read_index(shard_dir / "index.parquet")}
+    index = {e["uid"]: e for e in read_index(shard_dir / INDEX_FILE)}
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in packable(rows):
         by_source[r["source"]].append(r)

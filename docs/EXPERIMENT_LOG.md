@@ -18,6 +18,7 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-13 | Data probe (`00b`, commit `0c6d6d4`), read-only | none (CPU runtime) | 0.869 (52.1 min) | not recorded | not recorded | `cp1_probe*.json` in `runs/checkpoints`: formats, JPEG qualities, sizes, blockiness per source and class; DiffSeg30k card (mask map 0–8) |
 | 2026-11-14 | CP1 run (`01`, commit `a14d717`), Cells 1–5 | none (CPU runtime) | 2.692 (161.5 min) | not recorded | not recorded | **CP1 FAIL**: 169 cross-split duplicate groups; near-duplicates P2 1.18%, P3b 5.88%; blockiness separations 0.6675 (GenImage) and 0.6587 (SID-Set); metadata classifier 0.5353 |
 | 2026-11-14 | CP1 run 2 (`01`, commit `c001cb2`), Cells 1–5 | none (CPU runtime) | 0.429 (25.7 min) | not recorded | not recorded | Criteria met (0 cross-split duplicates; counts equal; metadata 0.5411); stop and ask on blockiness (GenImage 0.6675, pooled vs edited 0.6205 / 0.642) |
+| 2026-11-14 | CP1 run 3 (`01`, commit `2feec5a`), Cells 1–5 | none (CPU runtime) | 0.359 (21.5 min) | not recorded | not recorded | **CP1 PASS**: 0 cross-split duplicates; counts equal; metadata 0.5089; no blockiness stop (GenImage trace accepted) |
 
 ## Runs
 

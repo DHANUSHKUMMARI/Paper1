@@ -14,20 +14,22 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
 from eviground.data import crops, sampler
 
 Box = tuple[int, int, int, int]
-CropFn = Callable[[int, np.random.Generator], Box | None]
+# returns the crop (a Box, or any crop spec such as a box plus a resize scale) or None
+CropFn = Callable[[int, np.random.Generator], Any]
 
 
 @dataclass
 class EpochPlan:
     """Row index and crop box of every draw, in training order, plus the failure log."""
 
-    items: list[tuple[int, Box]] = field(default_factory=list)
+    items: list[tuple[int, Any]] = field(default_factory=list)
     failures: Counter[str] = field(default_factory=Counter)  # uid -> failed draws
     replacements: Counter[str] = field(default_factory=Counter)  # "class/source" -> count
 

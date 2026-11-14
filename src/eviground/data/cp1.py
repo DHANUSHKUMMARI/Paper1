@@ -86,8 +86,11 @@ class CP1Config:
     # failed edited crops are replaced from the same pool, round by round (14 Nov 2026)
     crop_replacement_rounds: int = 20
     # AI-base masks whose border and pixel count disagree on the base: above this share of the
-    # full masks, stop and ask (decision of 14 Nov 2026)
+    # full masks, stop and ask (decision of 14 Nov 2026) ...
     base_unclear_max: float = 0.05
+    # ... unless the share is no higher than the one Dhanush accepted: CP1 run 5 measured 0.1306
+    # (2,048 of 15,687); the disagreements stay out of training (decision of 14 Nov 2026)
+    base_unclear_accepted: float | None = 0.1306
 
 
 # --------------------------------------------------------------------------------------
@@ -1551,6 +1554,13 @@ def draw_crops(
     return samples, log
 
 
+def base_unclear_stop(share: float, cfg: CP1Config) -> bool:
+    """Stop and ask when base disagreements exceed ``cfg.base_unclear_max``, except up to the
+    share Dhanush accepted (``cfg.base_unclear_accepted``, CP1 run 5)."""
+    limit = max(cfg.base_unclear_max, cfg.base_unclear_accepted or 0.0)
+    return share > limit
+
+
 def run_stops(rows: list[dict[str, Any]], crop_log: dict[str, Any]) -> dict[str, bool]:
     """Stops added with the run-5 design (Codex review of PR 18): a DiffSeg30k mask that could
     not be read again in the base pass leaves roles and P2 incomplete; edited crops still failing
@@ -1672,8 +1682,9 @@ def run_cp1(
         # no .jsonl found, or a line that is not a JSON object: the census is incomplete
         "diffseg_jsonl_census_incomplete": not masks["jsonl_census_complete"],
         # AI-base masks whose base the border and the pixel count disagree on (14 Nov 2026)
-        "diffseg_base_unclear_over_5pct": masks["base_reading"]["disagree_share_of_full"]
-        > cfg.base_unclear_max,
+        "diffseg_base_unclear_over_5pct": base_unclear_stop(
+            masks["base_reading"]["disagree_share_of_full"], cfg
+        ),
         # an image that could not be read (corrupt, or a read that never returned) was left out
         # of the duplicate checks, so CP1 cannot pass until it is looked at
         "images_not_scanned": any(r.get("error") for r in rows),

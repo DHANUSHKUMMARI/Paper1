@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 4; runs 1–3 below). Run 5 pending: DiffSeg30k mask reading decided after notebook 03 | |
+| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -225,12 +225,49 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   accepted and reported).
 - **Verified by Dhanush:** ☐
 
-### CP1 run 5 — pending (DiffSeg30k mask reading, 14 Nov 2026)
+### CP1 run 5 — Data integrity and leakage — 2026-11-14 — **PASS** (accepted by Dhanush)
 
-Run 4's PASS holds for its design. Since then (data/README decisions 15–17): an AI-generated base's
-mask value is read as 0 (border + most frequent value; disagreements leave training); Glide and
-Kolors stay out of training wherever they appear and P2 keeps validation images where they made an
-edit; DiffSeg30k's unedited images are real negatives again (real shares 1/3, 1/6, 1/4, 1/4);
-CP1's edited crops use the training rule with replacement. Run 5 adds: base-reading counts by
-role, the disagreement share (stop above 5%), P2 on all / real-base / AI-base images, valid-crop
-images in the train split, and the failed-draw share histogram.
+- **Run / commit:** Colab CPU runtime, `main` at `git 9a134bc` (mask reading merged in PR #18); record
+  Drive `Paper 1/runs/checkpoints/cp1_data_integrity.json` (written 2026-11-14 19:51 UTC; replaces the
+  run-4 file); grids and `manifest_cp1.csv.gz` in `Paper 1/runs/checkpoints/cp1/`. Wall time 88.7 min
+  (`run_cp1` 26.4 min). CU not recorded.
+- **What changed since run 4** (data/README decisions 15–17): an AI-generated base's mask value is
+  read as 0 (border majority = most frequent value; disagreements leave training); Glide / Kolors
+  out of training wherever they appear, P2 = validation images where they made an edit;
+  DiffSeg30k's unedited images are real negatives again (real = 1/3, 1/6, 1/4, 1/4); edited crops
+  with the training rule, failed draws replaced.
+- **Numbers, against the pass criteria of Research Specification 9.1:**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| 0 duplicate image hashes across train / val / test | 0 groups across splits | PASS |
+| Class counts equal the manifests | 13 of 13 equal | PASS |
+| Metadata classifier (format, JPEG quality, crop size) ≤ 60% real vs not real | 0.5071 on 9,000 harmonized crops (JPEG quality alone 0.5071; format, crop width, crop height 0.50); three classes 0.3469 | PASS |
+| Blockiness per class: a clear class difference means stop and ask | harmonized medians: GenImage real 1.0201 / generated 1.0406; SID-Set real 1.2702 / synthetic 1.2827; COCO 1.0746; DiffSeg30k real 1.0815 / edited 1.0913. Separations: DiffSeg30k edited vs real 0.4906; real (COCO + DiffSeg30k) vs DiffSeg30k edited 0.4745; SID-Set 0.5375; sampler mix real vs not real 0.5429, real vs generated 0.5579, real vs edited 0.5086, generated vs edited 0.5274. GenImage generated vs real 0.6325 reported as accepted (generator trace) | PASS (no stop) |
+
+- **Stop flag raised:** `diffseg_base_unclear_over_5pct` (a limit I added in PR #18, not a spec 9.1
+  criterion): border and pixel count disagree on the base for 2,048 of 15,687 full masks (13.1%).
+  By role: 645 left out of training (`excluded_base_unclear`), 1,016 held out anyway, 235 in P2,
+  152 unused validation. **Dhanush accepted run 5 as PASS** (14 Nov 2026); the disagreements stay
+  out of training and counted. The accepted share is in `CP1Config.base_unclear_accepted` (0.1306),
+  so a rerun on the same data does not stop again; a higher share still does. All other stop flags
+  false.
+- **Mask readings:** agree 13,033, disagree 2,048, no edit left 606, real base 14,312, unedited
+  5,000. Training pool: 5,560 AI-base edited, 6,266 real-base edited, 4,856 unedited (real
+  negatives); left out: 645 base unclear, 228 no edit, 11,252 hold-out.
+- **P2:** 2,434 validation images where Glide or Kolors made an edit: 1,287 real-base (the subset
+  compared with the DiffSeg30k paper), 1,147 AI-base (235 of them with a base disagreement); 375
+  images with Glide/Kolors only as the base are left out.
+- **Valid crops (read masks):** 21,477 of 28,998 train-split images; 11,639 of 11,826 edited
+  training images.
+- **Edited crops (training rule):** 68 of 3,000 first-pass draws failed (65 every try above 90%, 3
+  below 1%); shares of their tries: (0.1–0.5%] 12, (0.5–1%) 18, (90–99%] 99, (99–100%) 204, 100% 347;
+  69 failed draws in all, replaced in 2 rounds, 0 unresolved. The 1% minimum stays.
+- **Quality 75, 4:2:0 as sampled:** real 0.3643, generated 0.3703, edited 0.377 (COCO 0.3533,
+  DiffSeg30k real 0.384, DiffSeg30k edited 0.377).
+- **Left out of training** (test sets unchanged): 28 exact and 466 near duplicates of test images,
+  10,000 SID-Set tampered. Near-duplicates at ≤ 6: 0 in P1, P2, P3b and P7.
+- **Diagnostics:** metadata original size 0.7868, harmonized file bytes 0.5232, raw files 0.7685;
+  COCO negatives at DiffSeg30k sizes: 204 unchanged, 490 cropped, 189 downscaled, 3,967 upscaled.
+- **Result:** **PASS** (criteria met; the base-disagreement stop accepted by Dhanush).
+- **Verified by Dhanush:** ☐

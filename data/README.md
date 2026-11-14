@@ -80,6 +80,13 @@ After the first CP1 run (FAIL, 14 Nov 2026; see `docs/CHECKPOINTS.md`), Dhanush 
     files, and the same ratio on the mid-block lines (JPEG has no edges there; an upsampling
     decoder can).
 
+After CP1 run 2 (criteria met, blockiness stop; 14 Nov 2026), Dhanush decided:
+
+11. GenImage's generated-vs-real blockiness (0.6675) is accepted as a generator trace: it is present
+    in the raw SD v1.4 PNGs and on mid-block lines, where JPEG puts no edges. It stays reported.
+12. One seeded third of DiffSeg30k edited training images is compressed at quality 75, 4:2:0 (like
+    SID-Set), so quality-75 images make up one third of every class.
+
 Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.csv.gz`); CP1
 starts only if the local disk matches that list exactly (none missing, none with another size,
 no extra files).

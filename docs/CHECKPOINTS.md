@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | **FAIL** (14 Nov 2026), stop and ask | |
+| CP1 | 2 | Data integrity and leakage | run 1 **FAIL**; run 2: criteria met, stop and ask (blockiness), fixes decided (14 Nov 2026) | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -105,3 +105,43 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   in P2 and P3b; blockiness class differences). Reported to Dhanush with proposed fixes; nothing
   changed until he decides.
 - **Verified by Dhanush:** ☐
+
+### CP1 run 2 — Data integrity and leakage — 2026-11-14
+
+- **Run / commit:** Colab CPU runtime, `main` at `git c001cb2` (fixes of PR #12); record Drive
+  `Paper 1/runs/checkpoints/cp1_data_integrity.json` (written 2026-11-14 10:35 UTC, replacing run 1's
+  file; run 1's numbers are in the entry above). Wall time 25.7 min (scan reused from run 1).
+  CU not recorded.
+- **What was run:** `notebooks/01_cp1_data_integrity.ipynb`, Cells 1–5. Local copies checked file by
+  file: 80,000 / 70,000 / 48,000 / 5,000 files, 0 missing, 0 other size, 0 extra.
+- **Left out of training** (test sets unchanged): 28 exact duplicates of test images (GenImage → P1);
+  467 near-duplicates (pHash ≤ 6): GenImage 128 → P1, 2 → P3b; DiffSeg30k 16 → P1, 58 → P2, 118 → P3b;
+  SID-Set 14 → P1, 1 → P2, 117 → P3b, 1 → P7; COCO 12 → P1; 10,000 SID-Set tampered (fallback).
+  DiffSeg30k unedited images in training as real negatives: 4,370 train + 486 val. COCO negatives
+  at DiffSeg30k sizes: 176 unchanged, 478 cropped, 180 downscaled, 4,016 upscaled.
+- **Numbers, against the pass criteria of Research Specification 9.1 (rev 49):**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| 0 duplicate image hashes across train / val / test | 0 file-hash and 0 pixel-hash groups across splits (within-split groups, reported only: 43) | PASS |
+| Class counts equal the manifests | all 13 equal | PASS |
+| Metadata classifier (format, JPEG quality, crop size) ≤ 60% real vs not real | 0.5411 on 7,426 harmonized crops (JPEG quality alone 0.5411; format, crop width, crop height 0.50); three classes 0.4294 | PASS |
+| Blockiness per class: a clear class difference means stop and ask | harmonized medians: GenImage real 1.0158 / generated 1.0406; SID-Set real 1.2515 / synthetic 1.2827; DiffSeg30k real 1.0241 / edited 1.0383; COCO 1.0408. Above 0.60: GenImage generated vs real 0.6675; all sources (sampler mix) real vs edited 0.6205, generated vs edited 0.642 | **stop and ask** |
+
+- **Near-duplicates of test images in train + val** (pHash ≤ 6): 0 in P1, P2, P3b and P7 (at ≤ 8:
+  791, 50, 272, 0).
+- **Diagnostics for the blockiness stop:** GenImage generated vs real separates already on the raw
+  files (0.6225) and on mid-block lines of the raw files, where JPEG puts no edges (0.6575; medians
+  1.0066 vs 0.9955): a trace of the generator, not of the harmonization. The pooled separations against
+  "edited" come from SID-Set's quality-75 images being one third of real and generated but absent from
+  edited since SID-Set tampered left training.
+- **Decisions by Dhanush (14 Nov 2026):** accept GenImage's difference as a generator trace (reported,
+  not a stop); compress one seeded third of DiffSeg30k edited training images at quality 75, 4:2:0, so
+  quality-75 images make up one third of every class. Run 3 measures the result.
+- **Other diagnostics:** metadata original size 0.7575, harmonized file bytes 0.5326, raw files
+  0.7948; crops: 1,574 of 9,000 draws failed the 1–90% edited share in 10 tries (DiffSeg30k edited:
+  1,426 of 3,000 succeeded).
+- **Result:** criteria met; **stop and ask** on blockiness, resolved by the decisions above; CP1
+  is recorded as PASS only after run 3.
+- **Verified by Dhanush:** ☐
+

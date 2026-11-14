@@ -731,3 +731,29 @@ def test_stage_repairs_a_damaged_unpacked_copy(tmp_path):
     assert files[0].is_file() and files[1].read_bytes() == good
     cp1.check_staged(paths)  # passes again
     assert stage("diffseg30k", paths=paths, reserve_gb=0)["skipped"] is True
+
+
+def test_accepted_blockiness_pair_is_reported_not_a_stop():
+    rng = np.random.default_rng(5)
+    groups = {
+        "genimage/real": list(rng.normal(1.0, 0.01, 40)),
+        "genimage/generated": list(rng.normal(1.1, 0.01, 40)),
+    }
+    samples = [
+        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+        for k, vs in groups.items()
+        for v in vs
+    ]
+    plain = cp1.blockiness_check(samples, seed=42)
+    assert plain["stop_and_ask"] is True
+    acc = cp1.blockiness_check(samples, seed=42, accepted={"genimage: generated vs real": "why"})
+    assert acc["stop_and_ask"] is False and acc["clear_difference"] == {}
+    assert acc["accepted"]["genimage: generated vs real"]["why"] == "why"
+    assert acc["separation"]["genimage: generated vs real"] > 0.95  # still reported
+
+
+def test_plan_has_q75_third_for_diffseg_edited(run):
+    _, _, res = run
+    assert res["harmonization_plan"]["diffseg30k/edited"].get("compress:q75_third", 0) > 0
+    assert "compress:q75_third" not in res["harmonization_plan"]["diffseg30k/real"]
+    assert "genimage: generated vs real" in res["config"]["blockiness_accepted"]

@@ -11,7 +11,8 @@ once, as whole images before cropping; an image already at that compression is l
 | SID-Set | real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 /
   4:2:0 untouched; JPEGs below quality 75 skipped and counted |
 | DiffSeg30k, COCO negatives | all PNG after preparation -> JPEG with the GenImage real
-  distribution; COCO negatives take sizes drawn from DiffSeg30k's measured sizes |
+  distribution; COCO negatives take sizes drawn from DiffSeg30k's measured sizes; one seeded
+  third of DiffSeg30k edited images at quality 75, 4:2:0 instead (14 Nov 2026) |
 
 The plan for each image is a pure function of its header facts and its id (seed 42), so the
 same image is always compressed the same way, in every session and every epoch.
@@ -114,6 +115,11 @@ class QualityDistribution:
         }
 
 
+def q75_third(uid: str, seed: int = SEED) -> bool:
+    """A fixed, seeded third of all image ids (the same ids in every run)."""
+    return _uid_int(f"q75:{seed}:{uid}") % 3 == 0
+
+
 def plan_image(
     source: str,
     label: str,
@@ -164,6 +170,10 @@ def plan_image(
     if dist is None:
         raise ValueError(f"{source}: the GenImage real quality distribution is required")
     if lossless:
+        if source == "diffseg30k" and label == "edited" and q75_third(uid, seed):
+            # one third of the edited class at SID-Set's compression, so that quality 75 makes
+            # up one third of every class (decision of 14 Nov 2026 after CP1 run 2)
+            return compress(*SID_TARGET, "q75_third")
         q, ss = dist.sample(uid, seed)
         return compress(q, ss, "lossless")
     if fmt == "jpeg":

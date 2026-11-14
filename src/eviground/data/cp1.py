@@ -29,7 +29,7 @@ import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,13 @@ class CP1Config:
     scan_part_rows: int = 2000
     # blockiness fallback decided on 14 Nov 2026 after the first CP1 run
     sid_tampered_in_training: bool = False
+    # blockiness separations Dhanush accepted (reported, not a stop): decision of 14 Nov 2026
+    blockiness_accepted: dict[str, str] = field(
+        default_factory=lambda: {
+            "genimage: generated vs real": "generator trace of SD v1.4: present in the raw PNGs "
+            "and on mid-block lines, where JPEG puts no edges (CP1 run 2, 14 Nov 2026)"
+        }
+    )
     stall_s: float = 180.0  # a single image read taking longer is treated as stuck
     scan_retries: int = 2
     diffseg_card_splits: dict[str, int] | None = None
@@ -1005,7 +1012,12 @@ def _pair_separations(groups: dict[str, list[float]], seed: int) -> dict[str, fl
     return out
 
 
-def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
+def blockiness_check(
+    samples: list[dict[str, Any]], seed: int, accepted: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Blockiness per class and source; a separation above 0.60 is a stop-and-ask unless
+    Dhanush accepted that pair (``accepted``: pair -> reason); accepted pairs stay reported."""
+    accepted = accepted or {}
     ok = [s for s in samples if "error" not in s and s.get("blockiness") is not None]
 
     def collect(field: str) -> dict[str, list[float]]:
@@ -1056,7 +1068,11 @@ def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]
             )
         for name, score in pairs.items():
             out["separation"][f"all sources (sampler mix): {name}"] = score
-    out["clear_difference"] = {k: v for k, v in out["separation"].items() if v > shortcut.CRITERION}
+    above = {k: v for k, v in out["separation"].items() if v > shortcut.CRITERION}
+    out["accepted"] = {
+        k: {"separation": v, "why": accepted[k]} for k, v in above.items() if k in accepted
+    }
+    out["clear_difference"] = {k: v for k, v in above.items() if k not in accepted}
     out["stop_and_ask"] = bool(out["clear_difference"])
     return out
 
@@ -1321,7 +1337,7 @@ def run_cp1(
         samples = [sample_row(t) for t in tasks]
     errors = Counter(s["error"] for s in samples if "error" in s)
     meta = metadata_check(samples, cfg.seed)
-    block = blockiness_check(samples, cfg.seed)
+    block = blockiness_check(samples, cfg.seed, cfg.blockiness_accepted)
     grids = make_grids(samples, {r["uid"]: r for r in rows}, out_dir, cfg.grid)
     edited_shares = [
         s["edited_share"] for s in samples if s.get("edited_share") is not None and "error" not in s

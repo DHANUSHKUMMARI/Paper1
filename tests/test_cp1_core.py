@@ -348,3 +348,18 @@ def test_weighted_balanced_accuracy_and_threshold():
     w = [1 / 200] * 200 + [0.95 / 200] * 200 + [0.05 / 400] * 400
     weighted = shortcut.threshold_cv(a + b, y, weights=w)
     assert unweighted > 0.8 and weighted < 0.6
+
+
+def test_one_third_of_diffseg_edited_at_q75():
+    """Decision of 14 Nov 2026: q75 makes up one third of every class again."""
+    d = _dist()
+    info = _info("png", 512, 512)
+    plans = [harmonize.plan_image("diffseg30k", "edited", info, f"e{i}", d) for i in range(3000)]
+    q75 = [p for p in plans if p["reason"] == "q75_third"]
+    assert 0.30 < len(q75) / len(plans) < 0.37
+    assert all((p["quality"], p["subsampling"]) == (75, "4:2:0") for p in q75)
+    assert plans == [
+        harmonize.plan_image("diffseg30k", "edited", info, f"e{i}", d) for i in range(3000)
+    ]
+    reals = [harmonize.plan_image("diffseg30k", "real", info, f"e{i}", d) for i in range(300)]
+    assert all(p["reason"] == "lossless" for p in reals)

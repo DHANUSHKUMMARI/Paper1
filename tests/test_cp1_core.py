@@ -171,12 +171,29 @@ def test_compression_creates_blockiness():
     assert blockiness(jpg) > blockiness(raw) + 0.1
 
 
-def test_prepare_like_diffseg():
-    out = harmonize.prepare_like_diffseg(_img(4, (640, 480)), size=256)
-    assert out.size == (256, 256) and out.mode == "RGB"
-    out = harmonize.prepare_like_diffseg(_img(4, (300, 900), "L"), size=256)
-    assert out.size == (256, 256)
+def test_prepare_to_size_cover_and_crop():
+    out = harmonize.prepare_to_size(_img(4, (640, 480)), (320, 288))
+    assert out.size == (320, 288) and out.mode == "RGB"
+    out = harmonize.prepare_to_size(_img(4, (300, 900), "L"), (1024, 1024))
+    assert out.size == (1024, 1024)
+    same = _img(5, (640, 480))
+    assert np.array_equal(np.asarray(harmonize.prepare_to_size(same, (640, 480))), np.asarray(same))
+    assert harmonize.resampling((640, 480), (640, 480)) == "unchanged"
+    assert harmonize.resampling((640, 480), (640, 400)) == "cropped"
+    assert harmonize.resampling((640, 480), (256, 256)) == "downscaled"
+    assert harmonize.resampling((640, 480), (1024, 1024)) == "upscaled"
     assert harmonize.plan_summary([{"action": "keep", "reason": "a"}] * 2) == {"keep:a": 2}
+
+
+def test_size_distribution_sampling():
+    sizes = [(1024, 1024)] * 3 + [(640, 480)] * 1
+    d = harmonize.SizeDistribution.measure(sizes)
+    assert d.n == 4 and d.summary()["top"] == {"1024x1024": 3, "640x480": 1}
+    assert d.sample("coco/a.jpg") == d.sample("coco/a.jpg")
+    draws = [d.sample(f"u{i}") for i in range(4000)]
+    assert 0.70 < draws.count((1024, 1024)) / len(draws) < 0.80
+    with pytest.raises(ValueError):
+        harmonize.SizeDistribution.measure([])
 
 
 # --- crops ---------------------------------------------------------------------------------

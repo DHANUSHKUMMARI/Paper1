@@ -3,6 +3,22 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2 — COCO negatives at DiffSeg30k sizes; exact staged-file check — 2026-11-14
+
+Decisions of 14 Nov 2026 (Dhanush): COCO negatives match DiffSeg30k's measured image sizes (each
+negative gets a size drawn, seeded by its id, from the sizes of the DiffSeg30k training images;
+Lanczos resize by the smallest factor that covers it, then centre crop; no resampling when the
+size already matches); defaults 2–5 confirmed; the Codex finding on PR #11 accepted: `stage()`
+records every staged file with its size, and `check_staged` requires the disk to match that list
+exactly (missing, other size and extra files each stop CP1). The COCO pHash after preparation
+is computed after the scan (its target size is known only then).
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` / `ruff format --check src tests` | All checks passed / 42 files already formatted |
+| `pytest` | 223 passed (4 new; 7 tests that edit staged files on purpose now record the edit as the staged state) |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+
 ## Milestone 2, fix — CP1 started without local copies — 2026-11-14
 
 Colab report: Cell 4 printed `indexed 136000 images: {'genimage_val': 100000, 'sidset': 36000}` and

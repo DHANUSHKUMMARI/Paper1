@@ -32,7 +32,7 @@ folder keeps only small files needed to reproduce it exactly (`manifests/`).
 | `sidset` | Hugging Face `saberzl/SID_Set` (already on Drive) | `03_SID-Set/` | The existing loose files from the retired downloader, `<split>/<class>/images/` and tampered `masks/`, with `train_manifest.csv` and `validation_manifest.csv`: 10,000 per class from train, 2,000 per class from validation. Verified in place, never downloaded again; copied to the local disk each session | CC-BY-4.0 | Real / synthetic / tampered; validation = P3b test set |
 | `brgen` | Hugging Face `clpbc/BR-Gen` (68.5 GB split zip) | `04_BR-Gen/` | Not downloaded for CP1; a subset plan is proposed before P3 | See dataset card | P3 cross-dataset test |
 | `chameleon` | Manual (AIDE repository links) | `05_Chameleon/` | Partly unpacked by hand (1,412 of 26,033 images, 13 Nov 2026); the zip is being put back. Not needed for CP1 | See source | P4 hard test set |
-| `coco_val2017` | images.cocodataset.org (`val2017.zip`, `annotations_trainval2017.zip`) | `06_COCO/` | Both zips as published, CRC-tested, 5,000 images counted, SHA-256 recorded; only the images are unpacked locally | Images: Flickr terms; annotations CC-BY-4.0 | 150 photos reserved for Claims-Edit (P7); the other ~4,850 are real negatives for DiffSeg30k, prepared like its base images (shorter side to 1024, centre crop 1024) |
+| `coco_val2017` | images.cocodataset.org (`val2017.zip`, `annotations_trainval2017.zip`) | `06_COCO/` | Both zips as published, CRC-tested, 5,000 images counted, SHA-256 recorded; only the images are unpacked locally | Images: Flickr terms; annotations CC-BY-4.0 | 150 photos reserved for Claims-Edit (P7); the other ~4,850 are real negatives for DiffSeg30k, each at a size drawn from the measured sizes of DiffSeg30k's training images (Lanczos resize by the smallest factor that covers it, centre crop; decision of 14 Nov 2026) |
 
 How the subsets are chosen:
 
@@ -54,6 +54,20 @@ How the subsets are chosen:
   turns drawing from a seeded permutation (seed 42) until 150 are reserved. They are a test set
   (P7) and never used for training. COCO negatives with a near-duplicate (pHash Hamming <= 6, raw or
   prepared) in any test set are dropped.
+
+## CP1 decisions confirmed by Dhanush (14 Nov 2026)
+
+1. COCO negatives match DiffSeg30k's measured image sizes (not a fixed 1024 × 1024 crop).
+2. Claims-Edit reservation: 150 COCO photos with a non-crowd car, couch, chair, dining table or
+   laptop covering at least 5% of the image; categories take turns, seed 42.
+3. The 60% metadata criterion uses 5-fold cross-validated balanced accuracy (real vs not real).
+4. Near-duplicate: pHash Hamming distance at most 6 (counts at 0–10 are reported).
+5. Blockiness "clear class difference": a single threshold separates two classes with
+   cross-validated balanced accuracy above 0.60.
+
+Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.csv.gz`); CP1
+starts only if the local disk matches that list exactly (none missing, none with another size,
+no extra files).
 
 ## Harmonization of the training data (spec section 8, M1, revision 49)
 

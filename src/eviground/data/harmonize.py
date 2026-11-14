@@ -11,7 +11,7 @@ once, as whole images before cropping; an image already at that compression is l
 | SID-Set | real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 /
   4:2:0 untouched; JPEGs below quality 75 skipped and counted |
 | DiffSeg30k, COCO negatives | all PNG after preparation -> JPEG with the GenImage real
-  distribution |
+  distribution; COCO negatives take sizes drawn from DiffSeg30k's measured sizes |
 
 The plan for each image is a pure function of its header facts and its id (seed 42), so the
 same image is always compressed the same way, in every session and every epoch.
@@ -194,16 +194,64 @@ def apply_plan(data: bytes, plan: Mapping[str, Any]) -> bytes | None:
         return encode_jpeg(img, plan["quality"], plan["subsampling"])
 
 
-def prepare_like_diffseg(img: Image.Image, size: int = 1024) -> Image.Image:
-    """COCO real negatives prepared like DiffSeg30k's base images (decision of 13 Nov 2026):
-    shorter side resized to ``size`` (Lanczos), then a centre crop of ``size`` x ``size``."""
+@dataclass
+class SizeDistribution:
+    """Measured image sizes (width, height) of a source, to draw sizes from."""
+
+    counts: dict[tuple[int, int], int] = field(default_factory=dict)
+
+    @classmethod
+    def measure(cls, sizes: Iterable[tuple[int, int]]) -> SizeDistribution:
+        counts: Counter[tuple[int, int]] = Counter((int(w), int(h)) for w, h in sizes)
+        if not counts:
+            raise ValueError("no image sizes to measure")
+        return cls(dict(counts))
+
+    @property
+    def n(self) -> int:
+        return sum(self.counts.values())
+
+    def sample(self, uid: str, seed: int = SEED) -> tuple[int, int]:
+        """Deterministic draw for one image id (same id, same size, every run)."""
+        keys = sorted(self.counts)
+        p = np.array([self.counts[k] for k in keys], dtype=np.float64)
+        rng = np.random.default_rng([seed, _uid_int("size:" + uid)])
+        return keys[int(rng.choice(len(keys), p=p / p.sum()))]
+
+    def summary(self, top: int = 10) -> dict[str, Any]:
+        common = sorted(self.counts.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+        return {
+            "n": self.n,
+            "distinct": len(self.counts),
+            "top": {f"{w}x{h}": c for (w, h), c in common},
+        }
+
+
+def prepare_to_size(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """COCO real negatives at a size drawn from DiffSeg30k's measured sizes (decision of
+    14 Nov 2026): resized (Lanczos) by the smallest factor that covers the target, then
+    centre-cropped to it. An image already at the target size is not resampled."""
     img = img.convert("RGB")
+    tw, th = size
     w, h = img.size
-    scale = size / min(w, h)
-    nw, nh = max(size, round(w * scale)), max(size, round(h * scale))
-    img = img.resize((nw, nh), Image.Resampling.LANCZOS)
-    left, top = (nw - size) // 2, (nh - size) // 2
-    return img.crop((left, top, left + size, top + size))
+    if (w, h) == (tw, th):
+        return img
+    scale = max(tw / w, th / h)
+    nw, nh = max(tw, round(w * scale)), max(th, round(h * scale))
+    if (nw, nh) != (w, h):
+        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    left, top = (nw - tw) // 2, (nh - th) // 2
+    return img.crop((left, top, left + tw, top + th))
+
+
+def resampling(src: tuple[int, int], target: tuple[int, int]) -> str:
+    """'unchanged', 'cropped' (scale 1), 'downscaled' or 'upscaled' for :func:`prepare_to_size`."""
+    if tuple(src) == tuple(target):
+        return "unchanged"
+    scale = max(target[0] / src[0], target[1] / src[1])
+    if scale == 1:
+        return "cropped"
+    return "downscaled" if scale < 1 else "upscaled"
 
 
 def png_bytes(img: Image.Image) -> bytes:

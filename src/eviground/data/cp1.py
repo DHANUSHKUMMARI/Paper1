@@ -246,33 +246,53 @@ STAGED_KEYS = ("genimage_sd14", "diffseg30k", "sidset", "coco_val2017")
 
 
 def check_staged(paths: Paths) -> dict[str, Any]:
-    """Every dataset CP1 reads from the local disk must be there in full.
+    """Every dataset CP1 reads from the local disk must be there exactly as staged.
 
     The local copies live on the Colab machine's disk and are gone in a new runtime; without
     this check CP1 would index only what is left and fail much later with a confusing error.
-    Requires ``local_data/<key>/_STAGED.json`` (written by ``stage()`` after verification) and at
-    least as many files on disk as it records.
+    ``stage()`` writes ``_STAGED.json`` and the list of every staged file with its size
+    (``_STAGED_FILES.csv.gz``); the files on disk must match that list exactly: none missing,
+    none with another size, and no extra files the indexers would pick up.
     """
+    from eviground.data.storage import STAGED_FILES, read_file_list
+
     problems, found = [], {}
+    skip = {"_STAGED.json", STAGED_FILES}
     for key in STAGED_KEYS:
         dest = paths.local_data / key
-        marker = dest / "_STAGED.json"
-        if not marker.is_file():
+        if not (dest / "_STAGED.json").is_file():
             problems.append(f"{key}: not staged")
             continue
-        want = int(json.loads(marker.read_text()).get("files", 0))
-        have = sum(
-            1
-            for p in dest.rglob("*")
-            if p.is_file() and p.name != "_STAGED.json" and not p.name.endswith(".part")
-        )
-        found[key] = {"expected": want, "on_disk": have}
-        if have < want:
-            problems.append(f"{key}: {have} of {want} files")
+        listed = read_file_list(dest)
+        if listed is None:
+            problems.append(f"{key}: no list of staged files (staged by an older version)")
+            continue
+        missing, wrong = [], []
+        for rel, size in listed.items():
+            try:
+                if (dest / rel).stat().st_size != size:
+                    wrong.append(rel)
+            except FileNotFoundError:
+                missing.append(rel)
+        extra = []
+        for root, _dirs, names in os.walk(dest):
+            for name in names:
+                if name in skip or name.endswith(".part"):
+                    continue
+                rel = Path(root, name).relative_to(dest).as_posix()
+                if rel not in listed:
+                    extra.append(rel)
+        found[key] = {"files": len(listed), "missing": len(missing), "wrong_size": len(wrong)}
+        found[key]["extra"] = len(extra)
+        for what, items in (("missing", missing), ("with another size", wrong), ("extra", extra)):
+            if items:
+                problems.append(f"{key}: {len(items)} {what} (e.g. {sorted(items)[:3]})")
     if problems:
         raise RuntimeError(
-            "local copies are missing or incomplete (" + "; ".join(problems) + "). This happens "
-            "in a new Colab runtime: run Cell 3 (ensure_data with stage_local=True) first."
+            "local copies are missing or differ from what was staged ("
+            + "; ".join(problems)
+            + "). This happens in a new Colab runtime: run Cell 3 (ensure_data with "
+            "stage_local=True) first."
         )
     return found
 
@@ -333,10 +353,6 @@ def scan_row(row: dict[str, Any]) -> dict[str, Any]:
     out.update(sha256=h["sha256"], pixel_sha256=h.get("pixel_sha256"), phash=h.get("phash"))
     if "error" in h or "error" in info:
         out["error"] = h.get("error") or info.get("error")
-    if row["source"] == "coco" and "error" not in out:
-        with Image.open(io.BytesIO(data)) as img:
-            prepared = harmonize.prepare_like_diffseg(img, row.get("_prep_size", 1024))
-        out["phash_prepared"] = hashing.phash(prepared)
     if row["source"] == "diffseg30k" or (row["source"] == "sidset" and row["mask_path"]):
         out.update(_mask_facts(row["mask_path"]))
     return out
@@ -498,6 +514,64 @@ def assign_diffseg_roles(rows: list[dict[str, Any]]) -> None:
         values = splits.parse_editors(r.get("mask_values"))
         r["editors"] = splits.editors_text(values)
         r["role"] = splits.diffseg_role(r["dataset_split"], values - {0})
+
+
+def _coco_prepared_phash(row: dict[str, Any]) -> dict[str, Any]:
+    """pHash of a COCO photo after preparation at its target size (worker process)."""
+    try:
+        with Image.open(row["path"]) as img:
+            prepared = harmonize.prepare_to_size(img, (row["prep_w"], row["prep_h"]))
+        return {"phash_prepared": hashing.phash(prepared)}
+    except Exception as exc:
+        return {"error": f"prepare: {type(exc).__name__}"}
+
+
+def prepare_coco_negatives(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[str, Any]:
+    """Give every COCO negative a size drawn from the measured sizes of the DiffSeg30k
+    training images (decision of 14 Nov 2026) and its pHash after that preparation."""
+    sizes = harmonize.SizeDistribution.measure(
+        (r["width"], r["height"])
+        for r in rows
+        if r["source"] == "diffseg30k" and r["role"] == "train_pool" and r.get("width")
+    )
+    coco = [r for r in rows if r["source"] == "coco" and r["role"] == "train_pool"]
+    kinds: Counter[str] = Counter()
+    for r in coco:
+        r["prep_w"], r["prep_h"] = sizes.sample(r["uid"], cfg.seed)
+        if r.get("width"):
+            kinds[harmonize.resampling((r["width"], r["height"]), (r["prep_w"], r["prep_h"]))] += 1
+    tasks = [
+        {"uid": r["uid"], "path": r["path"], "prep_w": r["prep_w"], "prep_h": r["prep_h"]}
+        for r in coco
+        if not r.get("error")
+    ]
+    if cfg.workers > 1 and tasks:
+        got = run_watched(
+            _coco_prepared_phash,
+            tasks,
+            cfg.workers,
+            stall_s=cfg.stall_s,
+            retries=cfg.scan_retries,
+            on_timeout=lambda t: {"error": "read timeout"},
+            describe=lambda t: t["uid"],
+        )
+    else:
+        got = [_coco_prepared_phash(t) for t in tasks]
+    by_uid = {t["uid"]: g for t, g in zip(tasks, got, strict=True)}
+    for r in coco:
+        res = by_uid.get(r["uid"])
+        if isinstance(res, dict) and "phash_prepared" in res:
+            r["phash_prepared"] = res["phash_prepared"]
+        else:
+            r["phash_prepared"] = None
+            r["error"] = r.get("error") or (res or {}).get("error", "prepare failed")
+    targets: Counter[str] = Counter(f"{r['prep_w']}x{r['prep_h']}" for r in coco)
+    return {
+        "size_policy": "sizes drawn from DiffSeg30k training images (decision of 14 Nov 2026)",
+        "diffseg30k_sizes": sizes.summary(),
+        "target_sizes_top": dict(targets.most_common(10)),
+        "resampling": dict(sorted(kinds.items())),
+    }
 
 
 def near_dup_filter_coco(rows: list[dict[str, Any]], threshold: int) -> dict[str, Any]:
@@ -681,24 +755,22 @@ def class_counts(rows: list[dict[str, Any]], paths: Paths, cfg: CP1Config) -> di
 # --------------------------------------------------------------------------------------
 
 
-def _plan_info(r: dict[str, Any], prep_size: int) -> dict[str, Any]:
-    if r["source"] == "coco":  # prepared like DiffSeg30k: a lossless 1024x1024 image
-        return {"format": "png", "width": prep_size, "height": prep_size}
+def _plan_info(r: dict[str, Any]) -> dict[str, Any]:
+    if r["source"] == "coco":  # prepared at a DiffSeg30k size: a lossless image of that size
+        return {"format": "png", "width": r["prep_w"], "height": r["prep_h"]}
     return {
         k: r.get(k) for k in ("format", "width", "height", "jpeg_quality", "subsampling", "error")
     }
 
 
 def plan_rows(
-    rows: list[dict[str, Any]], dist: harmonize.QualityDistribution, seed: int, prep_size: int
+    rows: list[dict[str, Any]], dist: harmonize.QualityDistribution, seed: int
 ) -> dict[str, Any]:
     summary: dict[str, Counter] = {}
     for r in rows:
         if r.get("split") not in ("train", "val"):
             continue
-        p = harmonize.plan_image(
-            r["source"], r["label"], _plan_info(r, prep_size), r["uid"], dist, seed=seed
-        )
+        p = harmonize.plan_image(r["source"], r["label"], _plan_info(r), r["uid"], dist, seed=seed)
         r["h_action"], r["h_quality"], r["h_subsampling"], r["h_reason"] = (
             p["action"],
             p["quality"],
@@ -721,13 +793,13 @@ def _load_mask(r: dict[str, Any]) -> np.ndarray | None:
     return arr
 
 
-def harmonized_bytes(r: dict[str, Any], prep_size: int) -> bytes | None:
+def harmonized_bytes(r: dict[str, Any]) -> bytes | None:
     """The training file of one row after preparation and harmonization."""
     data = Path(r["path"]).read_bytes()
     plan = {"action": r["h_action"], "quality": r["h_quality"], "subsampling": r["h_subsampling"]}
     if r["source"] == "coco":
         with Image.open(io.BytesIO(data)) as img:
-            prepared = harmonize.prepare_like_diffseg(img, prep_size)
+            prepared = harmonize.prepare_to_size(img, (r["prep_w"], r["prep_h"]))
         if plan["action"] != "compress":
             return harmonize.png_bytes(prepared)
         return harmonize.encode_jpeg(prepared, plan["quality"], plan["subsampling"])
@@ -736,10 +808,10 @@ def harmonized_bytes(r: dict[str, Any], prep_size: int) -> bytes | None:
 
 def sample_row(task: tuple[dict[str, Any], int, int, int, bool]) -> dict[str, Any]:
     """Harmonize one drawn image, take its training crop, measure it (worker process)."""
-    r, draw_seed, prep_size, crop_size, want_block = task
+    r, draw_seed, crop_size, want_block = task
     out: dict[str, Any] = {"uid": r["uid"], "source": r["source"], "label": r["label"]}
     try:
-        hb = harmonized_bytes(r, prep_size)
+        hb = harmonized_bytes(r)
         if hb is None:
             out["error"] = "skipped"
             return out
@@ -913,7 +985,6 @@ def make_grids(
     rows_by_uid: dict[str, dict[str, Any]],
     out_dir: Path,
     grid: int,
-    prep_size: int,
 ) -> dict[str, Any]:
     """A grid x grid sheet of harmonized training crops per class (edited: with a mask sheet)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -928,7 +999,7 @@ def make_grids(
         tiles = []
         for k, s in enumerate(picks):
             r = rows_by_uid[s["uid"]]
-            hb = harmonized_bytes(r, prep_size)
+            hb = harmonized_bytes(r)
             with Image.open(io.BytesIO(hb)) as img:
                 tile = img.convert("RGB").crop(tuple(s["box"]))
             sheet.paste(tile, ((k % grid) * size, (k // grid) * size))
@@ -1051,6 +1122,8 @@ MANIFEST_COLUMNS = [
     "pixel_sha256",
     "phash",
     "phash_prepared",
+    "prep_w",
+    "prep_h",
     "mask_values",
     "h_action",
     "h_quality",
@@ -1089,7 +1162,6 @@ def run_cp1(
     )
     if not coco:
         raise RuntimeError("coco_val2017 is not verified; run ensure_data first")
-    prep = int(coco["negatives_size"])
     reserved = reserve_claims_edit(coco_instances(paths.datasets), coco["claims_edit"])
     say(f"Claims-Edit: {len(reserved)} COCO photos reserved")
 
@@ -1100,9 +1172,6 @@ def run_cp1(
         + index_sidset(local, paths.datasets / REGISTRY["sidset"].folder)
         + index_coco(local, set(reserved))
     )
-    for r in rows:
-        if r["source"] == "coco":
-            r["_prep_size"] = prep
     say(f"indexed {len(rows)} images: {_counts(rows, 'source')}")
     facts = scan(
         rows,
@@ -1116,6 +1185,8 @@ def run_cp1(
     for r in rows:
         r.update({k: v for k, v in facts[r["uid"]].items() if k != "uid"})
     assign_diffseg_roles(rows)
+    negatives = prepare_coco_negatives(rows, cfg)
+    say(f"COCO negatives sized like DiffSeg30k: {negatives['resampling']}")
     coco_filter = near_dup_filter_coco(rows, cfg.near_dup_primary)
     assign_splits(rows, cfg.split_seed)
     say("roles and splits assigned")
@@ -1130,7 +1201,7 @@ def run_cp1(
         if r["source"] == "genimage" and r["label"] == "real" and r["split"] == "train"
     ]
     dist = harmonize.QualityDistribution.measure(real_train)
-    plan = plan_rows(rows, dist, cfg.seed, prep)
+    plan = plan_rows(rows, dist, cfg.seed)
     say("harmonization planned")
 
     eligible = [
@@ -1153,7 +1224,7 @@ def run_cp1(
             block_quota[key] += 1
             measured.add(r["uid"])
         clean = {kk: vv for kk, vv in r.items() if not kk.startswith("_")}
-        tasks.append((clean, cfg.seed * 1_000_003 + k, prep, crops.CROP, want))
+        tasks.append((clean, cfg.seed * 1_000_003 + k, crops.CROP, want))
     say(f"harmonizing and cropping {len(tasks)} sampled images")
     if cfg.workers > 1:
         with ProcessPoolExecutor(max_workers=cfg.workers) as pool:
@@ -1163,7 +1234,7 @@ def run_cp1(
     errors = Counter(s["error"] for s in samples if "error" in s)
     meta = metadata_check(samples, cfg.seed)
     block = blockiness_check(samples, cfg.seed)
-    grids = make_grids(samples, {r["uid"]: r for r in rows}, out_dir, cfg.grid, prep)
+    grids = make_grids(samples, {r["uid"]: r for r in rows}, out_dir, cfg.grid)
     edited_shares = [
         s["edited_share"] for s in samples if s.get("edited_share") is not None and "error" not in s
     ]
@@ -1210,7 +1281,7 @@ def run_cp1(
         "coco_negatives": {
             "reserved_claims_edit_ids": reserved,
             "near_dup_filter": coco_filter,
-            "prepared_size": prep,
+            **negatives,
         },
         "diffseg30k_masks": masks,
         "sidset_masks": sid_mask_report(rows),

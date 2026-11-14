@@ -61,11 +61,13 @@ from eviground.data.storage import (
     check_space,
     copy_files,
     extract_archive,
+    read_file_list,
     read_json,
     safe_member_name,
     sha256_file,
     tar_index,
     verify_tar,
+    write_file_list,
     write_json_atomic,
     write_tar_shard,
     write_text_atomic,
@@ -1193,6 +1195,7 @@ def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
         if files is None:
             raise VerificationError(f"{key}: a manifest is missing")
         res = copy_files(folder, files, dest, reserve_gb=reserve_gb)
+        write_file_list(dest, {safe_member_name(rel): size for rel, size in files.items()})
         write_json_atomic(dest / "_STAGED.json", {**res, "dest": str(dest)})
         return {"staged": True, "skipped": res["copied"] == 0, **res, "dest": str(dest)}
     if method in ("hf_files", "url_files"):
@@ -1205,11 +1208,19 @@ def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
     marker = read_json(dest / "_STAGED.json")
     names = [a.name for a in archives]
     if marker and marker.get("archives") == names:
+        if read_file_list(dest) is None:  # staged by an older version: record the list now
+            listed: dict[str, int] = {}
+            for arc in archives:
+                with ArchiveReader(arc) as reader:
+                    listed.update({safe_member_name(m.name): m.size for m in reader.members()})
+            write_file_list(dest, listed)
         return {"staged": True, "skipped": True, **marker}
     files = nbytes = 0
+    listed = {}
     for arc in archives:
-        res = extract_archive(arc, dest, reserve_gb=reserve_gb)
+        res = extract_archive(arc, dest, reserve_gb=reserve_gb, index=listed)
         files, nbytes = files + res["files"], nbytes + res["bytes"]
     record = {"archives": names, "files": files, "bytes": nbytes, "dest": str(dest)}
+    write_file_list(dest, listed)
     write_json_atomic(dest / "_STAGED.json", record)
     return {"staged": True, "skipped": False, **record}

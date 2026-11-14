@@ -42,6 +42,21 @@ def _ensure(paths, sources):
     )
 
 
+def _accept_local_edits(paths) -> None:
+    """Record the local files as staged after a test edited them on purpose (the edit stands
+    for a dataset that itself contains the problem being tested)."""
+    from eviground.data.storage import STAGED_FILES, write_file_list
+
+    for key in cp1.STAGED_KEYS:
+        dest = paths.local_data / key
+        files = {
+            p.relative_to(dest).as_posix(): p.stat().st_size
+            for p in dest.rglob("*")
+            if p.is_file() and p.name not in ("_STAGED.json", STAGED_FILES)
+        }
+        write_file_list(dest, files)
+
+
 def _cfg(**kw) -> cp1.CP1Config:
     base = {
         "workers": 1,
@@ -272,9 +287,17 @@ def test_harmonization_follows_spec_table(run):
     assert plan["sidset/real"]["skip:below_q75"] > 0 and plan["sidset/real"]["keep:at_target"] > 0
     assert plan["sidset/real"]["compress:above_q75"] > 0
     assert plan["sidset/edited"]["keep:at_target"] > 0
-    assert set(plan["coco/real"]) == {"compress:lossless"}
+    # COCO negatives take DiffSeg30k sizes, including its few under 256 (skipped like them)
+    assert plan["coco/real"]["compress:lossless"] > 0
+    assert set(plan["coco/real"]) <= {"compress:lossless", "skip:too_small"}
     dist = res["quality_distribution_genimage_real"]
     assert dist["top_quality"] == 96
+    # COCO negatives take the measured sizes of DiffSeg30k training images (14 Nov 2026)
+    neg = res["coco_negatives"]
+    fake_diffseg_sizes = {"320x288", "288x288", "256x256", "240x300"}
+    assert set(neg["target_sizes_top"]) <= fake_diffseg_sizes
+    assert set(neg["diffseg30k_sizes"]["top"]) <= fake_diffseg_sizes
+    assert neg["resampling"] == {"downscaled": 34}  # the fake COCO photos are 427-640 px
 
 
 def test_metadata_classifier_on_harmonized_crops(run):
@@ -315,6 +338,7 @@ def test_scan_is_resumed_from_cache(tmp_path, monkeypatch):
     src = sorted((sid / "validation/real/images").iterdir())[0]
     dst = sorted((sid / "train/real/images").iterdir())[0]
     shutil.copyfile(src, dst)
+    _accept_local_edits(paths)
     third = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o3", cache_dir=tmp_path / "c", progress=None
     )
@@ -329,6 +353,7 @@ def test_cross_split_duplicate_is_caught(tmp_path):
     src = sorted((sid / "validation/real/images").iterdir())[0]
     dst = sorted((sid / "train/real/images").iterdir())[0]
     shutil.copyfile(src, dst)
+    _accept_local_edits(paths)
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
@@ -354,6 +379,7 @@ def test_coco_negative_near_duplicate_of_test_is_dropped(tmp_path):
         buf = io.BytesIO()
         im.convert("RGB").save(buf, "JPEG", quality=85)  # recompressed copy: near, not exact
     victim.write_bytes(buf.getvalue())
+    _accept_local_edits(paths)
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
@@ -373,6 +399,7 @@ def test_near_duplicates_over_one_percent_stop(tmp_path):
     for a, b in zip(trains[:2], tests[:2], strict=True):
         with Image.open(a) as im:
             im.save(b, "PNG", compress_level=9)  # same name/format, other bytes, same pixels
+    _accept_local_edits(paths)
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
@@ -424,8 +451,8 @@ def test_missing_local_copies_stop_before_any_scan(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError) as err:
         cp1.run_cp1(paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None)
     msg = str(err.value)
-    # DiffSeg30k zips: 30 images + 30 masks + 2 metadata files; one image deleted
-    assert "genimage_sd14: not staged" in msg and "diffseg30k: 61 of 62 files" in msg
+    assert "genimage_sd14: not staged" in msg
+    assert f"diffseg30k: 1 missing (e.g. ['train_copy/{victim.name}'])" in msg
     assert "run Cell 3" in msg
 
 
@@ -478,6 +505,7 @@ def test_corrupt_image_is_excluded_not_fatal(tmp_path):
     _ensure(paths, sources)
     victim = sorted((paths.local_data / "sidset/train/real/images").iterdir())[0]
     victim.write_bytes(b"\xff\xd8\xff\xe0 broken")
+    _accept_local_edits(paths)
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
@@ -506,6 +534,7 @@ def test_mask_value_outside_card_map_stops(tmp_path):
         arr = np.asarray(m).copy()
     arr[:4, :4] = 9
     Image.fromarray(arr).save(mask)
+    _accept_local_edits(paths)
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
@@ -582,3 +611,35 @@ def test_stuck_drive_read_is_recorded_and_run_finishes(tmp_path, monkeypatch):
     bad = [t for t in res["class_counts"]["table"] if not t["equal"]]
     assert bad == []  # the file exists and was indexed; the timeout is reported as an error
     assert res["stop_and_ask"]["images_not_scanned"] is True
+
+
+def test_check_staged_catches_wrong_size_extra_file_and_missing_list(tmp_path):
+    """Codex review of PR #11: compare the exact staged files, not only their number."""
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    assert cp1.check_staged(paths)["sidset"]["files"] == 45 + 15  # images + tampered masks
+    sid = paths.local_data / "sidset"
+    victim = sorted((sid / "train/real/images").iterdir())[0]
+    victim.write_bytes(victim.read_bytes() + b"x")
+    (sid / "train/real/images/stale_extra.jpg").write_bytes(b"stale")
+    (paths.local_data / "coco_val2017/_STAGED_FILES.csv.gz").unlink()
+    with pytest.raises(RuntimeError) as err:
+        cp1.check_staged(paths)
+    msg = str(err.value)
+    assert f"sidset: 1 with another size (e.g. ['train/real/images/{victim.name}'])" in msg
+    assert "sidset: 1 extra (e.g. ['train/real/images/stale_extra.jpg'])" in msg
+    assert "coco_val2017: no list of staged files" in msg
+
+
+def test_stage_records_the_list_for_copies_from_older_versions(tmp_path):
+    from eviground.data.download import stage
+    from eviground.data.storage import read_file_list
+
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    dest = paths.local_data / "diffseg30k"
+    before = read_file_list(dest)
+    assert len(before) == 62
+    (dest / "_STAGED_FILES.csv.gz").unlink()  # a copy staged before the list existed
+    res = stage("diffseg30k", paths=paths, reserve_gb=0)
+    assert res["skipped"] is True and read_file_list(dest) == before

@@ -3,6 +3,20 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2 — CP1 run-2 decisions: q75 third for edited, accepted GenImage trace — 2026-11-14
+
+CP1 run 2: criteria met; blockiness stop (GenImage 0.6675, a generator trace by the raw and
+mid-block diagnostics; pooled real/generated vs edited 0.6205 / 0.642 from SID-Set's q75 images).
+Decisions implemented: `harmonize.q75_third` sends a seeded third of DiffSeg30k edited images to
+quality 75, 4:2:0; `CP1Config.blockiness_accepted` lists GenImage generated vs real, which
+`blockiness_check` reports under `accepted` and leaves out of the stop flag.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` / `ruff format --check src tests` | All checks passed / 42 files already formatted |
+| `pytest` | 231 passed (3 new) |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+
 ## Milestone 2 — CP1 fixes after the first real run — 2026-11-14
 
 CP1 run of 14 Nov (FAIL): 169 cross-split duplicate groups (ImageNet photos in both GenImage SD v1.4

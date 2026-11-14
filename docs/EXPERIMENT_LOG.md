@@ -17,6 +17,7 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-13 | Download 6 (`00c`, after PR #7): genimage_val | none (CPU runtime) | 0.653 (39.2 min) | not recorded | not recorded | 3,589 missing Midjourney images added; Drive equals the archive counts; **verified: 100,000 images, 8 generators** |
 | 2026-11-13 | Data probe (`00b`, commit `0c6d6d4`), read-only | none (CPU runtime) | 0.869 (52.1 min) | not recorded | not recorded | `cp1_probe*.json` in `runs/checkpoints`: formats, JPEG qualities, sizes, blockiness per source and class; DiffSeg30k card (mask map 0–8) |
 | 2026-11-14 | CP1 run (`01`, commit `a14d717`), Cells 1–5 | none (CPU runtime) | 2.692 (161.5 min) | not recorded | not recorded | **CP1 FAIL**: 169 cross-split duplicate groups; near-duplicates P2 1.18%, P3b 5.88%; blockiness separations 0.6675 (GenImage) and 0.6587 (SID-Set); metadata classifier 0.5353 |
+| 2026-11-14 | CP1 run 2 (`01`, commit `c001cb2`), Cells 1–5 | none (CPU runtime) | 0.429 (25.7 min) | not recorded | not recorded | Criteria met (0 cross-split duplicates; counts equal; metadata 0.5411); stop and ask on blockiness (GenImage 0.6675, pooled vs edited 0.6205 / 0.642) |
 
 ## Runs
 

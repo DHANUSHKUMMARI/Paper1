@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | |
+| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | DHANUSH|
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -270,4 +270,4 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Diagnostics:** metadata original size 0.7868, harmonized file bytes 0.5232, raw files 0.7685;
   COCO negatives at DiffSeg30k sizes: 204 unchanged, 490 cropped, 189 downscaled, 3,967 upscaled.
 - **Result:** **PASS** (criteria met; the base-disagreement stop accepted by Dhanush).
-- **Verified by Dhanush:** ☐
+- **Verified by Dhanush:** DHANUSH

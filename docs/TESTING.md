@@ -9,7 +9,8 @@ Changes (data/README decisions 13–14): `splits.diffseg_role` gives empty-mask 
 `excluded_unedited`; `harmonize.plan_image` compresses the seeded third (`q75_third`) of every
 DiffSeg30k and COCO image at quality 75, 4:2:0 whatever the class; `sampler.SHARES` real =
 GenImage 1/3, SID-Set 1/6, COCO 1/2; `cp1.jsonl_census` counts the keys of every `.jsonl` line
-(stop flag `diffseg_jsonl_unexpected_keys`); `diffseg_mask_report.size_indication`;
+(stop flags `diffseg_jsonl_unexpected_keys`, and `diffseg_jsonl_census_incomplete` when no
+`.jsonl` is found or a line cannot be read, after Codex review of PR 15); `diffseg_mask_report.size_indication`;
 `blockiness_check` adds "real (coco) vs diffseg30k edited" and reports the within-DiffSeg30k pair
 as not applicable; `run_cp1` records `quality_75` per class and per class × source and the failed
 edited crop draws; the fake DiffSeg30k `.jsonl` now has the real layout (two file names per line).

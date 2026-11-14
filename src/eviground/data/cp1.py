@@ -1200,6 +1200,8 @@ def diffseg_mask_report(rows: list[dict[str, Any]], local: Path) -> dict[str, An
                 pixels[v] += c
     jsonl = [jsonl_census(p, local) for p in sorted((local / "diffseg30k").rglob("*.jsonl"))]
     unexpected = sorted({k for j in jsonl for k in j["keys"] if k not in DIFFSEG_JSONL_KEYS})
+    # the census proves the absence of a base-type field only if every line was read
+    census_complete = bool(jsonl) and all(j["unparsable_lines"] == 0 for j in jsonl)
     roles = Counter((r["dataset_split"], r["role"]) for r in ds)
     return {
         "masks": len(ds),
@@ -1216,6 +1218,7 @@ def diffseg_mask_report(rows: list[dict[str, Any]], local: Path) -> dict[str, An
         "roles": {f"{s}/{r}": n for (s, r), n in sorted(roles.items())},
         "jsonl": jsonl,
         "jsonl_unexpected_keys": unexpected,
+        "jsonl_census_complete": census_complete,
         "size_indication": {
             "note": "image size, not a base-type field: COCO photos are at most 640 px a side; "
             "1024x1024 suggests an AI-generated base (paper: about half of the bases)",
@@ -1472,6 +1475,8 @@ def run_cp1(
         # a .jsonl key beyond the two file names may say whether a base image is a real photo
         # (spec review of 14 Nov 2026): look at it before DiffSeg30k is used further
         "diffseg_jsonl_unexpected_keys": bool(masks["jsonl_unexpected_keys"]),
+        # no .jsonl found, or a line that is not a JSON object: the census is incomplete
+        "diffseg_jsonl_census_incomplete": not masks["jsonl_census_complete"],
         # an image that could not be read (corrupt, or a read that never returned) was left out
         # of the duplicate checks, so CP1 cannot pass until it is looked at
         "images_not_scanned": any(r.get("error") for r in rows),

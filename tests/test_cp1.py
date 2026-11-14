@@ -783,6 +783,8 @@ def test_run_records_jsonl_census_q75_share_and_new_separations(run):
     }
     assert masks["jsonl_unexpected_keys"] == []
     assert res["stop_and_ask"]["diffseg_jsonl_unexpected_keys"] is False
+    assert masks["jsonl_census_complete"] is True
+    assert res["stop_and_ask"]["diffseg_jsonl_census_incomplete"] is False
     assert sum(masks["size_indication"]["unedited_train"].values()) == 2
     assert sum(masks["size_indication"]["edited_train_pool"].values()) == 12
     q75 = res["quality_75"]

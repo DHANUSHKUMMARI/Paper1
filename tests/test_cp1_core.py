@@ -401,6 +401,11 @@ def test_jsonl_census_and_unexpected_keys(tmp_path):
     assert c["keys"] == {"base": 1, "image_file_name": 2, "mask_file_name": 2}
     rep = cp1.diffseg_mask_report([], tmp_path)
     assert rep["jsonl_unexpected_keys"] == ["base"]
+    assert rep["jsonl_census_complete"] is False  # one line could not be read (Codex, PR 15)
+    (folder / "metadata.jsonl").write_text(json.dumps(lines[0]) + "\n")
+    assert cp1.diffseg_mask_report([], tmp_path)["jsonl_census_complete"] is True
+    (folder / "metadata.jsonl").unlink()
+    assert cp1.diffseg_mask_report([], tmp_path)["jsonl_census_complete"] is False  # no file
 
 
 def test_size_indication_kinds():

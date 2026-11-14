@@ -1,10 +1,11 @@
 """Class and source balance of the training sampler (Research Specification section 9, rev 49).
 
-Unified model: 1 : 1 : 1 over real / fully generated / edited. Spec rev 49: SID-Set supplies
-one third of every class. Decisions of 14 Nov 2026 after the first CP1 run: SID-Set tampered
-images are left out of training (blockiness fallback) and DiffSeg30k's unedited images are real
-negatives, so real = GenImage 1/3, SID-Set 1/3, COCO 1/6, DiffSeg30k 1/6; generated = GenImage
-2/3, SID-Set 1/3; edited = DiffSeg30k only.
+Unified model: 1 : 1 : 1 over real / fully generated / edited. SID-Set tampered images are
+left out of training (blockiness fallback, 14 Nov 2026) and DiffSeg30k's unedited images too
+(no field says whether their base is a real photo, spec review of 14 Nov 2026), so
+real = GenImage 1/3, SID-Set 1/6, COCO 1/2; generated = GenImage 2/3, SID-Set 1/3;
+edited = DiffSeg30k only. Quality 75, 4:2:0 is then one third of every class: real
+1/6 (SID-Set) + 1/2 x 1/3 (COCO third); generated 1/3 (SID-Set); edited 1/3 (DiffSeg30k third).
 Detection-protocol model: GenImage SD v1.4 only, real : generated = 1 : 1.
 """
 
@@ -18,9 +19,8 @@ CLASSES = ("real", "generated", "edited")
 
 SHARES: dict[str, dict[str, dict[str, float]]] = {
     "unified": {
-        # decisions of 14 Nov 2026 after CP1: SID-Set tampered images left out of training
-        # (blockiness fallback), DiffSeg30k's unedited images added as real negatives
-        "real": {"genimage": 1 / 3, "sidset": 1 / 3, "coco": 1 / 6, "diffseg30k": 1 / 6},
+        # spec review of 14 Nov 2026: no DiffSeg30k unedited images; COCO takes their share
+        "real": {"genimage": 1 / 3, "sidset": 1 / 6, "coco": 1 / 2},
         "generated": {"genimage": 2 / 3, "sidset": 1 / 3},
         "edited": {"diffseg30k": 1.0},
     },

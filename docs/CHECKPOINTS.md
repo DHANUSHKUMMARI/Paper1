@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 3; runs 1–2 below) | |
+| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 3; runs 1–2 below). Run 4 pending: design changed in the spec review of 14 Nov 2026 | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -176,3 +176,13 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Result:** **PASS**. All three criteria met and no stop flag (the GenImage generator trace is
   accepted and reported).
 - **Verified by Dhanush:** ☐
+
+### CP1 run 4 — pending (design changed in the spec review of 14 Nov 2026)
+
+Run 3's PASS holds for the design it tested. Changes since (data/README decisions 13–14): DiffSeg30k
+unedited images left out of training; the same seeded third of DiffSeg30k (all classes) and COCO
+at quality 75, 4:2:0; real shares GenImage 1/3, SID-Set 1/6, COCO 1/2. Run 4 adds to the record:
+the key count of every DiffSeg30k `.jsonl` line (stop and ask on any key besides the two file
+names), an image-size indication for unedited and edited DiffSeg30k images, the separation of
+real (COCO) vs DiffSeg30k edited (under the 0.60 stop rule), the quality-75 share per class as
+sampled, and the failed edited crop draws.

@@ -110,7 +110,7 @@ Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.
 starts only if the local disk matches that list exactly (none missing, none with another size,
 no extra files).
 
-## Harmonization of the training data (spec section 8, M1, revision 49)
+## Harmonization of the training data (spec section 8, M1, revision 98)
 
 Within each source every class ends with the compression history of its most compressed class.
 Compression happens once, on the whole image, before the 256 crop

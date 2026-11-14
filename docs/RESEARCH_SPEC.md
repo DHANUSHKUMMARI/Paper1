@@ -1,5 +1,5 @@
 <!--
-Exported from the Claude doc "Paper 1 - Research Specification" (revision 49) on 13 Nov 2026.
+Exported from the Claude doc "Paper 1 - Research Specification" (revision 98) on 14 Nov 2026.
 The Claude doc is the master copy. If it changes, re-export it and replace this file; do not edit here.
 -->
 
@@ -145,9 +145,9 @@ Forensic views are computed at full crop resolution: never down-sample them, or 
 | --- | --- | --- |
 | GenImage | Real: JPEG, quality 96 in about two thirds, the rest spread. Generated: PNG | Compress generated images with quality and subsampling sampled from the real images' measured distribution; real images untouched (as Grommelt et al.) |
 | SID-Set | Real: JPEG at many qualities. Synthetic: PNG. Tampered: JPEG quality 75 with 4:2:0 subsampling (a few PNG) | Compress real, synthetic and PNG tampered images to quality 75, 4:2:0; skip and count real images already below quality 75 |
-| DiffSeg30k and the COCO real negatives | All PNG after preparation; one pipeline for both | Compress both with the GenImage real distribution |
+| DiffSeg30k and the COCO real negatives | All PNG after preparation; one pipeline for both | Compress both with the GenImage real distribution, except the same seeded third of every image of both sources, whatever its class, which is compressed at quality 75, 4:2:0 like SID-Set. COCO negatives take sizes drawn from DiffSeg30k's measured training-image sizes |
 
-Checkpoint CP1 verifies on the harmonized data that file format, JPEG quality and crop size no longer predict the label, and reports pixel-level 8×8 blockiness per class and source as a diagnostic of the compression history.
+Checkpoint CP1 verifies on the harmonized data that file format, JPEG quality and crop size no longer predict the label, and reports pixel-level 8×8 blockiness per class and source as a diagnostic of the compression history. GenImage's generated-vs-real blockiness difference is accepted as a generator trace, not a compression one: it is present in the raw SD v1.4 PNGs and on mid-block lines, where JPEG puts no edges. It stays reported.
 
 **Test-time rule.** Tile the image with 256×256 tiles (stride 256, last tile aligned to the border, at most 9 tiles on a regular grid); an image smaller than 256 is processed once at its own size. Stitch the tile masks into the full mask. Image-level scores: P(real) and P(fully generated) are the mean over tiles; P(edited) is the maximum over tiles. The image is called edited if P(edited) ≥ 0.5 (threshold fixed on validation data), otherwise the larger of the other two decides.
 
@@ -170,7 +170,7 @@ Bidirectional cross-attention lets each branch query the other; a learned gate g
 - **Classification head:** attention pooling over the fused tokens Z (one weight α per token, summing to 1), joined with CLIP's class token → 3-way softmax over {real, fully generated, locally edited}.
 - **Localization head:** a lightweight FPN decoder on Z and T̃ → edit-probability mask M̂ ∈ \[0,1\]^(H×W).
 
-Mask targets: the mask marks only locally edited pixels. It is all zeros for real images and for fully generated images, and the ground-truth mask for edited images (DiffSeg30k, SID-Set tampered). About half of DiffSeg30k's base images are themselves AI-generated; their unedited background is still labelled 0, which is why a fully generated image cannot be labelled all ones. Whether an image is fully generated is decided by the classification head, not by the mask.
+Mask targets: the mask marks only locally edited pixels. It is all zeros for real images and for fully generated images, and the ground-truth mask for edited images (DiffSeg30k; SID-Set tampered images are not a training source). About half of DiffSeg30k's base images are themselves AI-generated; their unedited background is still labelled 0, which is why a fully generated image cannot be labelled all ones. Whether an image is fully generated is decided by the classification head, not by the mask.
 
 **Training loss**
 
@@ -227,9 +227,9 @@ The LLM may call three tools before writing the report: re-run the detector on a
 | --- | --- |
 | Software | PyTorch 2.x, transformers (CLIP and the LLM), timm (EfficientNet-B0), peft (LoRA), bitsandbytes (4-bit LLM), pytorch-grad-cam (Grad-CAM++) |
 | Hardware | Colab Pro: L4 (22.5 GB) for training and evaluation, T4 (15 GB) for debugging and LLM reports (4-bit, about 6 GB) |
-| Two trained models | **Detection-protocol model:** GenImage SD v1.4 only (real + fully generated), the training set used by published GenImage baselines. Storage limit: a fixed random subset of 40,000 real + 40,000 generated SD v1.4 training images is used (seed 42) out of about 162,000 of each; say so in the paper, since published baselines train on the full set. **Unified model:** GenImage SD v1.4 + DiffSeg30k (images edited only by the 6 training editors) + about 4,850 real COCO val2017 photos prepared like DiffSeg30k's base images (shorter side to 1024, centre crop), because the public DiffSeg30k release contains no real images; the 150 photos reserved for Claims-Edit are excluded + SID-Set train subset (10k per class). Same architecture and settings |
-| Validation (model selection) | A fixed, stratified 10% held out from each training source. No test set is ever used for model selection or threshold tuning |
-| Class and source balance | Weighted sampler, 1 : 1 : 1 over real / fully generated / edited; within a class, SID-Set supplies one third of the samples in every class, so its quality-75 compression cannot point to a class (real: GenImage, SID-Set, COCO negatives one third each; generated: GenImage two thirds; edited: DiffSeg30k two thirds) |
+| Two trained models | **Detection-protocol model:** GenImage SD v1.4 only (real + fully generated), the training set used by published GenImage baselines. Storage limit: a fixed random subset of 40,000 real + 40,000 generated SD v1.4 training images is used (seed 42) out of about 162,000 of each; say so in the paper, since published baselines train on the full set. **Unified model:** GenImage SD v1.4 + DiffSeg30k (images edited only by the 6 training editors; its 5,000 unedited training images (empty mask) are not used, because no metadata field says whether their base is a real photo, although all 5,000 are COCO-sized (CP1 run 4)) + about 4,850 real COCO val2017 photos each at a size drawn from the measured sizes of DiffSeg30k's training images (Lanczos resize by the smallest factor that covers it, centre crop); the 150 photos reserved for Claims-Edit are excluded + SID-Set train subset (10k real, 10k synthetic; its tampered images are left out of training, while SID-Set validation (P3b) keeps them). Same architecture and settings |
+| Validation (model selection) | A fixed, stratified 10% held out from each training source. Identical images (same file or pixel hash) go to the same split. A training or validation image that equals a test image, or is a near-duplicate of one (pHash Hamming distance ≤ 6), is left out of training and validation; test sets stay as published. No test set is ever used for model selection or threshold tuning |
+| Class and source balance | Weighted sampler, 1 : 1 : 1 over real / fully generated / edited; within a class, quality-75 images make up one third of every class, so that compression cannot point to a class: real = GenImage 1/3, SID-Set 1/6, COCO negatives 1/2; generated = GenImage 2/3, SID-Set 1/3; edited = DiffSeg30k only (CP1 run 4, quality 75 as sampled: real 0.363, generated 0.370, edited 0.365) |
 | Epoch definition | Unified: 24,000 sampled crops per epoch (8,000 per class), 20 epochs = 15,000 steps. Detection-protocol: 16,000 crops per epoch, 15 epochs = 7,500 steps |
 | Optimizer | AdamW; lr 1e-4 (fusion + heads + trace branch), 5e-5 (LoRA); weight decay 0.05; cosine schedule, 1-epoch warm-up |
 | Batch / stopping | 32; early stopping on validation AUC (patience 4) |
@@ -268,7 +268,7 @@ GenImage reference numbers: [GenImage repository, Table 3](https://github.com/we
 | P1 Cross-generator detection | Detection-protocol model (GenImage SD v1.4 only); unified model as a second, clearly labelled row | GenImage validation, all 8 generators; raw files and the JPEG- and size-harmonized version | ACC, AP, mean over generators |
 | P2 Edit localization, unseen editors | Unified model | DiffSeg30k validation images containing an edit by a held-out editor (Glide, Kolors) | Pixel F1, IoU, AUC; ACC, mIoU and boundary F1 as defined in the DiffSeg30k paper |
 | P3 Cross-dataset localization | Unified model | BR-Gen (never used in training) | Image ACC / AUC, pixel F1, IoU |
-| P3b In-domain three-class benchmark | Unified model | SID-Set validation split (not cross-dataset: a disjoint SID-Set train subset is in the training data) | 3-class ACC, per-class F1; pixel F1 and IoU on tampered images |
+| P3b In-domain three-class benchmark | Unified model | SID-Set validation split (not cross-dataset: a disjoint SID-Set train subset is in the training data; in-domain for real and synthetic only, since the tampered class was never trained on) | 3-class ACC, per-class F1; pixel F1 and IoU on tampered images |
 | P4 Hard real-world test | Detection-protocol model; unified model as a second row | Chameleon | ACC, real recall, fake recall |
 | P5 Robustness | Both models | Fixed subset: 500 real + 500 generated per GenImage generator and 1,000 DiffSeg30k held-out images, under JPEG 95→50, resize 0.5–1.5×, blur σ 1–3, noise | Accuracy / F1 vs. severity curves |
 | P6 Explanation quality | Unified model | 1,500 images, fixed seed: 400 edited each from DiffSeg30k held-out, SID-Set validation and BR-Gen; 150 real; 150 fully generated | EPG, deletion/insertion AUC, GR, HR-E, HR-GT, CC, human study |
@@ -375,7 +375,7 @@ The specification and reference list were checked against the datasets' own pape
 | 1 | A 512 crop with padding would pad GenImage real images only (ImageNet images are smaller than SD images): a learnable shortcut | 256 crops, no padding, tiled inference | 8 (M1) |
 | 2 | GenImage real images are JPEG and generated ones PNG; detectors learn the format | Harmonization for all training data; results on raw and harmonized test files | 8 (M1), 10 |
 | 3 | P1 compared a model trained on three datasets with baselines trained on SD v1.4 only | Separate detection-protocol model for P1 and P4 | 9, 10 |
-| 4 | SID-Set validation was listed as cross-dataset although SID-Set train data is used | Moved to an in-domain benchmark (P3b); BR-Gen is the cross-dataset test | 10 |
+| 4 | SID-Set validation was listed as cross-dataset although SID-Set train data is used | Moved to an in-domain benchmark (P3b) for real and synthetic images; SID-Set tampered images are left out of training (14 Nov 2026), so P3b's tampered class is unseen; BR-Gen is the cross-dataset test | 10 |
 | 5 | Held-out editors FLUX and HunyuanDiT: FLUX also generates SID-Set's synthetic images | Hold out Glide and Kolors; image-level hold-out rule for multi-edit images | 10 |
 | 6 | Claims-Edit named SDXL, FLUX or Kandinsky 2.2 inpainting, all DiffSeg30k training editors | Kolors inpainting (held out), else BrushNet or PowerPaint | 10 |
 | 7 | Mask target of all ones for fully generated images contradicts DiffSeg30k, where AI-generated backgrounds are labelled 0 | Mask marks edited pixels only | 8 (M4) |
@@ -391,6 +391,8 @@ The specification and reference list were checked against the datasets' own pape
 **Added 12 Nov 2026, data storage.** The first download failed: the SD v1.4 archive (89.8 GB) cannot be unpacked on Colab's disk, DiffSeg30k is two zip files (not the format the first downloader assumed), and Drive had about 110 GB free. Rules from now on: keep source archives on Drive and unpack them on Colab's local disk each session; never unpack the whole SD v1.4 archive, read the 40,000 + 40,000 subset straight from it; BR-Gen (68.5 GB, test only) is not needed for CP1 and is handled before P3.
 
 **Added 13 Nov 2026, after the data probe.** Three findings changed the data rules. (1) SID-Set's tampered images are almost all JPEG quality 75, so the harmonization rule now equalizes each source to its most compressed class (section 8, M1), with dropping SID-Set tampered images from training as the agreed fallback if CP1 still fails. (2) The public DiffSeg30k release has no real images, so matched real COCO negatives are added. (3) The shortcut check uses the crop the model sees, not the original image size.
+
+**Added 14 Nov 2026, after CP1.** CP1 failed on run 1, stopped on blockiness on run 2 and passed on run 3; after a spec review it passed again on run 4 with these rules (sections 8 M1, 9 and 10). (1) COCO negatives take sizes drawn from DiffSeg30k's measured sizes, not a fixed 1024 crop. (2) Training or validation images identical or near-identical (pHash ≤ 6) to a test image are left out; identical images share a split. (3) SID-Set tampered images are left out of training, the agreed fallback, so P3b's tampered class is unseen. (4) DiffSeg30k's 5,000 unedited images are not used: its metadata holds only file names, so nothing says whether a base is a real photo. (5) The same seeded third of every DiffSeg30k and COCO image is compressed at quality 75, 4:2:0, so compression does not depend on the class inside a source. (6) Sampler: real = GenImage 1/3, SID-Set 1/6, COCO 1/2; quality 75 is about one third of every class. (7) GenImage's blockiness difference is accepted as a generator trace.
 
 ## Sources
 

@@ -1,4 +1,4 @@
-"""Format harmonization of the training data (Research Specification section 8, M1, rev 49).
+"""Format harmonization of the training data (Research Specification section 8, M1, rev 98).
 
 Rule: within each source every class ends with the same compression history, set by the most
 heavily compressed class of that source. Lossless or less compressed images are JPEG-compressed

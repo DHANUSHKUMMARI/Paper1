@@ -3,6 +3,26 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2 — DiffSeg30k mask-label diagnostic — 2026-11-14
+
+Why: notebook 02 (run 4 reproduced) found 1,583 of 1,585 failed edited draws above 90% and 5,930
+of 11,382 edited training images without a valid window; their masks have no zero pixel.
+`mask_diagnostic` + `notebooks/03_mask_diagnostic.ipynb` (read-only, in the CI dry runs) measure
+every DiffSeg30k mask: value shares, full vs partial by size and role, dominant and second value,
+per value dominant vs minority, the Glide / Kolors hold-out as background vs edit region, and a
+counted-only what-if (a full mask's dominant value as background: valid crops, masks left without
+an edit, role changes); `mask_examples.png` shows 8 full and 4 partial masks.
+
+Tests (`tests/test_mask_diagnostic.py`): mask facts of a full two-value mask, a partial mask and an
+empty mask; the what-if edited pixels; on six synthetic masks (full 7+3, full Kolors base + 5, full
+single value, partial Kolors edit in P2, partial, empty): counts, dominant values, per-value
+split, Kolors as background in the hold-out vs as an edit in P2, one mask with no edit left, the
+role changes (hold-out → training pool, training pool → unedited), valid crops now 1 → what-if 3,
+and the example sheet written. The notebook dry run uses the fake world, which has no full masks
+(they are covered by the unit tests only).
+
+Not testable here: the real masks (Colab).
+
 ## Milestone 2 — training crop rule, crop diagnostic, per-source accuracy — 2026-11-14
 
 Changes: `crops.edited_crop` (random edited pixel, window uniform among those containing it,

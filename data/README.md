@@ -139,8 +139,13 @@ reported by the probe as "legacy": the empty DiffSeg30k folders and header-only 
   and replacements are logged; images with no valid window at all (`epoch.screen_never_valid`)
   are left out and logged.
 - CP1 keeps its own rule (`crops.edited_box`, a uniform window) so runs 1–4 stay reproducible.
-- The 1% minimum stays until Dhanush decides on a pixel minimum (e.g. ≥ 256 edited pixels),
-  after `notebooks/02_crop_diagnostic.ipynb` reports why CP1 run 4's 1,585 edited draws failed.
+- The 1% minimum stays. `notebooks/02_crop_diagnostic.ipynb` (14 Nov 2026, run 4 reproduced:
+  1,585 of 3,000 edited draws failed) found that the failures are not small edits: 1,583 had
+  every try above 90% and only 2 below 1%; a 256-pixel minimum would change 1,581 failures to
+  1,580. 5,930 of the 11,382 edited training images have no valid window; their masks have no
+  zero pixel (median edited share 100%, 1,048,576 pixels = 1024 × 1024). Spec section 8 assumes
+  the background of AI-generated bases is labelled 0. `notebooks/03_mask_diagnostic.ipynb`
+  measures what the mask values mean before anything is decided.
 - Validation accuracy is logged per source (`eviground.eval.metrics`), to see whether COCO, half
   of the real class, is memorised.
 
@@ -157,5 +162,8 @@ reported by the probe as "legacy": the empty DiffSeg30k folders and header-only 
    `runs/checkpoints/cp1_data_integrity.json`, the sample grids and `manifest_cp1.csv.gz`.
 4. `notebooks/02_crop_diagnostic.ipynb`: copies DiffSeg30k to the local disk and rebuilds CP1
    run 4's edited crop draws from its manifest; writes `runs/checkpoints/crop_diagnostic.json`.
+5. `notebooks/03_mask_diagnostic.ipynb`: copies DiffSeg30k to the local disk and measures every
+   mask's values (read-only); writes `runs/checkpoints/mask_diagnostic.json` and
+   `mask_examples.png`.
 
 Cite each dataset's original paper.

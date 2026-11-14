@@ -70,7 +70,7 @@ def mask_facts(mask: np.ndarray) -> dict[str, Any]:
         "size_class": size_class(w, h),
         "shares": {v: round(float(s), 6) for v, s in sorted(shares.items())},
         "zero_share": round(float(shares.get(0, 0.0)), 6),
-        "full": bool(shares.get(0, 0.0) == 0.0),
+        "full": bool(counts[0] == 0),  # integer count: no pixel labelled 0
         "n_values": len(nonzero),
         "dominant": dominant[1],
         "dominant_share": round(float(dominant[0]), 6),
@@ -118,42 +118,45 @@ def _quantiles(v: Sequence[float]) -> dict[str, float] | None:
     return {k: round(float(x), 4) for k, x in zip(names, q, strict=True)}
 
 
-def _holdout_kind(r: dict[str, Any], value: int) -> str | None:
-    if value not in r["shares"]:
-        return None
+def _holdout_kind(r: dict[str, Any], value: int) -> str:
     if r["full"] and r["dominant"] == value:
         return "dominant_background_of_full_mask"
     return "edit_region"
 
 
+def _per_value(facts: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Per mask value: images where it covers >= 50% (dominant) vs less, by size class."""
+    out: dict[str, dict[str, int]] = {}
+    for v, name in splits.DIFFSEG_EDITORS.items():
+        c: Counter[str] = Counter(
+            f"{'dominant' if r['shares'][v] >= DOMINANT else 'minority'}_{r['size_class']}"
+            for r in facts
+            if v in r["shares"]
+        )
+        out[f"{v} {name}"] = dict(sorted(c.items()))
+    return out
+
+
+def _holdout(facts: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Kolors (2) and Glide (6): a full mask's dominant value or an edit region, by role."""
+    out: dict[str, dict[str, int]] = {}
+    for v in sorted(splits.HOLDOUT_VALUES):
+        c: Counter[str] = Counter(
+            f"{r['role']} | {_holdout_kind(r, v)}" for r in facts if v in r["shares"]
+        )
+        out[f"{v} {splits.DIFFSEG_EDITORS[v]}"] = dict(sorted(c.items()))
+    return out
+
+
 def summarize(facts: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregates of :func:`mask_facts` rows (with uid, role, dataset_split, what-if fields)."""
-    by_role_size: Counter[str] = Counter()
-    for r in facts:
-        by_role_size[f"{r['role']} | {r['size_class']} | {'full' if r['full'] else 'partial'}"] += 1
+    by_role_size: Counter[str] = Counter(
+        f"{r['role']} | {r['size_class']} | {'full' if r['full'] else 'partial'}" for r in facts
+    )
     full = [r for r in facts if r["full"]]
     partial = [r for r in facts if not r["full"] and r["n_values"] > 0]
-    per_value: dict[str, dict[str, int]] = {}
-    for v, name in splits.DIFFSEG_EDITORS.items():
-        dom = Counter()
-        minority = Counter()
-        for r in facts:
-            s = r["shares"].get(v, 0.0)
-            if s == 0:
-                continue
-            (dom if s >= DOMINANT else minority)[r["size_class"]] += 1
-        per_value[f"{v} {name}"] = {
-            **{f"dominant_{k}": n for k, n in sorted(dom.items())},
-            **{f"minority_{k}": n for k, n in sorted(minority.items())},
-        }
-    holdout: dict[str, dict[str, int]] = {}
-    for v in sorted(splits.HOLDOUT_VALUES):
-        c: Counter[str] = Counter()
-        for r in facts:
-            kind = _holdout_kind(r, v)
-            if kind:
-                c[f"{r['role']} | {kind}"] += 1
-        holdout[f"{v} {splits.DIFFSEG_EDITORS[v]}"] = dict(sorted(c.items()))
+    per_value = _per_value(facts)
+    holdout = _holdout(facts)
     role_change = Counter(
         f"{r['values_role']} -> {r['whatif_role']}"
         for r in facts

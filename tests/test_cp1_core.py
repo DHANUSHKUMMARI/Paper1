@@ -233,8 +233,10 @@ def test_edited_box_fails_when_impossible():
 
 def test_quotas_sum_and_shares():
     q = sampler.quotas(9000)  # shares of the spec review of 14 Nov 2026
-    assert q[("real", "genimage")] == 3000 and q[("real", "sidset")] == 1500
-    assert q[("real", "coco")] == 4500 and ("real", "diffseg30k") not in q
+    assert q[("real", "genimage")] == 3000
+    assert q[("real", "sidset")] == 1500
+    assert q[("real", "coco")] == 4500
+    assert ("real", "diffseg30k") not in q
     assert q[("generated", "genimage")] == 6000 and q[("generated", "sidset")] == 3000
     assert q[("edited", "diffseg30k")] == 9000 and ("edited", "sidset") not in q
     q = sampler.quotas(100)
@@ -254,7 +256,8 @@ def test_draw_respects_pools_and_is_seeded():
     assert picked.count(("edited", "sidset")) == 0  # SID-Set tampered not in training
     assert picked.count(("edited", "diffseg30k")) == 300
     assert picked.count(("real", "diffseg30k")) == 0  # unedited DiffSeg30k not in training
-    assert picked.count(("real", "coco")) == 150 and picked.count(("real", "sidset")) == 50
+    assert picked.count(("real", "coco")) == 150
+    assert picked.count(("real", "sidset")) == 50
     assert picked.count(("generated", "genimage")) == 200
     assert (sampler.draw(src, lab, 300, seed=42) == idx).all()
     with pytest.raises(ValueError):
@@ -393,7 +396,8 @@ def test_jsonl_census_and_unexpected_keys(tmp_path):
     (folder / "metadata.jsonl").write_text(text)
     c = cp1.jsonl_census(folder / "metadata.jsonl", tmp_path)
     assert c["file"] == "diffseg30k/train_copy/metadata.jsonl"
-    assert c["lines"] == 3 and c["unparsable_lines"] == 1
+    assert c["lines"] == 3
+    assert c["unparsable_lines"] == 1
     assert c["keys"] == {"base": 1, "image_file_name": 2, "mask_file_name": 2}
     rep = cp1.diffseg_mask_report([], tmp_path)
     assert rep["jsonl_unexpected_keys"] == ["base"]

@@ -1038,6 +1038,31 @@ def _pair_separations(groups: dict[str, list[float]], seed: int) -> dict[str, fl
     return out
 
 
+def _real_vs_diffseg_edited(groups: dict[str, list[float]], seed: int) -> dict[str, float]:
+    """The real negatives that sit beside DiffSeg30k's edited images (COCO, and DiffSeg30k's own
+    reals if any) against those edited images, each real source weighted by its sampler share
+    (spec review of 14 Nov 2026). Empty if a side has fewer than 10 values."""
+    real_sources = [s for s in ("coco", "diffseg30k") if len(groups.get(f"{s}/real", [])) >= 10]
+    edited = groups.get("diffseg30k/edited", [])
+    if not real_sources or len(edited) < 10:
+        return {}
+    shares = sampler.SHARES["unified"]["real"]
+    total = sum(shares.get(s, 0.0) for s in real_sources) or 1.0
+    vals: list[float] = []
+    ys: list[str] = []
+    ws: list[float] = []
+    for s in real_sources:
+        v = groups[f"{s}/real"]
+        vals += v
+        ys += ["real"] * len(v)
+        ws += [shares.get(s, 0.0) / total / len(v)] * len(v)
+    vals += edited
+    ys += ["edited"] * len(edited)
+    ws += [1.0 / len(edited)] * len(edited)
+    name = f"real ({' + '.join(real_sources)}) vs diffseg30k edited"
+    return {name: round(shortcut.threshold_cv(vals, ys, seed=seed, weights=ws), 4)}
+
+
 def blockiness_check(
     samples: list[dict[str, Any]], seed: int, accepted: dict[str, str] | None = None
 ) -> dict[str, Any]:
@@ -1094,26 +1119,7 @@ def blockiness_check(
             )
         for name, score in pairs.items():
             out["separation"][f"all sources (sampler mix): {name}"] = score
-    # the real negatives that sit beside DiffSeg30k's edited images (COCO, and DiffSeg30k's own
-    # reals if any) against those edited images (spec review of 14 Nov 2026)
-    real_sources = [s for s in ("coco", "diffseg30k") if len(groups.get(f"{s}/real", [])) >= 10]
-    edited = groups.get("diffseg30k/edited", [])
-    if real_sources and len(edited) >= 10:
-        shares = sampler.SHARES["unified"]["real"]
-        total = sum(shares.get(s, 0.0) for s in real_sources) or 1.0
-        vals: list[float] = []
-        ys: list[str] = []
-        ws: list[float] = []
-        for s in real_sources:
-            v = groups[f"{s}/real"]
-            vals += v
-            ys += ["real"] * len(v)
-            ws += [shares.get(s, 0.0) / total / len(v)] * len(v)
-        vals += edited
-        ys += ["edited"] * len(edited)
-        ws += [1.0 / len(edited)] * len(edited)
-        name = f"real ({' + '.join(real_sources)}) vs diffseg30k edited"
-        out["separation"][name] = round(shortcut.threshold_cv(vals, ys, seed=seed, weights=ws), 4)
+    out["separation"].update(_real_vs_diffseg_edited(groups, seed))
     out["not_applicable"] = {}
     if len(groups.get("diffseg30k/real", [])) < 10:
         out["not_applicable"]["diffseg30k: edited vs real"] = (

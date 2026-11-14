@@ -322,7 +322,9 @@ def test_metadata_classifier_on_harmonized_crops(run):
     assert res["crops"]["errors"] == {}
     pcs = res["crops"]["per_class_source"]
     # real = GenImage 1/3, SID-Set 1/6, COCO 1/2 of 60 (spec review of 14 Nov 2026)
-    assert pcs["real/genimage"] == 20 and pcs["real/sidset"] == 10 and pcs["real/coco"] == 30
+    assert pcs["real/genimage"] == 20
+    assert pcs["real/sidset"] == 10
+    assert pcs["real/coco"] == 30
     assert "real/diffseg30k" not in pcs
     assert "edited/sidset" not in pcs
 
@@ -794,4 +796,5 @@ def test_run_records_jsonl_census_q75_share_and_new_separations(run):
     assert "real (coco) vs diffseg30k edited" in block["separation"]
     assert "diffseg30k: edited vs real" in block["not_applicable"]
     failed = res["crops"]["edited_crop_failed"]
-    assert failed["drawn"] == 60 and failed["failed_1_90_rule"] == 0
+    assert failed["drawn"] == 60
+    assert failed["failed_1_90_rule"] == 0

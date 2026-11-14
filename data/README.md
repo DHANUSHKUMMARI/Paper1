@@ -130,6 +130,20 @@ are the P2 test set. Validation: 10% of each training source, stratified, seed 4
 Leftovers of the retired downloader (`notebooks/tools/README.md`) are left untouched and are
 reported by the probe as "legacy": the empty DiffSeg30k folders and header-only manifests.
 
+## Training crops (decision of 14 Nov 2026; minimum pending)
+
+- Edited images (`crops.edited_crop`): pick a random edited pixel, then a 256 window drawn
+  uniformly among all in-image windows that contain it (no centring: test tiles have no centre
+  prior); keep it if the edited share is 1–90%; up to 10 tries. A failed image is replaced by
+  another from the same (class, source) pool (`epoch.epoch_plan`), so 1 : 1 : 1 holds; failures
+  and replacements are logged; images with no valid window at all (`epoch.screen_never_valid`)
+  are left out and logged.
+- CP1 keeps its own rule (`crops.edited_box`, a uniform window) so runs 1–4 stay reproducible.
+- The 1% minimum stays until Dhanush decides on a pixel minimum (e.g. ≥ 256 edited pixels),
+  after `notebooks/02_crop_diagnostic.ipynb` reports why CP1 run 4's 1,585 edited draws failed.
+- Validation accuracy is logged per source (`eviground.eval.metrics`), to see whether COCO, half
+  of the real class, is memorised.
+
 ## Notebooks
 
 1. `notebooks/00c_data_download.ipynb`: run twice, each time in a fresh CPU runtime: first
@@ -141,5 +155,7 @@ reported by the probe as "legacy": the empty DiffSeg30k folders and header-only 
 3. `notebooks/01_cp1_data_integrity.ipynb`: downloads COCO once, stages everything locally and
    runs checkpoint CP1 (`eviground.data.cp1.run_cp1`); writes
    `runs/checkpoints/cp1_data_integrity.json`, the sample grids and `manifest_cp1.csv.gz`.
+4. `notebooks/02_crop_diagnostic.ipynb`: copies DiffSeg30k to the local disk and rebuilds CP1
+   run 4's edited crop draws from its manifest; writes `runs/checkpoints/crop_diagnostic.json`.
 
 Cite each dataset's original paper.

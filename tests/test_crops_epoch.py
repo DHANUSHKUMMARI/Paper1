@@ -107,6 +107,7 @@ def test_has_valid_window_matches_brute_force():
 def _pools():
     """Sources and labels covering every unified pool; edited images e0-e9, half never crop."""
     rows = [("genimage", "real")] * 6 + [("sidset", "real")] * 4 + [("coco", "real")] * 5
+    rows += [("diffseg30k", "real")] * 3
     rows += [("genimage", "generated")] * 6 + [("sidset", "generated")] * 4
     rows += [("diffseg30k", "edited")] * 10
     sources = [s for s, _ in rows]

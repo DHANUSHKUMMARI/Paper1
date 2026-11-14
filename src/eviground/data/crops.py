@@ -93,6 +93,7 @@ def edited_crop(
     share: tuple[float, float] = EDITED_SHARE,
     tries: int = TRIES,
     min_pixels: int | None = None,
+    trace: list[float] | None = None,
 ) -> tuple[tuple[int, int, int, int] | None, float | None, int]:
     """Training crop for an edited image (decision of 14 Nov 2026).
 
@@ -102,6 +103,7 @@ def edited_crop(
     ``min_pixels``, if it holds at least that many edited pixels and at most ``share[1]``).
     Returns ``(box, edited_share, tries_used)``; ``box`` is None after ``tries`` failures, for an
     image smaller than ``size`` or for an empty mask (the loader then replaces the image).
+    ``trace``, if given, receives the edited share of every try.
     """
     edited = np.asarray(mask) > 0
     h, w = edited.shape[:2]
@@ -118,6 +120,8 @@ def edited_crop(
         # one window: summing it is cheaper than an integral image of the whole mask
         n = int(np.count_nonzero(edited[top : top + size, left : left + size]))
         last = n / (size * size)
+        if trace is not None:
+            trace.append(last)
         if _accept(n, size, share, min_pixels):
             return (left, top, left + size, top + size), last, k
     return None, last, tries

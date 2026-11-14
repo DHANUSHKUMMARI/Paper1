@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 4, design of the spec review; runs 1–3 below) | |
+| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 4; runs 1–3 below). Run 5 pending: DiffSeg30k mask reading decided after notebook 03 | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -224,3 +224,13 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Result:** **PASS**. All three criteria met and no stop flag (the GenImage generator trace is
   accepted and reported).
 - **Verified by Dhanush:** ☐
+
+### CP1 run 5 — pending (DiffSeg30k mask reading, 14 Nov 2026)
+
+Run 4's PASS holds for its design. Since then (data/README decisions 15–17): an AI-generated base's
+mask value is read as 0 (border + most frequent value; disagreements leave training); Glide and
+Kolors stay out of training wherever they appear and P2 keeps validation images where they made an
+edit; DiffSeg30k's unedited images are real negatives again (real shares 1/3, 1/6, 1/4, 1/4);
+CP1's edited crops use the training rule with replacement. Run 5 adds: base-reading counts by
+role, the disagreement share (stop above 5%), P2 on all / real-base / AI-base images, valid-crop
+images in the train split, and the failed-draw share histogram.

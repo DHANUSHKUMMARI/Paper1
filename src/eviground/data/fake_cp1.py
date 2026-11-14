@@ -171,9 +171,41 @@ def make_validation(folder: Path, per_class: int, seed: _Seeds) -> None:
     _write_done(folder, "genimage_val", "verify_folder", summary)
 
 
-# DiffSeg30k editor sets per image: training editors, hold-out (2 Kolors, 6 Glide), mixed
-DIFFSEG_TRAIN_SETS = [[1], [3, 5], [4], [7, 8], [5], [1, 4, 8], [2], [6, 3], []]
-DIFFSEG_VAL_SETS = [[2], [6], [6, 1], [3], [2, 7, 5], [8]]
+# DiffSeg30k masks per image as (base, edit values), the layout notebook 03 found (14 Nov 2026):
+# base None = a real photo (background 0); an int = an AI-generated base labelled with its
+# generator's value on every pixel; "disagree" = a full mask whose border value (7) differs from
+# its most frequent value (an edit of 4 over most of the image).
+DIFFSEG_TRAIN_SETS = [
+    (None, []),  # unedited real photo -> real negative (first: sizes 320x288 and 288x288)
+    (None, [1]),  # real base, training editor -> train_pool
+    (None, [3, 5]),  # real base -> train_pool
+    (7, [3]),  # AI base (HunyuanDiT), edit by SD 3.5 -> train_pool
+    (8, [5]),  # AI base (Kandinsky), edit by SDXL -> train_pool
+    (None, [2]),  # Kolors edit -> excluded_holdout
+    (6, [3]),  # Glide base -> excluded_holdout (strict hold-out)
+    (8, []),  # AI base, no edit left -> excluded_no_edit
+    "disagree",  # -> excluded_base_unclear
+]
+DIFFSEG_VAL_SETS = [
+    (None, [2]),  # Kolors edit on a real base -> P2
+    (3, [6]),  # Glide edit on an AI base -> P2
+    (2, [5]),  # Kolors only as the base -> excluded_holdout_base_only
+    (None, [3]),  # -> unused_validation
+    (7, [5]),  # -> unused_validation
+    (None, [6, 1]),  # -> P2
+]
+
+
+def _diffseg_mask(width: int, height: int, spec: Any, seed: int) -> Image.Image:
+    if spec == "disagree":
+        arr = np.full((height, width), 7, np.uint8)
+        arr[height // 10 : height - height // 10, width // 10 : width - width // 10] = 4
+        return Image.fromarray(arr)
+    base, editors = spec
+    arr = np.asarray(_mask(width, height, editors, seed)).copy()
+    if base is not None:
+        arr[arr == 0] = base
+    return Image.fromarray(arr)
 
 
 def make_diffseg(folder: Path, n_train: int, n_val: int, seed: _Seeds) -> None:
@@ -189,9 +221,9 @@ def make_diffseg(folder: Path, n_train: int, n_val: int, seed: _Seeds) -> None:
                 s = seed()
                 ident = f"{s * 2654435761 % 2**32:08x}"
                 w, h = [(320, 288), (288, 288), (256, 256), (240, 300)][i % 4]
-                editors = sets[i % len(sets)]
+                spec = sets[i % len(sets)]
                 zf.writestr(f"{split}_copy/{ident}.image.png", png(texture(s, w, h)))
-                zf.writestr(f"{split}_copy/{ident}.mask.png", png(_mask(w, h, editors, s)))
+                zf.writestr(f"{split}_copy/{ident}.mask.png", png(_diffseg_mask(w, h, spec, s)))
                 # the real layout (run-3 record): only the two file names per line
                 meta.append(
                     {"image_file_name": f"{ident}.image.png", "mask_file_name": f"{ident}.mask.png"}

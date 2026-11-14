@@ -36,7 +36,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from eviground.data import crops, harmonize, hashing, sampler, shortcut, splits
+from eviground.data import crops, diffseg_mask, harmonize, hashing, sampler, shortcut, splits
+from eviground.data.crop_diagnostic import SHARE_BINS
 from eviground.data.download import _assign, _is_image, read_done
 from eviground.data.imageinfo import blockiness, header_info
 from eviground.data.registry import REGISTRY
@@ -82,6 +83,11 @@ class CP1Config:
     scan_retries: int = 2
     diffseg_card_splits: dict[str, int] | None = None
     coco: dict[str, Any] | None = None  # COCO params; default: the verified _DONE record
+    # failed edited crops are replaced from the same pool, round by round (14 Nov 2026)
+    crop_replacement_rounds: int = 20
+    # AI-base masks whose border and pixel count disagree on the base: above this share of the
+    # full masks, stop and ask (decision of 14 Nov 2026)
+    base_unclear_max: float = 0.05
 
 
 # --------------------------------------------------------------------------------------
@@ -521,9 +527,59 @@ def assign_diffseg_roles(rows: list[dict[str, Any]]) -> None:
         if r.get("error") or r.get("mask_error"):
             r["role"] = "excluded_unreadable"
             continue
-        values = splits.parse_editors(r.get("mask_values"))
+        values = splits.parse_editors(r.get("mask_values")) - {0}
         r["editors"] = splits.editors_text(values)
-        r["role"] = splits.diffseg_role(r["dataset_split"], values - {0})
+        reading = r.get("base_reading")
+        edits = splits.parse_editors(r.get("edit_values")) if reading else values
+        role = splits.diffseg_role(r["dataset_split"], values, edits, reading)
+        if role == "real_pool":  # an unedited real photo: a real negative (14 Nov 2026)
+            role, r["label"] = "train_pool", "real"
+        r["role"] = role
+
+
+def _diffseg_base_task(task: tuple[str, str, bool]) -> dict[str, Any]:
+    """Read one DiffSeg30k mask's base (worker process); valid-crop check for train images."""
+    _uid, mask_path, check = task
+    try:
+        with Image.open(mask_path) as m:
+            mask = np.asarray(m.convert("L"))
+    except Exception as exc:
+        return {"mask_error": f"decode: {type(exc).__name__}"}
+    info = diffseg_mask.read_base(mask)
+    if check and info["base_reading"] in ("real", "agree"):
+        info["valid_crop"] = crops.has_valid_window(diffseg_mask.edit_mask(mask, info["mask_base"]))
+    elif check:
+        info["valid_crop"] = False
+    return info
+
+
+def diffseg_bases(rows: list[dict[str, Any]], cfg: CP1Config) -> None:
+    """Base type, base value and edit values of every DiffSeg30k mask (decision of
+    14 Nov 2026: an AI-generated base's value is read as 0). The scan cache has no border
+    data, so the masks are read once more here from the local disk."""
+    ds = [
+        r
+        for r in rows
+        if r["source"] == "diffseg30k"
+        and r.get("mask_path")
+        and not r.get("error")
+        and not r.get("mask_error")
+    ]
+    tasks = [(r["uid"], r["mask_path"], r["dataset_split"] == "train") for r in ds]
+    if cfg.workers > 1 and tasks:
+        got = run_watched(
+            _diffseg_base_task,
+            tasks,
+            cfg.workers,
+            stall_s=cfg.stall_s,
+            retries=cfg.scan_retries,
+            on_timeout=lambda t: {"mask_error": READ_TIMEOUT},
+            describe=lambda t: t[0],
+        )
+    else:
+        got = [_diffseg_base_task(t) for t in tasks]
+    for r, g in zip(ds, got, strict=True):
+        r.update(g)
 
 
 def _coco_prepared_phash(row: dict[str, Any]) -> dict[str, Any]:
@@ -853,6 +909,8 @@ def _load_mask(r: dict[str, Any]) -> np.ndarray | None:
         arr = np.asarray(m.convert("L"))
     if r["source"] == "sidset":
         return (arr > 127).astype(np.uint8)  # lossy masks: binarized (decision of 13 Nov 2026)
+    if r["source"] == "diffseg30k":  # an AI-generated base's value is read as 0 (14 Nov 2026)
+        return diffseg_mask.edit_mask(arr, r.get("mask_base"))
     return arr
 
 
@@ -895,8 +953,13 @@ def sample_row(task: tuple[dict[str, Any], int, int, int, bool]) -> dict[str, An
         rng = np.random.default_rng(draw_seed)
         mask = _load_mask(r) if r["label"] == "edited" else None
         if mask is not None:
-            box, share, tries = crops.edited_box(mask, rng, crop_size)
+            # the training rule (14 Nov 2026): a random edited pixel, a window uniform among
+            # those that contain it; every try's share is kept for a failed draw
+            trace: list[float] = []
+            box, share, tries = crops.edited_crop(mask, rng, crop_size, trace=trace)
             out.update(edited_share=share, crop_tries=tries)
+            if box is None:
+                out["crop_shares"] = [round(s, 6) for s in trace]
         else:
             box = crops.random_box(rgb.shape[1], rgb.shape[0], rng, crop_size)
         if box is None:
@@ -1123,8 +1186,8 @@ def blockiness_check(
     out["not_applicable"] = {}
     if len(groups.get("diffseg30k/real", [])) < 10:
         out["not_applicable"]["diffseg30k: edited vs real"] = (
-            "no DiffSeg30k real images in training (unedited images left out, spec review of "
-            "14 Nov 2026)"
+            f"fewer than 10 DiffSeg30k real images measured "
+            f"({len(groups.get('diffseg30k/real', []))})"
         )
     above = {k: v for k, v in out["separation"].items() if v > shortcut.CRITERION}
     out["accepted"] = {
@@ -1216,6 +1279,7 @@ def diffseg_mask_report(rows: list[dict[str, Any]], local: Path) -> dict[str, An
         "values_outside_0_8": sorted(v for v in values if v > 8),
         "editor_map": {str(k): v for k, v in splits.DIFFSEG_EDITORS.items()},
         "roles": {f"{s}/{r}": n for (s, r), n in sorted(roles.items())},
+        "base_reading": base_reading_report(ds),
         "jsonl": jsonl,
         "jsonl_unexpected_keys": unexpected,
         "jsonl_census_complete": census_complete,
@@ -1223,9 +1287,47 @@ def diffseg_mask_report(rows: list[dict[str, Any]], local: Path) -> dict[str, An
             "note": "image size, not a base-type field: COCO photos are at most 640 px a side; "
             "1024x1024 suggests an AI-generated base (paper: about half of the bases)",
             "unedited_train": _size_kinds(
-                r for r in ds if r["dataset_split"] == "train" and r["role"] == "excluded_unedited"
+                r
+                for r in ds
+                if r["dataset_split"] == "train" and r.get("base_reading") == "unedited"
             ),
-            "edited_train_pool": _size_kinds(r for r in ds if r["role"] == "train_pool"),
+            "edited_train_pool": _size_kinds(
+                r for r in ds if r["role"] == "train_pool" and r["label"] == "edited"
+            ),
+        },
+    }
+
+
+def base_reading_report(ds: list[dict[str, Any]]) -> dict[str, Any]:
+    """How the DiffSeg30k masks were read (decision of 14 Nov 2026): counts per reading and role,
+    the disagreement share, P2 by base type, and the training images with a valid crop."""
+    readings = Counter(r.get("base_reading") for r in ds)
+    full = sum(readings.get(k, 0) for k in ("agree", "disagree", "no_edit"))
+    p2 = [r for r in ds if r["role"] == "test_P2"]
+    checked = [r for r in ds if r["dataset_split"] == "train" and r.get("valid_crop") is not None]
+    pool = [r for r in checked if r["role"] == "train_pool" and r["label"] == "edited"]
+    return {
+        "rule": "AI-generated base: the value covering most of the border, also the most "
+        "frequent value, read as 0; disagreement leaves training; no edit left is dropped",
+        "by_reading": {str(k): v for k, v in sorted(readings.items(), key=lambda kv: str(kv[0]))},
+        "by_role_reading": {
+            f"{role} | {reading}": n
+            for (role, reading), n in sorted(
+                Counter((r["role"], str(r.get("base_reading"))) for r in ds).items()
+            )
+        },
+        "full_masks": full,
+        "disagree_share_of_full": round(readings.get("disagree", 0) / full, 4) if full else 0.0,
+        "p2": {
+            "all": len(p2),
+            "real_base": sum(1 for r in p2 if r.get("base_type") == "real"),
+            "ai_base": sum(1 for r in p2 if r.get("base_type") == "ai"),
+        },
+        "valid_crop": {
+            "train_split_checked": len(checked),
+            "train_split_valid": sum(1 for r in checked if r.get("valid_crop")),
+            "train_pool_edited": len(pool),
+            "train_pool_edited_valid": sum(1 for r in pool if r.get("valid_crop")),
         },
     }
 
@@ -1335,6 +1437,11 @@ MANIFEST_COLUMNS = [
     "prep_w",
     "prep_h",
     "mask_values",
+    "mask_base",
+    "base_type",
+    "base_reading",
+    "edit_values",
+    "valid_crop",
     "h_action",
     "h_quality",
     "h_subsampling",
@@ -1346,6 +1453,94 @@ MANIFEST_COLUMNS = [
 def _counts(rows: Iterable[dict[str, Any]], *keys: str) -> dict[str, int]:
     c = Counter("/".join(str(r.get(k)) for k in keys) for r in rows)
     return dict(sorted(c.items()))
+
+
+def _run_samples(tasks: list[tuple[Any, ...]], workers: int) -> list[dict[str, Any]]:
+    if workers > 1 and len(tasks) > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(sample_row, tasks, chunksize=16))
+    return [sample_row(t) for t in tasks]
+
+
+def _failure_kind(shares: list[float]) -> str:
+    lo, hi = crops.EDITED_SHARE
+    if not shares:
+        return "no_try"
+    if all(s < lo for s in shares):
+        return "all_tries_below_1pct"
+    if all(s > hi for s in shares):
+        return "all_tries_above_90pct"
+    return "mixed_below_and_above"
+
+
+def _share_bin(s: float) -> str:
+    for name, lo, hi in SHARE_BINS:
+        if lo < s <= hi:
+            return name
+    return "other"
+
+
+def draw_crops(
+    eligible: list[dict[str, Any]], cfg: CP1Config, say: Callable[[str], None]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Training-sampler draws, harmonized and cropped (worker processes). A failed edited crop
+    is replaced from the same (class, source) pool, round by round, so every class reaches
+    ``cfg.crops_per_class`` (decision of 14 Nov 2026); the failures are kept and described."""
+    picks = sampler.draw(
+        [r["source"] for r in eligible],
+        [r["label"] for r in eligible],
+        cfg.crops_per_class,
+        cfg.seed,
+    )
+    block_quota: Counter[str] = Counter()
+    measured: set[str] = set()  # blockiness once per image, even if drawn several times
+
+    def task(k: int, r: dict[str, Any]) -> tuple[Any, ...]:
+        key = f"{r['source']}/{r['label']}"
+        want = block_quota[key] < cfg.blockiness_per_group and r["uid"] not in measured
+        if want:
+            block_quota[key] += 1
+            measured.add(r["uid"])
+        clean = {kk: vv for kk, vv in r.items() if not kk.startswith("_")}
+        return (clean, cfg.seed * 1_000_003 + k, crops.CROP, want)
+
+    say(f"harmonizing and cropping {len(picks)} sampled images")
+    samples = _run_samples([task(k, eligible[int(i)]) for k, i in enumerate(picks)], cfg.workers)
+    first_failed = [s for s in samples if s.get("error") == "crop_failed"]
+    pools: dict[tuple[str, str], list[int]] = {}
+    for i, r in enumerate(eligible):
+        pools.setdefault((r["label"], r["source"]), []).append(i)
+    rng = np.random.default_rng([cfg.seed, 7])
+    replacements: Counter[str] = Counter()
+    pending, k_next, rounds = first_failed, len(picks), 0
+    while pending and rounds < cfg.crop_replacement_rounds:
+        rounds += 1
+        new_tasks = []
+        for s in pending:
+            pool = pools[(s["label"], s["source"])]
+            replacements[f"{s['label']}/{s['source']}"] += 1
+            new_tasks.append(task(k_next, eligible[int(rng.choice(pool))]))
+            k_next += 1
+        got = _run_samples(new_tasks, cfg.workers)
+        samples += got
+        pending = [g for g in got if g.get("error") == "crop_failed"]
+    if replacements:
+        say(f"replaced {sum(replacements.values())} failed edited crops in {rounds} rounds")
+    hist = Counter(_share_bin(x) for s in first_failed for x in s.get("crop_shares", []))
+    log = {
+        "rule": "training rule: random edited pixel, window uniform among those containing it, "
+        "edited share 1-90%, 10 tries; a failed draw is replaced from the same pool",
+        "first_pass_edited_drawn": sum(1 for i in picks if eligible[int(i)]["label"] == "edited"),
+        "first_pass_failed": len(first_failed),
+        "failed_by_kind": dict(
+            sorted(Counter(_failure_kind(s.get("crop_shares", [])) for s in first_failed).items())
+        ),
+        "failed_tries_share_histogram": {name: hist.get(name, 0) for name, *_ in SHARE_BINS},
+        "replacements": dict(sorted(replacements.items())),
+        "replacement_rounds": rounds,
+        "unresolved": len(pending),
+    }
+    return samples, log
 
 
 def run_cp1(
@@ -1396,6 +1591,8 @@ def run_cp1(
     )
     for r in rows:
         r.update({k: v for k, v in facts[r["uid"]].items() if k != "uid"})
+    diffseg_bases(rows, cfg)
+    say("DiffSeg30k mask bases read (an AI-generated base's value is read as 0)")
     assign_diffseg_roles(rows)
     negatives = prepare_coco_negatives(rows, cfg)
     say(f"COCO negatives sized like DiffSeg30k: {negatives['resampling']}")
@@ -1424,30 +1621,7 @@ def run_cp1(
     eligible = [
         r for r in rows if r.get("split") == "train" and r.get("h_action") in ("keep", "compress")
     ]
-    picks = sampler.draw(
-        [r["source"] for r in eligible],
-        [r["label"] for r in eligible],
-        cfg.crops_per_class,
-        cfg.seed,
-    )
-    block_quota: Counter[str] = Counter()
-    measured: set[str] = set()  # blockiness once per image, even if drawn several times
-    tasks = []
-    for k, i in enumerate(picks):
-        r = eligible[int(i)]
-        key = f"{r['source']}/{r['label']}"
-        want = block_quota[key] < cfg.blockiness_per_group and r["uid"] not in measured
-        if want:
-            block_quota[key] += 1
-            measured.add(r["uid"])
-        clean = {kk: vv for kk, vv in r.items() if not kk.startswith("_")}
-        tasks.append((clean, cfg.seed * 1_000_003 + k, crops.CROP, want))
-    say(f"harmonizing and cropping {len(tasks)} sampled images")
-    if cfg.workers > 1:
-        with ProcessPoolExecutor(max_workers=cfg.workers) as pool:
-            samples = list(pool.map(sample_row, tasks, chunksize=16))
-    else:
-        samples = [sample_row(t) for t in tasks]
+    samples, crop_log = draw_crops(eligible, cfg, say)
     errors = Counter(s["error"] for s in samples if "error" in s)
     meta = metadata_check(samples, cfg.seed)
     q75 = quality_75_share(samples)
@@ -1477,6 +1651,9 @@ def run_cp1(
         "diffseg_jsonl_unexpected_keys": bool(masks["jsonl_unexpected_keys"]),
         # no .jsonl found, or a line that is not a JSON object: the census is incomplete
         "diffseg_jsonl_census_incomplete": not masks["jsonl_census_complete"],
+        # AI-base masks whose base the border and the pixel count disagree on (14 Nov 2026)
+        "diffseg_base_unclear_over_5pct": masks["base_reading"]["disagree_share_of_full"]
+        > cfg.base_unclear_max,
         # an image that could not be read (corrupt, or a read that never returned) was left out
         # of the duplicate checks, so CP1 cannot pass until it is looked at
         "images_not_scanned": any(r.get("error") for r in rows),
@@ -1526,11 +1703,10 @@ def run_cp1(
             ),
             "edited_share": shortcut.describe(edited_shares),
             "edited_crop_failed": {
-                "drawn": sum(1 for s in samples if s["label"] == "edited"),
-                "failed_1_90_rule": sum(
-                    1 for s in samples if s["label"] == "edited" and s.get("error") == "crop_failed"
-                ),
+                "drawn": crop_log["first_pass_edited_drawn"],
+                "failed_1_90_rule": crop_log["first_pass_failed"],
             },
+            "replacement": crop_log,
         },
         "metadata_classifier": meta,
         "quality_75": q75,

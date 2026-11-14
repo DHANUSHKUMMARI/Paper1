@@ -3,6 +3,29 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2 — DiffSeg30k mask reading, strict hold-out, real negatives back — 2026-11-14
+
+Changes (data/README decisions 15–17): `diffseg_mask.read_base` / `edit_mask` (an AI base's value,
+the border-majority and most frequent value, read as 0); `splits.diffseg_role` with edit values
+and the reading (strict Glide/Kolors hold-out; P2 = Glide/Kolors as editor; `real_pool`,
+`excluded_base_unclear`, `excluded_no_edit`, `excluded_holdout_base_only`); `cp1.diffseg_bases`
+(a watched pass over the masks: base, reading, valid crop on the read mask);
+`cp1.base_reading_report` and the stop flag `diffseg_base_unclear_over_5pct`; `cp1.draw_crops`
+(training crop rule on read masks, failed edited draws replaced round by round, failure kinds
+and the share histogram of every failed try); sampler real = 1/3, 1/6, 1/4, 1/4; manifest columns
+`mask_base`, `base_type`, `base_reading`, `edit_values`, `valid_crop`. The fake DiffSeg30k masks now
+have the real layout (real bases, AI bases labelled on every pixel, a Glide base, a Kolors base in
+validation, an AI base without an edit, a border/count disagreement, empty masks).
+
+Tests: `tests/test_diffseg_mask.py` (AI base agree, real base, unedited, no edit, disagreement,
+border counts, the report's counts and disagreement share, `draw_crops` keeps 40 crops per class
+when half the edited images never crop, histogram = 10 tries per failure, replacements logged);
+`tests/test_cp1_core.py` (the strict hold-out role matrix, 14 cases; quotas and draws with the new
+real shares; q75 = 1/3 per class); the fake CP1 run (roles, base readings 12/2/2/12/2, P2 6 = 4 real
++ 2 AI base, valid crops 6 of 8, 60 edited crops after replacement, real crops 20/10/15/15).
+
+Not testable here: the real masks and CP1 run 5 (Colab).
+
 ## Milestone 2 — DiffSeg30k mask-label diagnostic — 2026-11-14
 
 Why: notebook 02 (run 4 reproduced) found 1,583 of 1,585 failed edited draws above 90% and 5,930

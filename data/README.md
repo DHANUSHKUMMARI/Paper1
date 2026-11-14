@@ -96,6 +96,9 @@ Spec review of 14 Nov 2026 (Dhanush; spec cards 2, 5, 6 and 8 on hold until CP1 
     files, CP1 run-3 record); the zips hold no other metadata. CP1 run 4 counts the keys on every
     line and stops and asks if any other key appears. Image size is reported as an indication
     only (1024×1024 vs both sides ≤ 640). They are not relabelled as fully generated.
+    Run 4 (14 Nov 2026): every line of both files (28,998 + 6,001) holds only the two file names,
+    0 unparsable. All 5,000 unedited images have both sides ≤ 640 (COCO size); Dhanush kept them
+    out, since size is not a field.
 14. Compression does not depend on the class inside a source: the same seeded third (seed 42) of
     every DiffSeg30k and COCO training image, whatever its class, is compressed at quality 75,
     4:2:0; the rest keep the GenImage real distribution. Sampler: real = GenImage 1/3,
@@ -107,7 +110,7 @@ Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.
 starts only if the local disk matches that list exactly (none missing, none with another size,
 no extra files).
 
-## Harmonization of the training data (spec section 8, M1, revision 49)
+## Harmonization of the training data (spec section 8, M1, revision 98)
 
 Within each source every class ends with the compression history of its most compressed class.
 Compression happens once, on the whole image, before the 256 crop
@@ -127,6 +130,20 @@ are the P2 test set. Validation: 10% of each training source, stratified, seed 4
 Leftovers of the retired downloader (`notebooks/tools/README.md`) are left untouched and are
 reported by the probe as "legacy": the empty DiffSeg30k folders and header-only manifests.
 
+## Training crops (decision of 14 Nov 2026; minimum pending)
+
+- Edited images (`crops.edited_crop`): pick a random edited pixel, then a 256 window drawn
+  uniformly among all in-image windows that contain it (no centring: test tiles have no centre
+  prior); keep it if the edited share is 1–90%; up to 10 tries. A failed image is replaced by
+  another from the same (class, source) pool (`epoch.epoch_plan`), so 1 : 1 : 1 holds; failures
+  and replacements are logged; images with no valid window at all (`epoch.screen_never_valid`)
+  are left out and logged.
+- CP1 keeps its own rule (`crops.edited_box`, a uniform window) so runs 1–4 stay reproducible.
+- The 1% minimum stays until Dhanush decides on a pixel minimum (e.g. ≥ 256 edited pixels),
+  after `notebooks/02_crop_diagnostic.ipynb` reports why CP1 run 4's 1,585 edited draws failed.
+- Validation accuracy is logged per source (`eviground.eval.metrics`), to see whether COCO, half
+  of the real class, is memorised.
+
 ## Notebooks
 
 1. `notebooks/00c_data_download.ipynb`: run twice, each time in a fresh CPU runtime: first
@@ -138,5 +155,7 @@ reported by the probe as "legacy": the empty DiffSeg30k folders and header-only 
 3. `notebooks/01_cp1_data_integrity.ipynb`: downloads COCO once, stages everything locally and
    runs checkpoint CP1 (`eviground.data.cp1.run_cp1`); writes
    `runs/checkpoints/cp1_data_integrity.json`, the sample grids and `manifest_cp1.csv.gz`.
+4. `notebooks/02_crop_diagnostic.ipynb`: copies DiffSeg30k to the local disk and rebuilds CP1
+   run 4's edited crop draws from its manifest; writes `runs/checkpoints/crop_diagnostic.json`.
 
 Cite each dataset's original paper.

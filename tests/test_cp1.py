@@ -800,3 +800,20 @@ def test_run_records_jsonl_census_q75_share_and_new_separations(run):
     failed = res["crops"]["edited_crop_failed"]
     assert failed["drawn"] == 60
     assert failed["failed_1_90_rule"] == 0
+
+
+def test_crop_diagnostic_rebuilds_the_runs_edited_draws(run):
+    """notebooks/02: the edited draws of a CP1 run are rebuilt from its manifest."""
+    from eviground.data import crop_diagnostic
+
+    tmp, _, res = run
+    failed = res["crops"]["edited_crop_failed"]
+    diag = crop_diagnostic.run_diagnostic(
+        tmp / "out" / "manifest_cp1.csv.gz",
+        crops_per_class=60,
+        expected_failures=failed["failed_1_90_rule"],
+    )
+    assert diag["draws"]["edited_draws"] == failed["drawn"]
+    assert diag["draws"]["reproduced"] is True
+    assert diag["images"]["edited_training_images"] > 0
+    assert set(diag["draws"]["failed_tries_share_histogram"]) >= {"0", "(0, 0.1%]", "100%"}

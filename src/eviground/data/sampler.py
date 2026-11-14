@@ -1,4 +1,4 @@
-"""Class and source balance of the training sampler (Research Specification section 9, rev 49).
+"""Class and source balance of the training sampler (Research Specification section 9, rev 98).
 
 Unified model: 1 : 1 : 1 over real / fully generated / edited. SID-Set tampered images are
 left out of training (blockiness fallback, 14 Nov 2026) and DiffSeg30k's unedited images too

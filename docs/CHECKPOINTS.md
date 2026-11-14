@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 3; runs 1–2 below). Run 4 pending: design changed in the spec review of 14 Nov 2026 | |
+| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 4, design of the spec review; runs 1–3 below) | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -177,12 +177,50 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   accepted and reported).
 - **Verified by Dhanush:** ☐
 
-### CP1 run 4 — pending (design changed in the spec review of 14 Nov 2026)
+### CP1 run 4 — Data integrity and leakage — 2026-11-14 — **PASS**
 
-Run 3's PASS holds for the design it tested. Changes since (data/README decisions 13–14): DiffSeg30k
-unedited images left out of training; the same seeded third of DiffSeg30k (all classes) and COCO
-at quality 75, 4:2:0; real shares GenImage 1/3, SID-Set 1/6, COCO 1/2. Run 4 adds to the record:
-the key count of every DiffSeg30k `.jsonl` line (stop and ask on any key besides the two file
-names), an image-size indication for unedited and edited DiffSeg30k images, the separation of
-real (COCO) vs DiffSeg30k edited (under the 0.60 stop rule), the quality-75 share per class as
-sampled, and the failed edited crop draws.
+- **Run / commit:** Colab CPU runtime, `main` at `git 0f8b35c` (spec-review design merged in PR #15);
+  record Drive `Paper 1/runs/checkpoints/cp1_data_integrity.json` (written 2026-11-14 15:54 UTC;
+  replaces the run-3 file, whose numbers are in the entry above); sample grids and
+  `manifest_cp1.csv.gz` in `Paper 1/runs/checkpoints/cp1/`. Wall time 70.1 min (Cells 1–5, copies
+  made again; `run_cp1` 23.9 min). CU not recorded.
+- **What changed since run 3** (data/README decisions 13–14): DiffSeg30k unedited images left out
+  of training; the same seeded third of DiffSeg30k (all classes) and COCO compressed at quality 75,
+  4:2:0; real shares GenImage 1/3, SID-Set 1/6, COCO 1/2.
+- **What was run:** `notebooks/01_cp1_data_integrity.ipynb`, Cells 1–5. Local copies checked file by
+  file: 80,000 / 70,000 / 48,000 / 5,000 files, 0 missing, 0 other size, 0 extra. 255,999 images
+  indexed, 0 unreadable.
+- **Left out of training** (test sets unchanged): 28 exact and 323 near duplicates of test images,
+  10,000 SID-Set tampered, 5,000 DiffSeg30k unedited. Harmonization: COCO 3,208 with the GenImage
+  real distribution, 1,604 at quality 75 / 4:2:0 (seeded third), 26 too small; DiffSeg30k edited
+  8,431 / 4,220 / 47.
+- **Numbers, against the pass criteria of Research Specification 9.1 (rev 49):**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| 0 duplicate image hashes across train / val / test | 0 groups across splits | PASS |
+| Class counts equal the manifests | 13 of 13 equal | PASS |
+| Metadata classifier (format, JPEG quality, crop size) ≤ 60% real vs not real | 0.5055 on 7,415 harmonized crops (JPEG quality alone 0.5055; format, crop width, crop height 0.50); three classes 0.3418 | PASS |
+| Blockiness per class: a clear class difference means stop and ask | harmonized medians: GenImage real 1.0201 / generated 1.0406; SID-Set real 1.261 / synthetic 1.2827; COCO 1.0878; DiffSeg30k edited 1.0768. Separations: real (COCO) vs DiffSeg30k edited 0.4911; SID-Set synthetic vs real 0.545; sampler mix real vs not real 0.5155, real vs generated 0.5537, real vs edited 0.4539, generated vs edited 0.5183. DiffSeg30k edited vs real: not applicable (no DiffSeg30k reals). GenImage generated vs real 0.6325 reported as accepted (generator trace) | PASS (no stop) |
+
+- **Stop flags:** all false (blockiness, near-duplicates, mask values outside 0–8, DiffSeg30k
+  `.jsonl` unexpected keys, `.jsonl` census incomplete, images not scanned).
+- **DiffSeg30k `.jsonl` census (every line):** `train_copy/metadata.jsonl` 28,998 lines,
+  `validation_copy/metadata.jsonl` 6,001 lines; keys `image_file_name` and `mask_file_name` on
+  every line, nothing else; 0 unparsable. No field gives the base type.
+- **Image-size indication (not a field):** the 5,000 unedited training images all have both
+  sides ≤ 640 px (COCO size); the 12,698 edited training-pool images: 6,389 at 1024×1024, 6,309
+  with both sides ≤ 640. Dhanush kept the unedited images out (14 Nov 2026).
+- **Quality 75, 4:2:0 as sampled:** real 0.363, generated 0.3703, edited 0.3654 (target one third
+  plus GenImage's own quality-75 files). By source: COCO 0.366, GenImage real 0.042, GenImage
+  generated 0.0555, SID-Set real 0.996, SID-Set synthetic 1.0, DiffSeg30k edited 0.3654.
+- **Near-duplicates of test images in train + val** (pHash ≤ 6): 0 in P1, P2, P3b and P7 (at ≤ 8:
+  778, 18, 260, 0). DiffSeg30k mask values {0,…,8}.
+- **Diagnostics (not criteria):** metadata with subsampling 0.5055, original size 0.7701,
+  harmonized file bytes 0.5527, raw files 0.8843; raw-file blockiness separation GenImage 0.5725,
+  SID-Set 0.8025; mid-block raw GenImage 0.6775. Crops: 1,585 of 3,000 edited draws failed the
+  1–90% edited share (1,415 succeeded; Milestone 2 loader proposal pending). COCO negatives at
+  DiffSeg30k sizes: 176 unchanged, 478 cropped, 180 downscaled, 4,016 upscaled.
+- **Result:** **PASS**. All three criteria met and no stop flag (the GenImage generator trace is
+  accepted and reported).
+- **Verified by Dhanush:** ☐

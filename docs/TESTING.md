@@ -3,6 +3,35 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2 — training crop rule, crop diagnostic, per-source accuracy — 2026-11-14
+
+Changes: `crops.edited_crop` (random edited pixel, window uniform among those containing it,
+1–90% share or an optional pixel minimum, 10 tries), `crops.window_counts` and
+`crops.has_valid_window` (every window, integral image); `epoch.epoch_plan` (sampler draws, a
+failed crop replaced from the same pool, failures and replacements logged) and
+`epoch.screen_never_valid`; `crop_diagnostic` and `notebooks/02_crop_diagnostic.ipynb` (CP1 run 4's
+edited draws rebuilt from its manifest, every try's share recorded; added to the CI notebook
+dry runs); `eval.metrics.per_source_accuracy` and `metrics_row` (validation accuracy per source and
+class, flat columns for `metrics.csv`). CP1 keeps `crops.edited_box`.
+
+Tests (`tests/test_crops_epoch.py`, `tests/test_metrics.py`, one in `tests/test_cp1.py`): over 4,000
+draws the edited blob's position inside the crop is uniform (mean 128 ± 6, sd 66–82, every quarter
+> 850 of 4,000, < 10% in the central 64 × 64; a centred crop would give 100%); windows stay inside
+the image at a border; every returned box has a 1–90% share; a 300-pixel edit fails the 1% rule
+and passes a 256-pixel minimum; empty and small masks fail cleanly; `has_valid_window` equals brute
+force on 40 random masks; replacement keeps the exact per-pool quotas when half the edited images
+never crop, logs the failures, is deterministic, and stops when no edited image can crop; the
+tracing twin repeats `edited_box` exactly (same random numbers, both outcomes covered); the
+diagnostic sorts failed draws into below-1% and above-90% kinds, its histogram sums to 10 tries per
+failure, and on the fake CP1 run it rebuilds the run's edited draws (60) and reproduces its
+failure count; per-source accuracy on a hand-computed case, a missing source, unknown sources,
+fixed column order.
+
+Speed: `edited_crop` sums only the chosen window (0.13 ms per call on a 1024 × 1024 mask; a
+whole-image integral image per call took about 27 ms).
+
+Not testable here: the real failure histogram (Dhanush runs notebook 02 in Colab), and training.
+
 ## Milestone 2 — spec review: DiffSeg30k unedited images out, q75 thirds by source — 2026-11-14
 
 Changes (data/README decisions 13–14): `splits.diffseg_role` gives empty-mask train images

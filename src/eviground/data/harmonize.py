@@ -60,12 +60,17 @@ class QualityDistribution:
         """From header facts of JPEG files; greyscale and non-standard subsampling are left out
         (the images to compress are colour, so only colour settings can be sampled)."""
         counts: Counter[tuple[int, str]] = Counter()
+        seen = 0
         for info in infos:
+            seen += 1
             q, ss = info.get("jpeg_quality"), info.get("subsampling")
             if info.get("format") == "jpeg" and q is not None and ss in SUBSAMPLING_CODE:
                 counts[(int(q), str(ss))] += 1
         if not counts:
-            raise ValueError("no colour JPEG among the measured images")
+            raise ValueError(
+                f"no colour JPEG among the {seen} measured images (are the real training "
+                "images staged and scanned?)"
+            )
         return cls(dict(counts))
 
     @property

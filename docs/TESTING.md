@@ -3,6 +3,24 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2, fix — CP1 started without local copies — 2026-11-14
+
+Colab report: Cell 4 printed `indexed 136000 images: {'genimage_val': 100000, 'sidset': 36000}` and
+stopped with `ValueError: no colour JPEG among the measured images`. The local copies of GenImage
+SD v1.4, DiffSeg30k and COCO were gone (a new runtime; Cell 3 not run again), so only the datasets
+indexed from Drive were found. Changes: `cp1.check_staged` runs first in `run_cp1` and stops with
+"local copies are missing or incomplete (…): run Cell 3 first" unless every local copy has its
+`_STAGED.json` and at least the files it records; unpacked files take the archive's timestamp and
+copied files keep the source's, so staging again reproduces the same size and time and the scan
+saved on Drive is reused; the quality-distribution error says how many images were measured.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` / `ruff format --check src tests` | All checks passed / 42 files already formatted |
+| `pytest` | 220 passed (3 new; the class-count mismatch test now changes the card count instead of deleting a staged file) |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+| `test_scan_cache_survives_restaging` on the previous `storage.py` | fails: `scanned again after re-staging` |
+
 ## Milestone 2, fix — CP1 scan stalls on Drive reads — 2026-11-13
 
 Colab report: Cell 4 resumed from the scan cache (COCO, DiffSeg30k, GenImage SD v1.4 done) and printed

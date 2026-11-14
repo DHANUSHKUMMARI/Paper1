@@ -187,3 +187,15 @@ def test_run_stops_on_unreadable_masks_and_unresolved_crops(monkeypatch):
     assert log["unresolved"] == 6
     assert log["replacement_rounds"] == 2
     assert cp1.run_stops([], log)["edited_crops_unresolved"] is True
+
+
+def test_base_unclear_stop_respects_the_accepted_share():
+    """CP1 run 5's 13.06% was accepted (14 Nov 2026): a rerun on the same data does not stop;
+    a higher share still does (Codex review of PR 19)."""
+    cfg = cp1.CP1Config()
+    assert cp1.base_unclear_stop(0.1306, cfg) is False
+    assert cp1.base_unclear_stop(0.04, cfg) is False
+    assert cp1.base_unclear_stop(0.15, cfg) is True
+    strict = cp1.CP1Config(base_unclear_accepted=None)
+    assert cp1.base_unclear_stop(0.1306, strict) is True
+    assert cp1.base_unclear_stop(0.05, strict) is False

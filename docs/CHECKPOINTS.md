@@ -249,7 +249,9 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   criterion): border and pixel count disagree on the base for 2,048 of 15,687 full masks (13.1%).
   By role: 645 left out of training (`excluded_base_unclear`), 1,016 held out anyway, 235 in P2,
   152 unused validation. **Dhanush accepted run 5 as PASS** (14 Nov 2026); the disagreements stay
-  out of training and counted. All other stop flags false.
+  out of training and counted. The accepted share is in `CP1Config.base_unclear_accepted` (0.1306),
+  so a rerun on the same data does not stop again; a higher share still does. All other stop flags
+  false.
 - **Mask readings:** agree 13,033, disagree 2,048, no edit left 606, real base 14,312, unedited
   5,000. Training pool: 5,560 AI-base edited, 6,266 real-base edited, 4,856 unedited (real
   negatives); left out: 645 base unclear, 228 no edit, 11,252 hold-out.

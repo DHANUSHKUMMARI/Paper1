@@ -59,6 +59,8 @@ def _accept_local_edits(paths) -> None:
 
 def _cfg(**kw) -> cp1.CP1Config:
     base = {
+        # the fake world holds 2 base disagreements among 16 full masks on purpose (12.5%)
+        "base_unclear_max": 0.2,
         "workers": 1,
         "crops_per_class": 60,
         "blockiness_per_group": 20,
@@ -262,22 +264,24 @@ def test_run_cp1_result_record(run):
 def test_roles_splits_and_holdout(run):
     _, _, res = run
     roles = res["diffseg30k_masks"]["roles"]
-    # fake editor sets: train cycles 9 sets (2 hold-out, 1 empty), validation 6 (4 hold-out);
-    # the 2 empty-mask images leave training (no field says whether the base is a real photo,
-    # spec review of 14 Nov 2026)
+    # fake mask specs (fake_cp1, the layout notebook 03 found): train cycles 9 (4 edited incl. 2
+    # AI bases, Kolors edit + Glide base held out, 1 empty = real negative, 1 AI base without an
+    # edit, 1 base disagreement); validation cycles 6 (3 P2, 1 Kolors base only, 2 unused)
     assert roles == {
+        "train/excluded_base_unclear": 2,
         "train/excluded_holdout": 4,
-        "train/excluded_unedited": 2,
-        "train/train_pool": 12,
-        "validation/test_P2": 8,
+        "train/excluded_no_edit": 2,
+        "train/train_pool": 10,
+        "validation/excluded_holdout_base_only": 2,
+        "validation/test_P2": 6,
         "validation/unused_validation": 4,
     }
     by = res["counts"]["by_source_split_label"]
     assert by["coco/test/real"] == 6 and len(res["coco_negatives"]["reserved_claims_edit_ids"]) == 6
     assert by["genimage_val/test/real"] == by["genimage_val/test/generated"] == 16
     assert by["sidset/test/edited"] == 5
-    assert not any(k.startswith("diffseg30k/") and k.endswith("/real") for k in by)
-    assert res["counts"]["by_role"]["diffseg30k/excluded_unedited"] == 2
+    # the 2 empty-mask images are real negatives again (decision of 14 Nov 2026)
+    assert by.get("diffseg30k/train/real", 0) + by.get("diffseg30k/val/real", 0) == 2
     assert res["counts"]["by_role"]["sidset/excluded_sid_tampered"] == 10
     assert "sidset/train/edited" not in by and "sidset/val/edited" not in by
     assert res["diffseg30k_masks"]["distinct_values"] == list(range(9))
@@ -293,7 +297,12 @@ def test_harmonization_follows_spec_table(run):
     assert plan["sidset/real"]["skip:below_q75"] > 0 and plan["sidset/real"]["keep:at_target"] > 0
     assert plan["sidset/real"]["compress:above_q75"] > 0
     assert "sidset/edited" not in plan  # SID-Set tampered left out of training
-    assert "diffseg30k/real" not in plan  # unedited images left out (spec review, 14 Nov 2026)
+    # unedited DiffSeg30k images are real negatives with the same third at q75 (14 Nov 2026)
+    assert set(plan["diffseg30k/real"]) <= {
+        "compress:lossless",
+        "compress:q75_third",
+        "skip:too_small",
+    }
     # COCO negatives take DiffSeg30k sizes, including its few under 256 (skipped like them);
     # one seeded third of them is compressed at quality 75 like SID-Set (14 Nov 2026)
     assert plan["coco/real"]["compress:lossless"] > 0
@@ -321,11 +330,12 @@ def test_metadata_classifier_on_harmonized_crops(run):
     assert meta["diagnostics"]["raw_files_positive_control"] > 0.8
     assert res["crops"]["errors"] == {}
     pcs = res["crops"]["per_class_source"]
-    # real = GenImage 1/3, SID-Set 1/6, COCO 1/2 of 60 (spec review of 14 Nov 2026)
+    # real = GenImage 1/3, SID-Set 1/6, COCO 1/4, DiffSeg30k 1/4 of 60 (14 Nov 2026)
     assert pcs["real/genimage"] == 20
     assert pcs["real/sidset"] == 10
-    assert pcs["real/coco"] == 30
-    assert "real/diffseg30k" not in pcs
+    assert pcs["real/coco"] == 15
+    assert pcs["real/diffseg30k"] == 15
+    assert pcs["edited/diffseg30k"] == 60  # failed edited crops are replaced
     assert "edited/sidset" not in pcs
 
 
@@ -624,6 +634,7 @@ def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
         "genimage/real": g(1.0, 30),
         "sidset/real": g(1.2, 300),
         "coco/real": third(30),
+        "diffseg30k/real": third(30),
         "genimage/generated": g(1.0, 30),
         "sidset/generated": g(1.2, 30),
         "diffseg30k/edited": third(30),
@@ -639,7 +650,7 @@ def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
     res = cp1.blockiness_check(samples_of(groups), seed=42)
     for pair in ("real vs not real", "real vs generated", "real vs edited", "generated vs edited"):
         assert res["separation"][f"all sources (sampler mix): {pair}"] < 0.6, pair
-    assert res["separation"]["real (coco) vs diffseg30k edited"] < 0.6
+    assert res["separation"]["real (coco + diffseg30k) vs diffseg30k edited"] < 0.6
     assert res["stop_and_ask"] is False
     groups["sidset/generated"] = g(1.3, 30)  # a real class difference inside SID-Set
     res = cp1.blockiness_check(samples_of(groups), seed=42)
@@ -786,7 +797,22 @@ def test_run_records_jsonl_census_q75_share_and_new_separations(run):
     assert masks["jsonl_census_complete"] is True
     assert res["stop_and_ask"]["diffseg_jsonl_census_incomplete"] is False
     assert sum(masks["size_indication"]["unedited_train"].values()) == 2
-    assert sum(masks["size_indication"]["edited_train_pool"].values()) == 12
+    assert sum(masks["size_indication"]["edited_train_pool"].values()) == 8
+    base = masks["base_reading"]
+    assert base["by_reading"] == {
+        "agree": 12,
+        "disagree": 2,
+        "no_edit": 2,
+        "real": 12,
+        "unedited": 2,
+    }
+    assert base["full_masks"] == 16
+    assert base["disagree_share_of_full"] == 0.125
+    assert base["p2"] == {"all": 6, "real_base": 4, "ai_base": 2}
+    assert base["valid_crop"]["train_split_checked"] == 18
+    assert base["valid_crop"]["train_pool_edited"] == 8
+    assert base["valid_crop"]["train_pool_edited_valid"] == 6  # two are 240 x 300: too small
+    assert res["stop_and_ask"]["diffseg_base_unclear_over_5pct"] is False  # tests allow 20%
     q75 = res["quality_75"]
     assert set(q75["per_class"]) == {"real", "generated", "edited"}
     assert q75["per_class_source"]["generated/sidset"]["q75_420"] == 1.0
@@ -795,7 +821,8 @@ def test_run_records_jsonl_census_q75_share_and_new_separations(run):
     for c in ("real", "edited"):
         assert 0 < q75["per_class"][c]["q75_420"] < 1
     block = res["blockiness"]
-    assert "real (coco) vs diffseg30k edited" in block["separation"]
+    # the fake world has too few DiffSeg30k images for blockiness pairs (>= 10 values each);
+    # the pooled pair is unit-tested in tests/test_crops_epoch.py / test_cp1_core
     assert "diffseg30k: edited vs real" in block["not_applicable"]
     failed = res["crops"]["edited_crop_failed"]
     assert failed["drawn"] == 60
@@ -808,12 +835,10 @@ def test_crop_diagnostic_rebuilds_the_runs_edited_draws(run):
 
     tmp, _, res = run
     failed = res["crops"]["edited_crop_failed"]
-    diag = crop_diagnostic.run_diagnostic(
-        tmp / "out" / "manifest_cp1.csv.gz",
-        crops_per_class=60,
-        expected_failures=failed["failed_1_90_rule"],
-    )
+    # the diagnostic repeats the CP1 rule of runs 1-4 (crops.edited_box); since run 5 CP1 uses the
+    # training rule, so only the draws (same sampler, same seed) are compared here
+    diag = crop_diagnostic.run_diagnostic(tmp / "out" / "manifest_cp1.csv.gz", crops_per_class=60)
     assert diag["draws"]["edited_draws"] == failed["drawn"]
-    assert diag["draws"]["reproduced"] is True
+    assert diag["draws"]["reproduced"] is None
     assert diag["images"]["edited_training_images"] > 0
     assert set(diag["draws"]["failed_tries_share_histogram"]) >= {"0", "(0, 0.1%]", "100%"}

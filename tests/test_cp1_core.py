@@ -235,8 +235,8 @@ def test_quotas_sum_and_shares():
     q = sampler.quotas(9000)  # shares of the spec review of 14 Nov 2026
     assert q[("real", "genimage")] == 3000
     assert q[("real", "sidset")] == 1500
-    assert q[("real", "coco")] == 4500
-    assert ("real", "diffseg30k") not in q
+    assert q[("real", "coco")] == 2250
+    assert q[("real", "diffseg30k")] == 2250
     assert q[("generated", "genimage")] == 6000 and q[("generated", "sidset")] == 3000
     assert q[("edited", "diffseg30k")] == 9000 and ("edited", "sidset") not in q
     q = sampler.quotas(100)
@@ -247,16 +247,16 @@ def test_quotas_sum_and_shares():
 
 
 def test_draw_respects_pools_and_is_seeded():
-    src = ["genimage"] * 4 + ["sidset"] * 6 + ["coco"] * 2 + ["diffseg30k"] * 4
+    src = ["genimage"] * 4 + ["sidset"] * 6 + ["coco"] * 2 + ["diffseg30k"] * 5
     lab = ["real", "generated"] * 2 + ["real", "generated", "edited"] * 2
-    lab += ["real"] * 2 + ["edited"] * 3 + ["real"]
+    lab += ["real"] * 2 + ["edited"] * 3 + ["real"] * 2
     idx = sampler.draw(src, lab, 300, seed=42)
     assert len(idx) == 900
     picked = [(lab[i], src[i]) for i in idx]
     assert picked.count(("edited", "sidset")) == 0  # SID-Set tampered not in training
     assert picked.count(("edited", "diffseg30k")) == 300
-    assert picked.count(("real", "diffseg30k")) == 0  # unedited DiffSeg30k not in training
-    assert picked.count(("real", "coco")) == 150
+    assert picked.count(("real", "diffseg30k")) == 75  # unedited real photos (14 Nov 2026)
+    assert picked.count(("real", "coco")) == 75
     assert picked.count(("real", "sidset")) == 50
     assert picked.count(("generated", "genimage")) == 200
     assert (sampler.draw(src, lab, 300, seed=42) == idx).all()
@@ -278,19 +278,31 @@ def test_stratified_val_ten_percent_order_independent():
 
 
 @pytest.mark.parametrize(
-    "split,editors,role",
+    "split,values,edits,reading,role",
     [
-        ("train", {1, 3}, "train_pool"),
-        ("train", {1, 6}, "excluded_holdout"),
-        ("train", {2}, "excluded_holdout"),
-        ("train", set(), "excluded_unedited"),
-        ("train", {9}, "excluded_unknown_value"),
-        ("validation", {5, 2}, "test_P2"),
-        ("validation", {5}, "unused_validation"),
+        ("train", {1, 3}, {1, 3}, "real", "train_pool"),
+        ("train", {7, 3}, {3}, "agree", "train_pool"),  # AI base 7 read as 0
+        ("train", {1, 6}, {1, 6}, "real", "excluded_holdout"),
+        ("train", {6, 3}, {3}, "agree", "excluded_holdout"),  # Glide base: strict hold-out
+        ("train", {2}, {2}, "real", "excluded_holdout"),
+        ("train", set(), set(), "unedited", "real_pool"),  # an unedited real photo
+        ("train", {7, 4}, {7, 4}, "disagree", "excluded_base_unclear"),
+        ("train", {8}, set(), "no_edit", "excluded_no_edit"),
+        ("train", {9}, {9}, "real", "excluded_unknown_value"),
+        ("validation", {5, 2}, {5, 2}, "real", "test_P2"),
+        ("validation", {3, 6}, {6}, "agree", "test_P2"),  # Glide edit on an AI base
+        ("validation", {2, 5}, {5}, "agree", "excluded_holdout_base_only"),  # Kolors base only
+        ("validation", {5}, {5}, "real", "unused_validation"),
+        ("validation", set(), set(), "unedited", "unused_validation"),
     ],
 )
-def test_diffseg_role(split, editors, role):
-    assert splits.diffseg_role(split, editors) == role
+def test_diffseg_role(split, values, edits, reading, role):
+    assert splits.diffseg_role(split, values, edits, reading) == role
+
+
+def test_diffseg_role_without_a_reading_uses_all_values():
+    assert splits.diffseg_role("validation", {5, 2}) == "test_P2"
+    assert splits.diffseg_role("train", {1, 3}) == "train_pool"
 
 
 def test_editor_text_roundtrip():

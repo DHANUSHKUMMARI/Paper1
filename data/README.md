@@ -110,6 +110,26 @@ Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.
 starts only if the local disk matches that list exactly (none missing, none with another size,
 no extra files).
 
+After notebook 03 (mask labels, 14 Nov 2026), Dhanush decided (option 1, strict hold-out):
+
+15. DiffSeg30k labels an AI-generated base with its generator's value on every pixel (15,687 of
+    34,999 masks have no 0). That base value is read as 0 (`diffseg_mask.read_base`): it is the
+    value covering most of the image border and must also be the most frequent value; if the two
+    differ the image leaves training (counted; CP1 stops and asks above 5% of full masks). A mask
+    with no edit left once the base is removed (606) is dropped, never relabelled.
+16. Glide (6) and Kolors (2) stay out of training wherever they appear, base or edit. P2 = the
+    validation images where Glide or Kolors made an edit; P2 is reported on all images and on the
+    real-base subset (only the subset is compared with the DiffSeg30k paper: there both mask
+    readings agree). Manifest columns `mask_base`, `base_type`, `base_reading`, `edit_values`.
+17. DiffSeg30k's 5,000 unedited images (all-zero mask) are real negatives again: with this
+    encoding an AI-generated base never has an all-zero mask, so they are real COCO photos (all
+    COCO-sized, CP1 run 4). Real = GenImage 1/3, SID-Set 1/6, COCO 1/4, DiffSeg30k 1/4; the same
+    seeded third of every DiffSeg30k and COCO image stays at quality 75, so quality 75 is one
+    third of every class. Decision 13 is reversed.
+
+CP1 run 5 samples edited crops with the training rule (`crops.edited_crop`) on the read masks and
+replaces failed draws; the failed-draw histogram is reported before the 1% minimum is changed.
+
 ## Harmonization of the training data (spec section 8, M1, revision 98)
 
 Within each source every class ends with the compression history of its most compressed class.

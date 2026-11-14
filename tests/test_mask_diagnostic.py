@@ -104,7 +104,7 @@ def test_diagnostic_on_full_partial_and_holdout_masks(tmp_path):
     assert w["full_masks_with_no_edit_left"] == 1  # the single-value full mask
     assert w["role_changes"] == {
         "excluded_holdout -> train_pool": 1,
-        "train_pool -> excluded_unedited": 1,
+        "train_pool -> real_pool": 1,
     }
     assert w["train_images_checked"] == 5
     assert w["valid_crop_now"] == 1  # only the partial train mask has a 1-90% window now

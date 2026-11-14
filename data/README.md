@@ -96,6 +96,9 @@ Spec review of 14 Nov 2026 (Dhanush; spec cards 2, 5, 6 and 8 on hold until CP1 
     files, CP1 run-3 record); the zips hold no other metadata. CP1 run 4 counts the keys on every
     line and stops and asks if any other key appears. Image size is reported as an indication
     only (1024×1024 vs both sides ≤ 640). They are not relabelled as fully generated.
+    Run 4 (14 Nov 2026): every line of both files (28,998 + 6,001) holds only the two file names,
+    0 unparsable. All 5,000 unedited images have both sides ≤ 640 (COCO size); Dhanush kept them
+    out, since size is not a field.
 14. Compression does not depend on the class inside a source: the same seeded third (seed 42) of
     every DiffSeg30k and COCO training image, whatever its class, is compressed at quality 75,
     4:2:0; the rest keep the GenImage real distribution. Sampler: real = GenImage 1/3,

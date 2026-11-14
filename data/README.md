@@ -130,6 +130,11 @@ After notebook 03 (mask labels, 14 Nov 2026), Dhanush decided (option 1, strict 
 CP1 run 5 samples edited crops with the training rule (`crops.edited_crop`) on the read masks and
 replaces failed draws; the failed-draw histogram is reported before the 1% minimum is changed.
 
+CP1 run 5 (14 Nov 2026, PASS accepted by Dhanush): readings agree 13,033, disagree 2,048 (13.1% of
+full masks; 645 left out of training as `excluded_base_unclear`), no edit 606, real base 14,312,
+unedited 5,000; P2 2,434 (1,287 real-base); 21,477 of 28,998 train-split images have a valid crop;
+68 of 3,000 edited draws failed (65 above 90%, 3 below 1%), so the 1% minimum stays.
+
 ## Harmonization of the training data (spec section 8, M1, revision 98)
 
 Within each source every class ends with the compression history of its most compressed class.

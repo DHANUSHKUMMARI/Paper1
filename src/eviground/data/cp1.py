@@ -86,7 +86,9 @@ class CP1Config:
     # failed edited crops are replaced from the same pool, round by round (14 Nov 2026)
     crop_replacement_rounds: int = 20
     # AI-base masks whose border and pixel count disagree on the base: above this share of the
-    # full masks, stop and ask (decision of 14 Nov 2026)
+    # full masks, stop and ask (decision of 14 Nov 2026). CP1 run 5 measured 13.1%; Dhanush
+    # accepted it (the disagreements stay out of training), so a new run stops again only if it
+    # changes
     base_unclear_max: float = 0.05
 
 

@@ -21,6 +21,7 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-14 | CP1 run 3 (`01`, commit `2feec5a`), Cells 1–5 | none (CPU runtime) | 0.359 (21.5 min) | not recorded | not recorded | **CP1 PASS**: 0 cross-split duplicates; counts equal; metadata 0.5089; no blockiness stop (GenImage trace accepted) |
 | 2026-11-14 | CP1 run 4 (`01`, commit `0f8b35c`), Cells 1–5 | none (CPU runtime) | 1.169 (70.1 min) | not recorded | not recorded | **CP1 PASS** (spec-review design): 0 cross-split duplicates; counts equal; metadata 0.5055; no stop; `.jsonl` keys only file names; q75 share 0.363 / 0.370 / 0.365 |
 | 2026-11-14 | Crop diagnostic (`02`, commit `b087db6`), Cells 1–4 | none (CPU runtime) | 0.343 (20.6 min) | not recorded | not recorded | Run 4 reproduced (1,585 of 3,000 edited draws failed); 1,583 failed above 90%, 2 below 1%; 5,930 of 11,382 edited training images have no valid window; median edited share 100% (1,048,576 px) |
+| 2026-11-14 | CP1 run 5 (`01`, commit `9a134bc`), Cells 1–5 | none (CPU runtime) | 1.478 (88.7 min) | not recorded | not recorded | **CP1 PASS** (accepted): criteria met (metadata 0.5071); stop flag base disagreement 13.1% accepted by Dhanush; P2 2,434 (1,287 real-base); 68 of 3,000 edited draws failed, all replaced |
 
 ## Runs
 

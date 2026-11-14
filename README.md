@@ -5,7 +5,8 @@
 Research code for Paper 1. The model classifies an image as *real*, *fully AI-generated* or *locally AI-edited*, localizes edited regions, and produces a forensic report written by a frozen LLM that may cite **only** ID-tagged detector evidence, checked by a rule-based verifier.
 
 > Status: Milestone 1 (environment) complete; checkpoint CP0 passed on 11 Nov 2026 (sandbox, CI, Colab).
-> In progress: Milestone 2 (data layer, checkpoint CP1). Downloads: `notebooks/00c_data_download.ipynb`
+> Milestone 2 (data layer): checkpoint CP1 passed on 14 Nov 2026 (run 3, `notebooks/01_cp1_data_integrity.ipynb`).
+> Next: Milestone 3 (model build, checkpoint CP2). Downloads: `notebooks/00c_data_download.ipynb`
 > (`eviground.data.download.ensure_data()`, storage rules in spec section 13, revision 45); read-only
 > record of what is on Drive: `notebooks/00b_data_probe.ipynb`. Datasets and Drive layout: `data/README.md`.
 > Implementation follows `docs/RESEARCH_SPEC.md` (what to build and why) and

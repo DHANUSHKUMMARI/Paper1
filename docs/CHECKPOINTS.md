@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | run 1 **FAIL**; run 2: criteria met, stop and ask (blockiness), fixes decided (14 Nov 2026) | |
+| CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 3; runs 1–2 below) | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -145,3 +145,34 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   is recorded as PASS only after run 3.
 - **Verified by Dhanush:** ☐
 
+### CP1 run 3 — Data integrity and leakage — 2026-11-14 — **PASS**
+
+- **Run / commit:** Colab CPU runtime, `main` at `git 2feec5a` (decisions of run 2 merged in PR #13);
+  record Drive `Paper 1/runs/checkpoints/cp1_data_integrity.json` (written 2026-11-14 11:19 UTC;
+  replaces the run-2 file, whose numbers are in the entry above); sample grids and
+  `manifest_cp1.csv.gz` in `Paper 1/runs/checkpoints/cp1/`. Wall time 21.5 min (scan reused).
+  CU not recorded.
+- **What was run:** `notebooks/01_cp1_data_integrity.ipynb`, Cells 1–5. Local copies checked file by
+  file: 80,000 / 70,000 / 48,000 / 5,000 files, 0 missing, 0 other size, 0 extra. 255,999 images
+  indexed, 0 unreadable.
+- **Left out of training** (test sets unchanged): 28 exact and 467 near duplicates of test images,
+  10,000 SID-Set tampered. DiffSeg30k edited harmonization: 8,431 with the GenImage real
+  distribution, 4,220 at quality 75 / 4:2:0 (the seeded third), 47 too small.
+- **Numbers, against the pass criteria of Research Specification 9.1 (rev 49):**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| 0 duplicate image hashes across train / val / test | 0 file-hash and 0 pixel-hash groups across splits (within-split groups, reported only: 43) | PASS |
+| Class counts equal the manifests | 13 of 13 equal | PASS |
+| Metadata classifier (format, JPEG quality, crop size) ≤ 60% real vs not real | 0.5089 on 7,426 harmonized crops (JPEG quality alone 0.5089; format, crop width, crop height 0.50); three classes 0.3451 | PASS |
+| Blockiness per class: a clear class difference means stop and ask | harmonized medians: GenImage real 1.0158 / generated 1.0406; SID-Set real 1.2515 / synthetic 1.2827; DiffSeg30k real 1.0241 / edited 1.0765; COCO 1.0408. Separations: DiffSeg30k edited vs real 0.5904; SID-Set synthetic vs real 0.5825; sampler mix real vs not real 0.5472, real vs generated 0.5917, real vs edited 0.4675, generated vs edited 0.5717. No clear difference; GenImage generated vs real 0.6675 reported as accepted (generator trace, decision of 14 Nov 2026) | PASS (no stop) |
+
+- **Near-duplicates of test images in train + val** (pHash ≤ 6): 0 in P1, P2, P3b and P7 (at ≤ 8:
+  791, 50, 272, 0). DiffSeg30k mask values {0,…,8}.
+- **Diagnostics (not criteria):** metadata with subsampling 0.512, original size
+  0.7575, harmonized file bytes 0.5461, raw files 0.7948; crops: 1,574 of 9,000 draws
+  failed the 1–90% edited share in 10 tries (DiffSeg30k edited: 1,426 of 3,000 succeeded); COCO
+  negatives at DiffSeg30k sizes: 176 unchanged, 478 cropped, 180 downscaled, 4,016 upscaled.
+- **Result:** **PASS**. All three criteria met and no stop flag (the GenImage generator trace is
+  accepted and reported).
+- **Verified by Dhanush:** ☐

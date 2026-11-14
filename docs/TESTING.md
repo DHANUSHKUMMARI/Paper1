@@ -18,9 +18,12 @@ with α; FPN-lite mask decoder), `models/eviground.py` (`EviGround`, `build_mode
 (test-time tiles) and `train/losses.py` (CE with label smoothing; BCE on all samples, Dice on
 edited samples only; L_att on edited samples). Configs: `model`, `loss`, `optim` sections in
 `configs/base.yaml`; `configs/debug.yaml` uses a tiny random CLIP (no download). CI now installs
-`timm`, `peft`, `transformers`; the unused `open_clip_torch` dependency is removed.
+`torch` 2.14.1 and `torchvision` 0.29.2 together from the PyTorch CPU index (the first CI run
+failed because `timm` pulled a CUDA `torchvision` from PyPI: `operator torchvision::nms does not
+exist`), and `timm` 1.0.31, `peft` 0.21.3, `transformers` 5.20.2, all pinned and binary-only; the
+unused `open_clip_torch` dependency is removed.
 
-Tests (`tests/test_models.py`, 22, CPU, ~8 s): view shapes at full resolution; the DCT matrix is
+Tests (`tests/test_models.py`, 23, CPU, ~8 s): view shapes at full resolution; the DCT matrix is
 orthonormal and a constant block has only the DC term; SRM of a constant image is 0; views are
 deterministic; frequency view for sides that are not multiples of 8; only LoRA and the projection
 train in M2; M2 trainable parameters at real ViT-L/14 width (built on the meta device, no weights)
@@ -32,7 +35,13 @@ their learning rates; dropout off makes the model deterministic; Dice 0 for iden
 real image feeds BCE (non-zero gradient) and not Dice; L_att 0 inside the mask and 1 outside; the
 loss is the weighted sum of its terms; the tile rule (≤ 9 tiles, never padded, full coverage up
 to 768 px per side, 75% for 1024); stitching; tiled prediction with one edited tile returns
-"edited" and a mask of the image size.
+"edited" and a mask of the image size; channels_last in the trace branch gives the same output.
+
+Sandbox runs: `ruff check src tests`, `ruff format --check`; `python -m pytest -q` → 294 passed
+(torch 2.15, transformers 5.23); `tests/test_models.py` again in a venv with the CI pins
+(transformers 5.20.2, timm 1.0.31, peft 0.21.3) → 23 passed. Not run here: the PyTorch CPU index
+is blocked from the sandbox, so the exact torch 2.14.1 + torchvision 0.29.2 CPU pair is checked
+by CI only.
 
 Not testable here: the real CLIP weights, GPU timing and memory (CP2 notebook on an L4).
 

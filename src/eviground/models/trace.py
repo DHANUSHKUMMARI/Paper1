@@ -12,6 +12,10 @@ import torch
 from torch import nn
 
 
+def _to_channels_last(t: torch.Tensor) -> torch.Tensor:
+    return t.contiguous(memory_format=torch.channels_last) if t.dim() == 4 else t
+
+
 class TraceBranch(nn.Module):
     def __init__(
         self,
@@ -38,8 +42,8 @@ class TraceBranch(nn.Module):
         self.channels = list(self.backbone.feature_info.channels())
         self.proj = nn.Conv2d(self.channels[-1], d, kernel_size=1)
         self.channels_last = channels_last
-        if channels_last:
-            self.to(memory_format=torch.channels_last)
+        if channels_last:  # same as Module.to(memory_format=channels_last): 4-D tensors only
+            self._apply(_to_channels_last)
 
     def forward(self, trace: torch.Tensor) -> dict[str, torch.Tensor]:
         """``trace``: (B, 4, H, W) -> s4, s8, s16 maps and the projected stride-16 map ``t16``

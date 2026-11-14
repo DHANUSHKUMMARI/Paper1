@@ -182,6 +182,21 @@ def test_backward_reaches_the_trace_first_conv_and_all_heads(model):
     assert model.decoder.out.weight.grad.abs().sum() > 0
 
 
+def test_trace_channels_last_keeps_the_output():
+    from eviground.models.trace import TraceBranch
+
+    torch.manual_seed(0)
+    a = TraceBranch(pretrained=False, d=32).eval()
+    b = TraceBranch(pretrained=False, d=32, channels_last=True).eval()
+    b.load_state_dict(a.state_dict())
+    assert b.proj.weight.is_contiguous(memory_format=torch.channels_last)
+    x = torch.randn(2, 4, 64, 64)
+    with torch.no_grad():
+        ya, yb = a(x), b(x)
+    for k in ("s4", "s8", "s16", "t16"):
+        assert torch.allclose(ya[k], yb[k], atol=1e-5)
+
+
 def test_param_groups_use_the_two_learning_rates(model):
     groups = model.param_groups(1e-4, 5e-5, 0.05)
     assert [g["lr"] for g in groups] == [5e-5, 1e-4]

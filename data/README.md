@@ -65,6 +65,21 @@ How the subsets are chosen:
 5. Blockiness "clear class difference": a single threshold separates two classes with
    cross-validated balanced accuracy above 0.60.
 
+After the first CP1 run (FAIL, 14 Nov 2026; see `docs/CHECKPOINTS.md`), Dhanush decided:
+
+6. Training images whose file or pixel hash equals a test image's, or with a near-duplicate
+   (pHash ≤ 6) in any test set, are left out of training; test sets stay as published. Identical
+   images inside the training pool go to the same split.
+7. SID-Set tampered images are left out of training (the agreed blockiness fallback); SID-Set
+   validation (P3b) keeps them.
+8. DiffSeg30k's 5,000 training images with an empty mask (unedited) are real negatives; COCO
+   negatives are kept.
+9. Sampler: real = GenImage 1/3, SID-Set 1/3, COCO 1/6, DiffSeg30k-real 1/6; generated = GenImage
+   2/3, SID-Set 1/3; edited = DiffSeg30k only.
+10. GenImage's blockiness difference is investigated with two diagnostics: separation on the raw
+    files, and the same ratio on the mid-block lines (JPEG has no edges there; an upsampling
+    decoder can).
+
 Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.csv.gz`); CP1
 starts only if the local disk matches that list exactly (none missing, none with another size,
 no extra files).
@@ -81,9 +96,8 @@ Compression happens once, on the whole image, before the 256 crop
 | SID-Set | Real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 / 4:2:0 untouched; JPEGs below 75 skipped and counted |
 | DiffSeg30k and COCO negatives | All PNG after preparation -> JPEG with the GenImage real distribution |
 
-Images with a side under 256 are skipped and counted. Sampler (spec section 9): real = GenImage,
-SID-Set, COCO one third each; generated = GenImage two thirds, SID-Set one third; edited =
-DiffSeg30k two thirds, SID-Set one third. DiffSeg30k training images contain only the 6 training
+Images with a side under 256 are skipped and counted. Sampler: see decision 9 above (spec rev 49
+had real = GenImage, SID-Set, COCO one third each; edited = DiffSeg30k two thirds, SID-Set one third). DiffSeg30k training images contain only the 6 training
 editors (mask values 1, 3, 4, 5, 7, 8); validation images with any Glide (6) or Kolors (2) pixel
 are the P2 test set. Validation: 10% of each training source, stratified, seed 42.
 

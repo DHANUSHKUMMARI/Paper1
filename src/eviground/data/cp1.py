@@ -68,6 +68,8 @@ class CP1Config:
     near_dup_primary: int = hashing.NEAR_DUP_PRIMARY
     near_dup_test_share: float = 0.01  # more than this share of a test set -> stop and ask
     scan_part_rows: int = 2000
+    # blockiness fallback decided on 14 Nov 2026 after the first CP1 run
+    sid_tampered_in_training: bool = False
     stall_s: float = 180.0  # a single image read taking longer is treated as stuck
     scan_retries: int = 2
     diffseg_card_splits: dict[str, int] | None = None
@@ -513,7 +515,10 @@ def assign_diffseg_roles(rows: list[dict[str, Any]]) -> None:
             continue
         values = splits.parse_editors(r.get("mask_values"))
         r["editors"] = splits.editors_text(values)
-        r["role"] = splits.diffseg_role(r["dataset_split"], values - {0})
+        role = splits.diffseg_role(r["dataset_split"], values - {0})
+        if role == "real_pool":  # an unedited image: a real negative (decision of 14 Nov 2026)
+            role, r["label"] = "train_pool", "real"
+        r["role"] = role
 
 
 def _coco_prepared_phash(row: dict[str, Any]) -> dict[str, Any]:
@@ -532,7 +537,10 @@ def prepare_coco_negatives(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[s
     sizes = harmonize.SizeDistribution.measure(
         (r["width"], r["height"])
         for r in rows
-        if r["source"] == "diffseg30k" and r["role"] == "train_pool" and r.get("width")
+        if r["source"] == "diffseg30k"
+        and r["role"] == "train_pool"
+        and r["label"] == "edited"
+        and r.get("width")
     )
     coco = [r for r in rows if r["source"] == "coco" and r["role"] == "train_pool"]
     kinds: Counter[str] = Counter()
@@ -574,32 +582,68 @@ def prepare_coco_negatives(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[s
     }
 
 
-def near_dup_filter_coco(rows: list[dict[str, Any]], threshold: int) -> dict[str, Any]:
-    """Drop COCO negatives with a near-duplicate in any test set (raw or prepared pHash)."""
-    test = [r for r in rows if r["role"].startswith("test_") and r.get("phash") is not None]
-    ref = hashing.as_uint64([r["phash"] for r in test])
-    coco = [r for r in rows if r["source"] == "coco" and r["role"] == "train_pool"]
-    if not coco:
-        return {"checked": 0, "dropped": 0}
-    d_raw, i_raw = hashing.min_hamming(hashing.as_uint64([r["phash"] for r in coco]), ref)
-    d_prep, i_prep = hashing.min_hamming(
-        hashing.as_uint64([r.get("phash_prepared") or r["phash"] for r in coco]), ref
-    )
-    dropped = Counter()
-    examples = []
-    for r, dr, ir, dp, ip in zip(coco, d_raw, i_raw, d_prep, i_prep, strict=True):
-        d, i = (dr, ir) if dr <= dp else (dp, ip)
-        if d <= threshold:
-            r["role"] = "excluded_near_dup_test"
-            dropped[test[i]["role"]] += 1
-            if len(examples) < 20:
-                examples.append({"coco": r["uid"], "test": test[i]["uid"], "hamming": int(d)})
+def filter_training_leaks(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[str, Any]:
+    """Remove leaks from the training pool only; test sets stay as published (decisions of
+    14 Nov 2026 after the first CP1 run).
+
+    - SID-Set tampered images (blockiness fallback, unless ``cfg.sid_tampered_in_training``);
+    - training images whose file or pixel hash equals a test image's;
+    - training images with a near-duplicate (pHash Hamming <= ``cfg.near_dup_primary``) in any
+      test set; COCO negatives are also compared after their preparation.
+    """
+    pool = [r for r in rows if r["role"] == "train_pool"]
+    sid_out = 0
+    if not cfg.sid_tampered_in_training:
+        for r in pool:
+            if r["source"] == "sidset" and r["label"] == "edited":
+                r["role"] = "excluded_sid_tampered"
+                sid_out += 1
+    test = [r for r in rows if r["role"].startswith("test_")]
+    test_hash: dict[str, str] = {}
+    for r in test:
+        for key in ("sha256", "pixel_sha256"):
+            if r.get(key):
+                test_hash.setdefault(r[key], r["role"])
+    exact: Counter[str] = Counter()
+    exact_examples = []
+    for r in pool:
+        if r["role"] != "train_pool":
+            continue
+        hit = test_hash.get(r.get("sha256") or "") or test_hash.get(r.get("pixel_sha256") or "")
+        if hit:
+            r["role"] = "excluded_dup_test"
+            exact[f"{r['source']} -> {hit}"] += 1
+            if len(exact_examples) < 20:
+                exact_examples.append(r["uid"])
+    test_ph = [r for r in test if r.get("phash") is not None]
+    ref = hashing.as_uint64([r["phash"] for r in test_ph])
+    cand = [r for r in pool if r["role"] == "train_pool" and r.get("phash") is not None]
+    near: Counter[str] = Counter()
+    near_examples = []
+    if cand and test_ph:
+        d_raw, i_raw = hashing.min_hamming(hashing.as_uint64([r["phash"] for r in cand]), ref)
+        d_prep, i_prep = hashing.min_hamming(
+            hashing.as_uint64([r.get("phash_prepared") or r["phash"] for r in cand]), ref
+        )
+        for r, dr, ir, dp, ip in zip(cand, d_raw, i_raw, d_prep, i_prep, strict=True):
+            d, i = (dr, ir) if dr <= dp else (dp, ip)
+            if d <= cfg.near_dup_primary:
+                r["role"] = "excluded_near_dup_test"
+                near[f"{r['source']} -> {test_ph[i]['role']}"] += 1
+                if len(near_examples) < 20:
+                    near_examples.append(
+                        {"train": r["uid"], "test": test_ph[i]["uid"], "hamming": int(d)}
+                    )
     return {
-        "checked": len(coco),
-        "dropped": int(sum(dropped.values())),
-        "dropped_by_test_set": dict(dropped),
-        "threshold": threshold,
-        "examples": examples,
+        "training_pool_before": len(pool),
+        "sid_tampered_left_out": sid_out,
+        "exact_duplicates_of_test": int(sum(exact.values())),
+        "exact_by_source_and_test_set": dict(sorted(exact.items())),
+        "exact_examples": exact_examples,
+        "near_duplicates_of_test": int(sum(near.values())),
+        "near_by_source_and_test_set": dict(sorted(near.items())),
+        "near_examples": near_examples,
+        "threshold": cfg.near_dup_primary,
     }
 
 
@@ -623,6 +667,18 @@ def assign_splits(rows: list[dict[str, Any]], seed: int) -> None:
         out = splits.stratified_val([r["uid"] for r in rs], strata, seed=seed)
         for r, s in zip(rs, out, strict=True):
             r["split"] = s
+    # identical images inside the training pool go to one split (that of their first uid)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for rs in pool.values():
+        for r in rs:
+            for key in ("sha256", "pixel_sha256"):
+                if r.get(key):
+                    groups.setdefault(f"{key}:{r[key]}", []).append(r)
+    for members in groups.values():
+        if len({m["split"] for m in members}) > 1:
+            first = min(members, key=lambda m: m["uid"])
+            for m in members:
+                m["split"] = first["split"]
 
 
 def exact_duplicates(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -705,7 +761,9 @@ def near_duplicates(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[str, Any
 
 
 def class_counts(rows: list[dict[str, Any]], paths: Paths, cfg: CP1Config) -> dict[str, Any]:
-    found = Counter((r["source"], r["dataset_split"], r["label"]) for r in rows)
+    found = Counter(
+        (r["source"], r["dataset_split"], r.get("indexed_label", r["label"])) for r in rows
+    )
     expected: dict[tuple[str, str, str], int] = {}
     ds = paths.datasets
     # GenImage SD v1.4 subset: manifest.csv on Drive
@@ -843,8 +901,13 @@ def sample_row(task: tuple[dict[str, Any], int, int, int, bool]) -> dict[str, An
         out.update(crop_w=right - left, crop_h=bottom - top, box=[left, top, right, bottom])
         if want_block:
             out["blockiness"] = blockiness(rgb)
+            # mid-block lines (pixel 4 of each 8-pixel block): JPEG puts no edges there, an
+            # upsampling decoder (e.g. a latent-diffusion VAE) can (diagnostic, 14 Nov 2026)
+            out["grid_mid"] = blockiness(rgb, phase=(4, 4))
             raw = np.asarray(Image.open(r["path"]).convert("RGB"))
-            out["blockiness_raw"] = blockiness(raw) if min(raw.shape[:2]) >= 16 else None
+            if min(raw.shape[:2]) >= 16:
+                out["blockiness_raw"] = blockiness(raw)
+                out["grid_mid_raw"] = blockiness(raw, phase=(4, 4))
     except Exception as exc:  # report, never crash the check
         out["error"] = f"{type(exc).__name__}: {exc}"[:200]
     return out
@@ -923,21 +986,9 @@ def _sampler_weighted(
     return values, labels, weights
 
 
-def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
-    ok = [s for s in samples if "error" not in s and s.get("blockiness") is not None]
-    groups: dict[str, list[float]] = {}
-    raw: dict[str, list[float]] = {}
-    for s in ok:
-        groups.setdefault(f"{s['source']}/{s['label']}", []).append(s["blockiness"])
-        if s.get("blockiness_raw") is not None:
-            raw.setdefault(f"{s['source']}/{s['label']}", []).append(s["blockiness_raw"])
-    out: dict[str, Any] = {
-        "metric": "pixel-level 8x8 blockiness of the harmonized whole image (about 1.0 = no "
-        "block artefacts); separation = cross-validated balanced accuracy of the best threshold",
-        "harmonized": {k: shortcut.describe(v) for k, v in sorted(groups.items())},
-        "raw": {k: shortcut.describe(v) for k, v in sorted(raw.items())},
-        "separation": {},
-    }
+def _pair_separations(groups: dict[str, list[float]], seed: int) -> dict[str, float]:
+    """Within each source, threshold separation of every pair of classes (>= 10 values each)."""
+    out: dict[str, float] = {}
     by_source: dict[str, dict[str, list[float]]] = {}
     for key, v in groups.items():
         src, lab = key.split("/")
@@ -949,9 +1000,38 @@ def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]
                 if len(labs[a]) >= 10 and len(labs[b]) >= 10:
                     vals = labs[a] + labs[b]
                     y = [a] * len(labs[a]) + [b] * len(labs[b])
-                    out["separation"][f"{src}: {a} vs {b}"] = round(
-                        shortcut.threshold_cv(vals, y, seed=seed), 4
-                    )
+                    out[f"{src}: {a} vs {b}"] = round(shortcut.threshold_cv(vals, y, seed=seed), 4)
+    return out
+
+
+def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
+    ok = [s for s in samples if "error" not in s and s.get("blockiness") is not None]
+
+    def collect(field: str) -> dict[str, list[float]]:
+        g: dict[str, list[float]] = {}
+        for s in ok:
+            if s.get(field) is not None:
+                g.setdefault(f"{s['source']}/{s['label']}", []).append(s[field])
+        return g
+
+    groups, raw = collect("blockiness"), collect("blockiness_raw")
+    mid, mid_raw = collect("grid_mid"), collect("grid_mid_raw")
+    out: dict[str, Any] = {
+        "metric": "pixel-level 8x8 blockiness of the harmonized whole image (about 1.0 = no "
+        "block artefacts); separation = cross-validated balanced accuracy of the best threshold",
+        "harmonized": {k: shortcut.describe(v) for k, v in sorted(groups.items())},
+        "raw": {k: shortcut.describe(v) for k, v in sorted(raw.items())},
+        "separation": _pair_separations(groups, seed),
+        # diagnostics (14 Nov 2026): does a difference exist before harmonization, and is it at
+        # the block boundaries only (JPEG) or also mid-block (an upsampling generator)?
+        "raw_separation": _pair_separations(raw, seed),
+        "grid_mid": {
+            "metric": "same ratio measured on the lines at pixel 4 of each 8-pixel block",
+            "harmonized": {k: shortcut.describe(v) for k, v in sorted(mid.items())},
+            "raw": {k: shortcut.describe(v) for k, v in sorted(mid_raw.items())},
+            "raw_separation": _pair_separations(mid_raw, seed),
+        },
+    }
     # Pooled over sources, each (class, source) group weighted by its sampler share, so the
     # comparison sees the same mix of sources as training (SID-Set one third of every class).
     pooled = _sampler_weighted(groups)
@@ -1172,6 +1252,8 @@ def run_cp1(
         + index_sidset(local, paths.datasets / REGISTRY["sidset"].folder)
         + index_coco(local, set(reserved))
     )
+    for r in rows:
+        r["indexed_label"] = r["label"]  # DiffSeg30k unedited images later become "real"
     say(f"indexed {len(rows)} images: {_counts(rows, 'source')}")
     facts = scan(
         rows,
@@ -1187,7 +1269,12 @@ def run_cp1(
     assign_diffseg_roles(rows)
     negatives = prepare_coco_negatives(rows, cfg)
     say(f"COCO negatives sized like DiffSeg30k: {negatives['resampling']}")
-    coco_filter = near_dup_filter_coco(rows, cfg.near_dup_primary)
+    leaks = filter_training_leaks(rows, cfg)
+    say(
+        f"left out of training: {leaks['exact_duplicates_of_test']} exact and "
+        f"{leaks['near_duplicates_of_test']} near duplicates of test images, "
+        f"{leaks['sid_tampered_left_out']} SID-Set tampered"
+    )
     assign_splits(rows, cfg.split_seed)
     say("roles and splits assigned")
 
@@ -1276,11 +1363,16 @@ def run_cp1(
             "scan_errors": _counts([r for r in rows if r.get("error")], "source", "error"),
         },
         "class_counts": counts,
+        "training_leak_filter": leaks,
         "exact_duplicates": dups,
         "near_duplicates": near,
         "coco_negatives": {
             "reserved_claims_edit_ids": reserved,
-            "near_dup_filter": coco_filter,
+            "near_dup_filter": {
+                k: v
+                for k, v in leaks["near_by_source_and_test_set"].items()
+                if k.startswith("coco")
+            },
             **negatives,
         },
         "diffseg30k_masks": masks,

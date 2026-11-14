@@ -229,9 +229,11 @@ def test_edited_box_fails_when_impossible():
 
 
 def test_quotas_sum_and_shares():
-    q = sampler.quotas(9000)
-    assert q[("real", "coco")] == q[("real", "genimage")] == q[("real", "sidset")] == 3000
-    assert q[("generated", "genimage")] == 6000 and q[("edited", "sidset")] == 3000
+    q = sampler.quotas(9000)  # shares decided on 14 Nov 2026
+    assert q[("real", "genimage")] == q[("real", "sidset")] == 3000
+    assert q[("real", "coco")] == q[("real", "diffseg30k")] == 1500
+    assert q[("generated", "genimage")] == 6000 and q[("generated", "sidset")] == 3000
+    assert q[("edited", "diffseg30k")] == 9000 and ("edited", "sidset") not in q
     q = sampler.quotas(100)
     for label in sampler.CLASSES:
         assert sum(v for (c, _), v in q.items() if c == label) == 100
@@ -240,13 +242,15 @@ def test_quotas_sum_and_shares():
 
 
 def test_draw_respects_pools_and_is_seeded():
-    src = ["genimage"] * 4 + ["sidset"] * 6 + ["coco"] * 2 + ["diffseg30k"] * 3
+    src = ["genimage"] * 4 + ["sidset"] * 6 + ["coco"] * 2 + ["diffseg30k"] * 4
     lab = ["real", "generated"] * 2 + ["real", "generated", "edited"] * 2
-    lab += ["real"] * 2 + ["edited"] * 3
+    lab += ["real"] * 2 + ["edited"] * 3 + ["real"]
     idx = sampler.draw(src, lab, 300, seed=42)
     assert len(idx) == 900
     picked = [(lab[i], src[i]) for i in idx]
-    assert picked.count(("edited", "sidset")) == 100
+    assert picked.count(("edited", "sidset")) == 0  # SID-Set tampered not in training
+    assert picked.count(("edited", "diffseg30k")) == 300
+    assert picked.count(("real", "diffseg30k")) == picked.count(("real", "coco")) == 50
     assert picked.count(("generated", "genimage")) == 200
     assert (sampler.draw(src, lab, 300, seed=42) == idx).all()
     with pytest.raises(ValueError):
@@ -272,7 +276,7 @@ def test_stratified_val_ten_percent_order_independent():
         ("train", {1, 3}, "train_pool"),
         ("train", {1, 6}, "excluded_holdout"),
         ("train", {2}, "excluded_holdout"),
-        ("train", set(), "excluded_no_edit"),
+        ("train", set(), "real_pool"),
         ("train", {9}, "excluded_unknown_value"),
         ("validation", {5, 2}, "test_P2"),
         ("validation", {5}, "unused_validation"),

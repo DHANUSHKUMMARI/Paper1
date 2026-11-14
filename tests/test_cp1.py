@@ -262,11 +262,11 @@ def test_run_cp1_result_record(run):
 def test_roles_splits_and_holdout(run):
     _, _, res = run
     roles = res["diffseg30k_masks"]["roles"]
-    # fake editor sets: train cycles 9 sets (2 hold-out, 1 empty), validation 6 (4 hold-out)
+    # fake editor sets: train cycles 9 sets (2 hold-out, 1 empty), validation 6 (4 hold-out);
+    # the 2 empty-mask images are real negatives in the training pool (14 Nov 2026)
     assert roles == {
         "train/excluded_holdout": 4,
-        "train/excluded_no_edit": 2,
-        "train/train_pool": 12,
+        "train/train_pool": 14,
         "validation/test_P2": 8,
         "validation/unused_validation": 4,
     }
@@ -274,6 +274,9 @@ def test_roles_splits_and_holdout(run):
     assert by["coco/test/real"] == 6 and len(res["coco_negatives"]["reserved_claims_edit_ids"]) == 6
     assert by["genimage_val/test/real"] == by["genimage_val/test/generated"] == 16
     assert by["sidset/test/edited"] == 5
+    assert by.get("diffseg30k/train/real", 0) + by.get("diffseg30k/val/real", 0) == 2
+    assert res["counts"]["by_role"]["sidset/excluded_sid_tampered"] == 10
+    assert "sidset/train/edited" not in by and "sidset/val/edited" not in by
     assert res["diffseg30k_masks"]["distinct_values"] == list(range(9))
     assert res["diffseg30k_masks"]["values_outside_0_8"] == []
     assert res["sidset_masks"]["train"]["with_values_other_than_0_255"] == 10
@@ -286,7 +289,8 @@ def test_harmonization_follows_spec_table(run):
     assert set(plan["genimage/generated"]) == {"compress:lossless"}
     assert plan["sidset/real"]["skip:below_q75"] > 0 and plan["sidset/real"]["keep:at_target"] > 0
     assert plan["sidset/real"]["compress:above_q75"] > 0
-    assert plan["sidset/edited"]["keep:at_target"] > 0
+    assert "sidset/edited" not in plan  # SID-Set tampered left out of training
+    assert set(plan["diffseg30k/real"]) <= {"compress:lossless", "skip:too_small"}
     # COCO negatives take DiffSeg30k sizes, including its few under 256 (skipped like them)
     assert plan["coco/real"]["compress:lossless"] > 0
     assert set(plan["coco/real"]) <= {"compress:lossless", "skip:too_small"}
@@ -309,9 +313,13 @@ def test_metadata_classifier_on_harmonized_crops(run):
     assert rep["distinct_values"]["crop_w"] == rep["distinct_values"]["crop_h"] == 1
     assert meta["criterion_score"] <= 0.60
     # the positive control: raw file facts and original size do give the label away
-    assert meta["diagnostics"]["raw_files_positive_control"] > 0.9
+    # (DiffSeg30k's unedited images are PNG like its edited ones, so raw format alone no
+    # longer separates every source; the control stays far above chance)
+    assert meta["diagnostics"]["raw_files_positive_control"] > 0.8
     assert res["crops"]["errors"] == {}
-    assert res["crops"]["per_class_source"]["real/coco"] == 20
+    pcs = res["crops"]["per_class_source"]
+    assert pcs["real/coco"] == pcs["real/diffseg30k"] == 10 and pcs["real/sidset"] == 20
+    assert "edited/sidset" not in pcs
 
 
 def test_scan_is_resumed_from_cache(tmp_path, monkeypatch):
@@ -342,10 +350,12 @@ def test_scan_is_resumed_from_cache(tmp_path, monkeypatch):
     third = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o3", cache_dir=tmp_path / "c", progress=None
     )
-    assert third["exact_duplicates"]["sha256"]["cross_split_groups"] == 1
+    assert third["training_leak_filter"]["exact_duplicates_of_test"] == 1
 
 
-def test_cross_split_duplicate_is_caught(tmp_path):
+def test_training_copy_of_a_test_image_is_left_out(tmp_path):
+    """Decision of 14 Nov 2026: duplicates of test images leave the training pool; test sets
+    stay as published."""
     paths, sources = _world(tmp_path)
     _ensure(paths, sources)
     # a SID-Set validation (test) image copied over a SID-Set train image
@@ -357,9 +367,47 @@ def test_cross_split_duplicate_is_caught(tmp_path):
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
-    assert res["exact_duplicates"]["sha256"]["cross_split_groups"] == 1
-    assert res["criteria"]["no_cross_split_duplicates"] is False
-    assert res["verdict"] == "FAIL"
+    leaks = res["training_leak_filter"]
+    assert leaks["exact_duplicates_of_test"] == 1
+    assert leaks["exact_by_source_and_test_set"] == {"sidset -> test_P3b": 1}
+    assert res["counts"]["by_role"]["sidset/excluded_dup_test"] == 1
+    assert res["counts"]["by_source_split_label"]["sidset/test/real"] == 5  # test set intact
+    assert res["exact_duplicates"]["cross_split_total"] == 0
+    assert res["criteria"]["no_cross_split_duplicates"] is True
+
+
+def test_exact_duplicates_report_cross_split_groups():
+    rows = [
+        {"uid": "a", "split": "train", "sha256": "h1", "pixel_sha256": "p1"},
+        {"uid": "b", "split": "test", "sha256": "h1", "pixel_sha256": "p1"},
+        {"uid": "c", "split": "val", "sha256": "h2", "pixel_sha256": "p2"},
+        {"uid": "d", "split": "val", "sha256": "h2", "pixel_sha256": "p2"},
+    ]
+    rep = cp1.exact_duplicates(rows)
+    assert rep["sha256"]["cross_split_groups"] == 1 and rep["sha256"]["within_split_groups"] == 1
+    assert rep["cross_split_total"] == 2
+
+
+def test_duplicates_inside_the_training_pool_share_a_split():
+    rows = [
+        {
+            "uid": f"s/{i:03d}",
+            "source": "sidset",
+            "label": "real",
+            "role": "train_pool",
+            "sha256": f"h{i}",
+            "pixel_sha256": f"p{i}",
+        }
+        for i in range(60)
+    ]
+    for r in rows[:30]:  # 30 pairs of identical images
+        r["sha256"] = r["pixel_sha256"] = "same" + r["uid"][-2:]
+    for r, twin in zip(rows[:30], rows[30:], strict=True):
+        twin["sha256"], twin["pixel_sha256"] = r["sha256"], r["pixel_sha256"]
+    cp1.assign_splits(rows, seed=42)
+    for r, twin in zip(rows[:30], rows[30:], strict=True):
+        assert r["split"] == twin["split"]
+    assert cp1.exact_duplicates(rows)["cross_split_total"] == 0
 
 
 def test_coco_negative_near_duplicate_of_test_is_dropped(tmp_path):
@@ -383,16 +431,17 @@ def test_coco_negative_near_duplicate_of_test_is_dropped(tmp_path):
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
-    flt = res["coco_negatives"]["near_dup_filter"]
-    assert flt["dropped"] == 1 and flt["dropped_by_test_set"] == {"test_P1": 1}
+    assert res["coco_negatives"]["near_dup_filter"] == {"coco -> test_P1": 1}
     assert res["counts"]["by_role"]["coco/excluded_near_dup_test"] == 1
     assert res["exact_duplicates"]["cross_split_total"] == 0
 
 
-def test_near_duplicates_over_one_percent_stop(tmp_path):
+def test_near_duplicates_of_test_images_leave_training(tmp_path):
+    """Decision of 14 Nov 2026: training images near a test image (pHash <= 6) are left out,
+    so the >1% stop no longer triggers; the test set is unchanged."""
     paths, sources = _world(tmp_path)
     _ensure(paths, sources)
-    # recompressed copies of SID-Set train images placed in the SID-Set test split
+    # copies of SID-Set train images placed in the SID-Set test split
     sid = paths.local_data / "sidset"
     trains = sorted((sid / "train/full_synthetic/images").iterdir())
     tests = sorted((sid / "validation/full_synthetic/images").iterdir())
@@ -403,12 +452,19 @@ def test_near_duplicates_over_one_percent_stop(tmp_path):
     res = cp1.run_cp1(
         paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
     )
-    p3 = res["near_duplicates"]["test_P3b"]
-    assert p3["counts"]["<=0"] >= 2 and p3["stop_and_ask"] is True
-    assert res["stop_and_ask"]["near_duplicates_over_1pct"] is True
-    # same pixels: the pixel hash catches them as exact cross-split duplicates too
-    assert res["exact_duplicates"]["pixel_sha256"]["cross_split_groups"] == 2
-    assert res["verdict"] == "FAIL"
+    leaks = res["training_leak_filter"]
+    assert leaks["exact_duplicates_of_test"] == 2  # same pixels: caught by the pixel hash
+    assert res["near_duplicates"]["test_P3b"]["counts"]["<=6"] == 0
+    assert res["stop_and_ask"]["near_duplicates_over_1pct"] is False
+    assert res["exact_duplicates"]["cross_split_total"] == 0
+    assert res["counts"]["by_source_split_label"]["sidset/test/generated"] == 5
+
+
+def test_near_duplicate_report_flags_more_than_one_percent():
+    rows = [{"uid": f"t{i}", "role": "test_P3b", "phash": i * 977 + 3} for i in range(50)]
+    rows += [{"uid": "x", "role": "train_pool", "split": "train", "phash": 3, "source": "sidset"}]
+    rep = cp1.near_duplicates(rows, cp1.CP1Config())
+    assert rep["test_P3b"]["counts"]["<=0"] == 1 and rep["test_P3b"]["stop_and_ask"] is True
 
 
 def test_class_count_mismatch_is_reported(tmp_path):
@@ -556,6 +612,7 @@ def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
         "genimage/real": g(1.0, 20),
         "sidset/real": g(1.2, 200),
         "coco/real": g(1.0, 20),
+        "diffseg30k/real": g(1.0, 20),
         "genimage/generated": g(1.0, 20),
         "sidset/generated": g(1.2, 20),
         "diffseg30k/edited": g(1.0, 20),
@@ -567,10 +624,12 @@ def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
         for v in vs
     ]
     res = cp1.blockiness_check(samples, seed=42)
-    assert res["separation"]["all sources (sampler mix): real vs not real"] < 0.6
-    for pair in ("real vs generated", "real vs edited", "generated vs edited"):
-        assert res["separation"][f"all sources (sampler mix): {pair}"] < 0.6, pair
-    assert res["stop_and_ask"] is False
+    # real and generated both draw SID-Set one third: not separated, whatever was measured
+    assert res["separation"]["all sources (sampler mix): real vs generated"] < 0.6
+    # since 14 Nov 2026 the edited class has no SID-Set part, so SID-Set's level now separates
+    # real and generated from edited in the sampler mix: the check reports this effect
+    assert res["separation"]["all sources (sampler mix): real vs edited"] > 0.6
+    assert res["stop_and_ask"] is True
     groups["sidset/edited"] = g(1.3, 20)  # a real class difference inside SID-Set
     samples = [
         {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
@@ -643,3 +702,32 @@ def test_stage_records_the_list_for_copies_from_older_versions(tmp_path):
     (dest / "_STAGED_FILES.csv.gz").unlink()  # a copy staged before the list existed
     res = stage("diffseg30k", paths=paths, reserve_gb=0)
     assert res["skipped"] is True and read_file_list(dest) == before
+
+
+def test_blockiness_diagnostics_raw_and_mid_block(run):
+    _, _, res = run
+    block = res["blockiness"]
+    assert "raw_separation" in block and "grid_mid" in block
+    assert set(block["grid_mid"]["raw"]) == set(block["raw"])
+    for v in block["grid_mid"]["harmonized"].values():
+        assert v["n"] > 0 and v["median"] > 0
+
+
+def test_stage_repairs_a_damaged_unpacked_copy(tmp_path):
+    """Codex review of PR #12: re-running Cell 3 must repair, not skip, a damaged copy."""
+    from eviground.data.download import stage
+
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    dest = paths.local_data / "diffseg30k"
+    files = sorted((dest / "train_copy").glob("*.image.png"))
+    good = files[1].read_bytes()
+    files[0].unlink()
+    files[1].write_bytes(good[:100])  # cut short
+    with pytest.raises(RuntimeError):
+        cp1.check_staged(paths)
+    res = stage("diffseg30k", paths=paths, reserve_gb=0)
+    assert res["skipped"] is False
+    assert files[0].is_file() and files[1].read_bytes() == good
+    cp1.check_staged(paths)  # passes again
+    assert stage("diffseg30k", paths=paths, reserve_gb=0)["skipped"] is True

@@ -1179,6 +1179,16 @@ def stage(
     return result
 
 
+def _all_present(dest: Path, listed: dict[str, int]) -> bool:
+    for rel, size in listed.items():
+        try:
+            if (dest / rel).stat().st_size != size:
+                return False
+        except FileNotFoundError:
+            return False
+    return True
+
+
 def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
     spec = REGISTRY[key]
     folder = paths.datasets / spec.folder
@@ -1208,13 +1218,17 @@ def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
     marker = read_json(dest / "_STAGED.json")
     names = [a.name for a in archives]
     if marker and marker.get("archives") == names:
-        if read_file_list(dest) is None:  # staged by an older version: record the list now
-            listed: dict[str, int] = {}
+        listed = read_file_list(dest)
+        if listed is None:  # staged by an older version: build the list from the archives
+            listed = {}
             for arc in archives:
                 with ArchiveReader(arc) as reader:
                     listed.update({safe_member_name(m.name): m.size for m in reader.members()})
+        if _all_present(dest, listed):
             write_file_list(dest, listed)
-        return {"staged": True, "skipped": True, **marker}
+            return {"staged": True, "skipped": True, **marker}
+        # a file is missing or has another size: unpack again (only those files are written)
+        log.warning("%s: local copy incomplete, unpacking the missing files again", key)
     files = nbytes = 0
     listed = {}
     for arc in archives:

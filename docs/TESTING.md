@@ -3,6 +3,23 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 2 — CP1 fixes after the first real run — 2026-11-14
+
+CP1 run of 14 Nov (FAIL): 169 cross-split duplicate groups (ImageNet photos in both GenImage SD v1.4
+training and GenImage Validation), near-duplicates in P2 (1.18%) and P3b (5.88%), blockiness
+separations 0.6675 (GenImage) and 0.6587 (SID-Set); 5,000 DiffSeg30k training images with an empty
+mask. Decisions by Dhanush, implemented: `cp1.filter_training_leaks` leaves training images out when
+they equal (file or pixel hash) or nearly equal (pHash ≤ 6) a test image, and leaves SID-Set tampered
+out of training; identical images inside the pool share a split; DiffSeg30k empty-mask images become
+real negatives; new sampler shares; blockiness diagnostics on raw files and mid-block lines. Also the
+Codex finding on PR #12: `stage()` re-extracts missing or resized files of an unpacked copy.
+
+| Check | Result |
+|-------|--------|
+| `ruff check src tests` / `ruff format --check src tests` | All checks passed / 42 files already formatted |
+| `pytest` | 228 passed (tests changed where the decided behaviour changed: duplicates of test images are now left out of training instead of failing the run; 7 new tests) |
+| Notebook dry runs (`00`, `00c`, `00b`, `01`) | 4 passed |
+
 ## Milestone 2 — COCO negatives at DiffSeg30k sizes; exact staged-file check — 2026-11-14
 
 Decisions of 14 Nov 2026 (Dhanush): COCO negatives match DiffSeg30k's measured image sizes (each

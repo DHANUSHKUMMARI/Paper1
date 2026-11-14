@@ -313,3 +313,17 @@ def test_shard_paths_cannot_leave_the_shard_folder(tmp_path):
         pack.plan_shards([{"source": "../evil", "uid": "a"}], {})
     with pytest.raises(ValueError):
         pack.read_image_bytes(tmp_path, {"shard": "../x.tar", "img_offset": 0, "img_size": 1})
+
+
+def test_a_shard_from_another_manifest_is_rewritten(packed, tmp_path):  # noqa: F811
+    out = tmp_path / "shards"
+    kw = {"free_bytes": 10**12, "margin": 0, "shard_bytes": 200_000, "sample_per_source": 5}
+    first = pack.pack(packed["manifest"], out, progress=None, **kw)
+    (out / "_DONE.json").unlink()
+    other = tmp_path / "manifest_other.csv.gz"  # same rows, different bytes: another manifest
+    import gzip
+
+    other.write_bytes(gzip.compress(gzip.decompress(packed["manifest"].read_bytes()) + b"\n"))
+    again = pack.pack(other, out, progress=None, **kw)
+    assert again["shards_skipped"] == 0
+    assert again["shards_written"] == first["shards"]

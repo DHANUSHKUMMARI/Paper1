@@ -306,12 +306,19 @@ def _sidecar(path: Path) -> Path:
     return path.with_suffix(".index.json")
 
 
-def _shard_done(path: Path) -> list[dict[str, Any]] | None:
+def _shard_done(
+    path: Path, rows: Sequence[dict[str, Any]], manifest_sha: str
+) -> list[dict[str, Any]] | None:
+    """The index entries of a finished shard, or None if it must be (re)written: the side-car
+    must belong to the same manifest, hold exactly these rows' uids in order, and the tar must
+    have the recorded size."""
     side = _sidecar(path)
     if not (path.is_file() and side.is_file()):
         return None
     meta = json.loads(side.read_text())
-    if meta.get("tar_bytes") != path.stat().st_size:
+    if meta.get("manifest_sha256") != manifest_sha or meta.get("tar_bytes") != path.stat().st_size:
+        return None
+    if [e["uid"] for e in meta.get("entries", [])] != [r["uid"] for r in rows]:
         return None
     return meta["entries"]
 
@@ -355,7 +362,8 @@ def pack(
     say = progress or log.info
     t0 = time.time()
     done = read_done(out_dir)
-    if done is not None and done.get("manifest_sha256") == file_sha256(manifest):
+    manifest_sha = file_sha256(manifest)
+    if done is not None and done.get("manifest_sha256") == manifest_sha:
         say(f"shards already packed ({done['images']} images): nothing to do")
         return done
     rows = packable(cp1._read_csv_gz(manifest))
@@ -371,13 +379,14 @@ def pack(
     for n, (source, k, rs) in enumerate(plan, 1):
         name = f"{source}/shard-{k:05d}.tar"
         path = inside(out_dir, name)
-        done = _shard_done(path)
-        if done is not None and len(done) == len(rs):
+        done = _shard_done(path, rs, manifest_sha)
+        if done is not None:
             entries += done
             skipped += 1
             continue
         got = write_shard(rs, path, name, workers)
-        _sidecar(path).write_text(json.dumps({"tar_bytes": path.stat().st_size, "entries": got}))
+        side = {"manifest_sha256": manifest_sha, "tar_bytes": path.stat().st_size, "entries": got}
+        _sidecar(path).write_text(json.dumps(side))
         entries += got
         written += 1
         say(f"shard {n}/{len(plan)} {name}: {len(rs)} images, {path.stat().st_size / 1e9:.2f} GB")
@@ -385,7 +394,7 @@ def pack(
     total = sum(p.stat().st_size for p in out_dir.rglob("*.tar"))
     summary = {
         "manifest": str(manifest),
-        "manifest_sha256": file_sha256(manifest),
+        "manifest_sha256": manifest_sha,
         "mask_rule": MASK_RULE,
         "images": len(entries),
         "by_source_split_label": dict(

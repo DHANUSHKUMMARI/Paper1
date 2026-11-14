@@ -246,12 +246,13 @@ def prepare_to_size(img: Image.Image, size: tuple[int, int]) -> Image.Image:
 
 def resampling(src: tuple[int, int], target: tuple[int, int]) -> str:
     """'unchanged', 'cropped' (scale 1), 'downscaled' or 'upscaled' for :func:`prepare_to_size`."""
-    if tuple(src) == tuple(target):
+    (w, h), (tw, th) = src, target
+    if (w, h) == (tw, th):
         return "unchanged"
-    scale = max(target[0] / src[0], target[1] / src[1])
-    if scale == 1:
-        return "cropped"
-    return "downscaled" if scale < 1 else "upscaled"
+    if tw > w or th > h:  # some side must grow to cover the target
+        return "upscaled"
+    # both target sides fit; the cover factor is 1 exactly when one side already matches
+    return "cropped" if tw == w or th == h else "downscaled"
 
 
 def png_bytes(img: Image.Image) -> bytes:

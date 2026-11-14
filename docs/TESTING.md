@@ -24,6 +24,12 @@ when half the edited images never crop, histogram = 10 tries per failure, replac
 real shares; q75 = 1/3 per class); the fake CP1 run (roles, base readings 12/2/2/12/2, P2 6 = 4 real
 + 2 AI base, valid crops 6 of 8, 60 edited crops after replacement, real crops 20/10/15/15).
 
+After Codex review of PR 18: the record also holds the share histogram of every failed try
+(replacement rounds included) beside the first-pass one, and two stop flags,
+`diffseg_masks_unreadable` (a mask that could not be read again in the base pass) and
+`edited_crops_unresolved` (edited crops still failing after every round); tests in
+`tests/test_diffseg_mask.py`.
+
 Not testable here: the real masks and CP1 run 5 (Colab).
 
 ## Milestone 2 — DiffSeg30k mask-label diagnostic — 2026-11-14

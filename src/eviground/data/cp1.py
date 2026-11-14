@@ -1526,7 +1526,9 @@ def draw_crops(
         pending = [g for g in got if g.get("error") == "crop_failed"]
     if replacements:
         say(f"replaced {sum(replacements.values())} failed edited crops in {rounds} rounds")
+    all_failed = [s for s in samples if s.get("error") == "crop_failed"]
     hist = Counter(_share_bin(x) for s in first_failed for x in s.get("crop_shares", []))
+    hist_all = Counter(_share_bin(x) for s in all_failed for x in s.get("crop_shares", []))
     log = {
         "rule": "training rule: random edited pixel, window uniform among those containing it, "
         "edited share 1-90%, 10 tries; a failed draw is replaced from the same pool",
@@ -1535,12 +1537,30 @@ def draw_crops(
         "failed_by_kind": dict(
             sorted(Counter(_failure_kind(s.get("crop_shares", [])) for s in first_failed).items())
         ),
+        # the first-pass draws are the ones comparable with notebook 02 (CP1 run 4's draws)
         "failed_tries_share_histogram": {name: hist.get(name, 0) for name, *_ in SHARE_BINS},
+        # every failed try, replacement rounds included (Codex review of PR 18)
+        "all_failed_draws": len(all_failed),
+        "all_failed_tries_share_histogram": {
+            name: hist_all.get(name, 0) for name, *_ in SHARE_BINS
+        },
         "replacements": dict(sorted(replacements.items())),
         "replacement_rounds": rounds,
         "unresolved": len(pending),
     }
     return samples, log
+
+
+def run_stops(rows: list[dict[str, Any]], crop_log: dict[str, Any]) -> dict[str, bool]:
+    """Stops added with the run-5 design (Codex review of PR 18): a DiffSeg30k mask that could
+    not be read again in the base pass leaves roles and P2 incomplete; edited crops still failing
+    after every replacement round leave a class short of its draws."""
+    return {
+        "diffseg_masks_unreadable": any(
+            r.get("mask_error") for r in rows if r["source"] == "diffseg30k"
+        ),
+        "edited_crops_unresolved": crop_log.get("unresolved", 0) > 0,
+    }
 
 
 def run_cp1(
@@ -1657,6 +1677,7 @@ def run_cp1(
         # an image that could not be read (corrupt, or a read that never returned) was left out
         # of the duplicate checks, so CP1 cannot pass until it is looked at
         "images_not_scanned": any(r.get("error") for r in rows),
+        **run_stops(rows, crop_log),
     }
     verdict = (
         "PASS"

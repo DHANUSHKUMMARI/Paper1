@@ -140,3 +140,50 @@ def test_draw_crops_replaces_failed_edited_crops_and_describes_them(monkeypatch)
     assert sum(hist.values()) == log["first_pass_failed"] * crops.TRIES
     assert log["unresolved"] == 0
     assert set(log["replacements"]) == {"edited/diffseg30k"}
+    # every failed try, replacement rounds included, is in the second histogram
+    assert log["all_failed_draws"] >= log["first_pass_failed"]
+    assert sum(log["all_failed_tries_share_histogram"].values()) == (
+        log["all_failed_draws"] * crops.TRIES
+    )
+    assert cp1.run_stops([], log) == {
+        "diffseg_masks_unreadable": False,
+        "edited_crops_unresolved": False,
+    }
+
+
+def test_run_stops_on_unreadable_masks_and_unresolved_crops(monkeypatch):
+    rows = [
+        {"source": "diffseg30k", "mask_error": "decode: OSError"},
+        {"source": "coco", "mask_error": "missing"},  # only DiffSeg30k masks count here
+    ]
+    assert cp1.run_stops(rows, {"unresolved": 0})["diffseg_masks_unreadable"] is True
+    assert cp1.run_stops([], {"unresolved": 3})["edited_crops_unresolved"] is True
+
+    eligible = [
+        {"uid": f"x{i}", "source": s, "label": lab}
+        for i, (s, lab) in enumerate(
+            [
+                ("genimage", "real"),
+                ("sidset", "real"),
+                ("coco", "real"),
+                ("diffseg30k", "real"),
+                ("genimage", "generated"),
+                ("sidset", "generated"),
+                ("diffseg30k", "edited"),
+            ]
+        )
+    ]
+
+    def never_crops(task):
+        r = task[0]
+        out = {"uid": r["uid"], "source": r["source"], "label": r["label"]}
+        if r["label"] == "edited":
+            out.update(error="crop_failed", crop_shares=[1.0] * crops.TRIES)
+        return out
+
+    monkeypatch.setattr(cp1, "sample_row", never_crops)
+    cfg = cp1.CP1Config(workers=1, crops_per_class=6, crop_replacement_rounds=2)
+    _, log = cp1.draw_crops(eligible, cfg, lambda _m: None)
+    assert log["unresolved"] == 6
+    assert log["replacement_rounds"] == 2
+    assert cp1.run_stops([], log)["edited_crops_unresolved"] is True

@@ -34,6 +34,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
+          pip install "timm>=1.0" "peft>=0.11" "transformers>=4.44"  # model tests (CPU, no weights)
 
       - name: Lint
         run: ruff check src tests

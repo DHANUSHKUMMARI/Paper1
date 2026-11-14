@@ -14,8 +14,13 @@ data:
   num_workers: 0
 
 model:
-  semantic: {name: vit_tiny_patch16_224, pretrained: false}
+  d: 64
+  semantic:
+    pretrained: false         # a tiny random CLIP with the real code path (no download)
+    tiny: {hidden_size: 64, intermediate_size: 128, num_hidden_layers: 4, num_attention_heads: 4}
+    lora: {rank: 4, alpha: 8, layers: [2, 3], targets: [q_proj, v_proj], dropout: 0.0}
   trace: {name: efficientnet_b0, pretrained: false}
+  fusion: {layers: 1, heads: 4, dropout: 0.1}
 
 train:
   epochs: 2

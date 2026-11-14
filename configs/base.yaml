@@ -26,3 +26,32 @@ checkpoint:
 logging:
   level: INFO
   log_every_steps: 50
+
+# M1-M4 (Research Specification section 8; Implementation Brief M1-M4)
+model:
+  d: 512
+  clip_size: 224
+  head_dropout: 0.1
+  edit_threshold: 0.5         # fixed on validation data (test-time rule)
+  semantic:
+    backbone: openai/clip-vit-large-patch14   # transformers CLIPVisionModel, SDPA attention
+    tiny: null                # debug: a small random CLIP config instead (no download)
+    cache_dir: null           # Drive cache/hf on Colab (filled once, offline afterwards)
+    local_files_only: false
+    lora: {rank: 8, alpha: 16, layers: [20, 21, 22, 23], targets: [q_proj, v_proj], dropout: 0.0}
+  trace:
+    name: efficientnet_b0
+    pretrained: true
+    channels_last: false      # switched on if CP2 timing shows it is faster
+  fusion: {layers: 2, heads: 8, dropout: 0.1}
+
+loss:
+  lambda_seg: 1.0             # BCE on all samples + Dice on edited samples (15 Nov 2026)
+  lambda_att: 0.1             # attention alignment on edited samples; 0 in the ablation
+  label_smoothing: 0.05
+
+optim:
+  lr: 1.0e-4                  # fusion, heads, trace branch, semantic projection
+  lr_lora: 5.0e-5             # first change to propose if CP3 flattens early: 1e-4
+  weight_decay: 0.05
+

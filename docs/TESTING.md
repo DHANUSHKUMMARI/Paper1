@@ -3,6 +3,42 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 3, PR A — model M1–M4 and losses — 2026-11-15
+
+Modules (spec section 8; brief M1–M4): `models/views.py` (RGB 224 CLIP-normalised; SRM with the
+3 fixed kernels, clamped ±3 on the 0–255 scale, scaled to ±1; orthonormal 8 × 8 block DCT, log,
+per-image standardised, at full resolution; computed on the model's device), `models/semantic.py`
+(`transformers` `CLIPVisionModel`, SDPA, frozen, `peft` LoRA r 8 / α 16 on q_proj and v_proj of
+layers 20–23, projection to d = 512; layers before the first LoRA layer run without autograd; works
+with transformers 4.x and 5.x), `models/trace.py` (`timm` efficientnet_b0, 4 input channels,
+strides 4/8/16, 1 × 1 projection; optional channels_last), `models/fusion.py` (2 bidirectional
+pre-norm cross-attention blocks, gate g, Z), `models/heads.py` (attention pooling + MLP → 3 logits
+with α; FPN-lite mask decoder), `models/eviground.py` (`EviGround`, `build_model(cfg.model)`,
+`param_groups` for the two learning rates, `predict_tiled`, `disable_dropout`), `data/tiles.py`
+(test-time tiles) and `train/losses.py` (CE with label smoothing; BCE on all samples, Dice on
+edited samples only; L_att on edited samples). Configs: `model`, `loss`, `optim` sections in
+`configs/base.yaml`; `configs/debug.yaml` uses a tiny random CLIP (no download). CI now installs
+`timm`, `peft`, `transformers`; the unused `open_clip_torch` dependency is removed.
+
+Tests (`tests/test_models.py`, 22, CPU, ~8 s): view shapes at full resolution; the DCT matrix is
+orthonormal and a constant block has only the DC term; SRM of a constant image is 0; views are
+deterministic; frequency view for sides that are not multiples of 8; only LoRA and the projection
+train in M2; M2 trainable parameters at real ViT-L/14 width (built on the meta device, no weights)
+0.66 M < 5 M, LoRA 131,072; the no-grad split gives the same tokens as the full CLIP; output shapes
+at 128 / 256 / 512 with α summing to 1 and g in (0, 1); only the planned parameters require grad;
+frozen CLIP weights byte-identical after an AdamW step while LoRA moves; gradients reach the
+trace branch's first convolution, the class head and the decoder; the two parameter groups and
+their learning rates; dropout off makes the model deterministic; Dice 0 for identical masks; a
+real image feeds BCE (non-zero gradient) and not Dice; L_att 0 inside the mask and 1 outside; the
+loss is the weighted sum of its terms; the tile rule (≤ 9 tiles, never padded, full coverage up
+to 768 px per side, 75% for 1024); stitching; tiled prediction with one edited tile returns
+"edited" and a mask of the image size.
+
+Not testable here: the real CLIP weights, GPU timing and memory (CP2 notebook on an L4).
+
+Open question for Dhanush (Milestone 5): for a side over 768 px, at most 3 tiles per axis cannot
+cover the image (1024 → 75% per axis); uncovered pixels currently take the nearest tile's value.
+
 ## Milestone 2 — DiffSeg30k mask reading, strict hold-out, real negatives back — 2026-11-14
 
 Changes (data/README decisions 15–17): `diffseg_mask.read_base` / `edit_mask` (an AI base's value,

@@ -4,12 +4,13 @@ shortcut classifier."""
 from __future__ import annotations
 
 import io
+import json
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from eviground.data import crops, harmonize, hashing, sampler, shortcut, splits
+from eviground.data import cp1, crops, harmonize, hashing, sampler, shortcut, splits
 from eviground.data.imageinfo import blockiness, header_info
 
 
@@ -231,9 +232,11 @@ def test_edited_box_fails_when_impossible():
 
 
 def test_quotas_sum_and_shares():
-    q = sampler.quotas(9000)  # shares decided on 14 Nov 2026
-    assert q[("real", "genimage")] == q[("real", "sidset")] == 3000
-    assert q[("real", "coco")] == q[("real", "diffseg30k")] == 1500
+    q = sampler.quotas(9000)  # shares of the spec review of 14 Nov 2026
+    assert q[("real", "genimage")] == 3000
+    assert q[("real", "sidset")] == 1500
+    assert q[("real", "coco")] == 4500
+    assert ("real", "diffseg30k") not in q
     assert q[("generated", "genimage")] == 6000 and q[("generated", "sidset")] == 3000
     assert q[("edited", "diffseg30k")] == 9000 and ("edited", "sidset") not in q
     q = sampler.quotas(100)
@@ -252,7 +255,9 @@ def test_draw_respects_pools_and_is_seeded():
     picked = [(lab[i], src[i]) for i in idx]
     assert picked.count(("edited", "sidset")) == 0  # SID-Set tampered not in training
     assert picked.count(("edited", "diffseg30k")) == 300
-    assert picked.count(("real", "diffseg30k")) == picked.count(("real", "coco")) == 50
+    assert picked.count(("real", "diffseg30k")) == 0  # unedited DiffSeg30k not in training
+    assert picked.count(("real", "coco")) == 150
+    assert picked.count(("real", "sidset")) == 50
     assert picked.count(("generated", "genimage")) == 200
     assert (sampler.draw(src, lab, 300, seed=42) == idx).all()
     with pytest.raises(ValueError):
@@ -278,7 +283,7 @@ def test_stratified_val_ten_percent_order_independent():
         ("train", {1, 3}, "train_pool"),
         ("train", {1, 6}, "excluded_holdout"),
         ("train", {2}, "excluded_holdout"),
-        ("train", set(), "real_pool"),
+        ("train", set(), "excluded_unedited"),
         ("train", {9}, "excluded_unknown_value"),
         ("validation", {5, 2}, "test_P2"),
         ("validation", {5}, "unused_validation"),
@@ -361,5 +366,106 @@ def test_one_third_of_diffseg_edited_at_q75():
     assert plans == [
         harmonize.plan_image("diffseg30k", "edited", info, f"e{i}", d) for i in range(3000)
     ]
-    reals = [harmonize.plan_image("diffseg30k", "real", info, f"e{i}", d) for i in range(300)]
-    assert all(p["reason"] == "lossless" for p in reals)
+    # spec review of 14 Nov 2026: the same seeded third in every class of DiffSeg30k and COCO,
+    # so compression does not depend on the class inside a source
+    for source, label in (("diffseg30k", "real"), ("coco", "real")):
+        other = [harmonize.plan_image(source, label, info, f"e{i}", d) for i in range(3000)]
+        assert [p["reason"] for p in other] == [p["reason"] for p in plans]
+    gen = [harmonize.plan_image("genimage", "generated", info, f"e{i}", d) for i in range(300)]
+    assert all(p["reason"] == "lossless" for p in gen)
+
+
+def test_quality_75_is_one_third_of_every_class():
+    """q75 4:2:0 share per class from the sampler shares: SID-Set always q75, DiffSeg30k and
+    COCO one third, GenImage none (spec review of 14 Nov 2026)."""
+    q75_fraction = {"sidset": 1.0, "diffseg30k": 1 / 3, "coco": 1 / 3, "genimage": 0.0}
+    for label, shares in sampler.SHARES["unified"].items():
+        assert sum(shares.values()) == pytest.approx(1.0)
+        got = sum(share * q75_fraction[src] for src, share in shares.items())
+        assert got == pytest.approx(1 / 3), label
+
+
+def test_jsonl_census_and_unexpected_keys(tmp_path):
+    folder = tmp_path / "diffseg30k" / "train_copy"
+    folder.mkdir(parents=True)
+    lines = [
+        {"image_file_name": "a.image.png", "mask_file_name": "a.mask.png"},
+        {"image_file_name": "b.image.png", "mask_file_name": "b.mask.png", "base": "coco"},
+    ]
+    text = "\n".join(json.dumps(x) for x in lines) + "\nnot json\n\n"
+    (folder / "metadata.jsonl").write_text(text)
+    c = cp1.jsonl_census(folder / "metadata.jsonl", tmp_path)
+    assert c["file"] == "diffseg30k/train_copy/metadata.jsonl"
+    assert c["lines"] == 3
+    assert c["unparsable_lines"] == 1
+    assert c["keys"] == {"base": 1, "image_file_name": 2, "mask_file_name": 2}
+    rep = cp1.diffseg_mask_report([], tmp_path)
+    assert rep["jsonl_unexpected_keys"] == ["base"]
+    assert rep["jsonl_census_complete"] is False  # one line could not be read (Codex, PR 15)
+    (folder / "metadata.jsonl").write_text(json.dumps(lines[0]) + "\n")
+    assert cp1.diffseg_mask_report([], tmp_path)["jsonl_census_complete"] is True
+    (folder / "metadata.jsonl").unlink()
+    assert cp1.diffseg_mask_report([], tmp_path)["jsonl_census_complete"] is False  # no file
+
+
+def test_size_indication_kinds():
+    rows = [
+        {"width": 1024, "height": 1024},
+        {"width": 640, "height": 480},
+        {"width": 768, "height": 512},
+        {"width": None, "height": None},
+    ]
+    assert cp1._size_kinds(rows) == {
+        "1024x1024": 1,
+        "both_sides_le_640": 1,
+        "other": 1,
+        "unknown": 1,
+    }
+
+
+def test_blockiness_pooled_real_vs_diffseg_edited():
+    rng = np.random.default_rng(5)
+    groups = {
+        "coco/real": list(rng.normal(1.0, 0.01, 40)),
+        "diffseg30k/edited": list(rng.normal(1.2, 0.01, 40)),
+    }
+    samples = [
+        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+        for k, vs in groups.items()
+        for v in vs
+    ]
+    res = cp1.blockiness_check(samples, seed=42)
+    assert res["separation"]["real (coco) vs diffseg30k edited"] > 0.95
+    assert "real (coco) vs diffseg30k edited" in res["clear_difference"]  # under the stop rule
+    assert "diffseg30k: edited vs real" in res["not_applicable"]
+
+
+def test_quality_75_share_per_class():
+    samples = [
+        {
+            "source": "sidset",
+            "label": "real",
+            "h_format": "jpeg",
+            "h_quality": 75,
+            "h_subsampling": "4:2:0",
+        },
+        {
+            "source": "coco",
+            "label": "real",
+            "h_format": "jpeg",
+            "h_quality": 75,
+            "h_subsampling": "4:4:4",
+        },
+        {
+            "source": "coco",
+            "label": "real",
+            "h_format": "jpeg",
+            "h_quality": 96,
+            "h_subsampling": "4:4:4",
+        },
+        {"source": "genimage", "label": "real", "error": "skipped"},
+    ]
+    q = cp1.quality_75_share(samples)
+    assert q["per_class"]["real"] == {"n": 3, "q75_420": 0.3333, "q75_any": 0.6667}
+    assert q["per_class"]["edited"] == {"n": 0, "q75_420": None, "q75_any": None}
+    assert q["per_class_source"]["real/coco"] == {"n": 2, "q75_420": 0.0, "q75_any": 0.5}

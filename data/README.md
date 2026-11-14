@@ -72,10 +72,11 @@ After the first CP1 run (FAIL, 14 Nov 2026; see `docs/CHECKPOINTS.md`), Dhanush 
    images inside the training pool go to the same split.
 7. SID-Set tampered images are left out of training (the agreed blockiness fallback); SID-Set
    validation (P3b) keeps them.
-8. DiffSeg30k's 5,000 training images with an empty mask (unedited) are real negatives; COCO
-   negatives are kept.
-9. Sampler: real = GenImage 1/3, SID-Set 1/3, COCO 1/6, DiffSeg30k-real 1/6; generated = GenImage
-   2/3, SID-Set 1/3; edited = DiffSeg30k only.
+8. ~~DiffSeg30k's 5,000 training images with an empty mask (unedited) are real negatives.~~
+   Revised in the spec review of 14 Nov 2026 (decision 13).
+9. ~~Sampler: real = GenImage 1/3, SID-Set 1/3, COCO 1/6, DiffSeg30k-real 1/6.~~ Revised in the
+   spec review of 14 Nov 2026 (decision 14); generated = GenImage 2/3, SID-Set 1/3 and
+   edited = DiffSeg30k only are unchanged.
 10. GenImage's blockiness difference is investigated with two diagnostics: separation on the raw
     files, and the same ratio on the mid-block lines (JPEG has no edges there; an upsampling
     decoder can).
@@ -86,6 +87,21 @@ After CP1 run 2 (criteria met, blockiness stop; 14 Nov 2026), Dhanush decided:
     in the raw SD v1.4 PNGs and on mid-block lines, where JPEG puts no edges. It stays reported.
 12. One seeded third of DiffSeg30k edited training images is compressed at quality 75, 4:2:0 (like
     SID-Set), so quality-75 images make up one third of every class.
+
+Spec review of 14 Nov 2026 (Dhanush; spec cards 2, 5, 6 and 8 on hold until CP1 run 4):
+
+13. DiffSeg30k's unedited training images (empty mask) leave training. About half of DiffSeg30k's
+    base images are AI-generated (paper section 3.1), and nothing in the release says which:
+    `metadata.jsonl` holds only `image_file_name` and `mask_file_name` (first lines of both
+    files, CP1 run-3 record); the zips hold no other metadata. CP1 run 4 counts the keys on every
+    line and stops and asks if any other key appears. Image size is reported as an indication
+    only (1024×1024 vs both sides ≤ 640). They are not relabelled as fully generated.
+14. Compression does not depend on the class inside a source: the same seeded third (seed 42) of
+    every DiffSeg30k and COCO training image, whatever its class, is compressed at quality 75,
+    4:2:0; the rest keep the GenImage real distribution. Sampler: real = GenImage 1/3,
+    SID-Set 1/6, COCO 1/2; generated = GenImage 2/3, SID-Set 1/3; edited = DiffSeg30k only.
+    Quality 75 is then one third of every class (real 1/6 + 1/2 × 1/3), plus the about 5% of
+    quality-75 files in the GenImage real distribution itself, which every class gets alike.
 
 Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.csv.gz`); CP1
 starts only if the local disk matches that list exactly (none missing, none with another size,
@@ -101,9 +117,9 @@ Compression happens once, on the whole image, before the 256 crop
 |---|---|
 | GenImage SD v1.4 | Generated PNGs -> JPEG with (quality, subsampling) drawn from the measured distribution of the real training JPEGs; real images untouched |
 | SID-Set | Real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 / 4:2:0 untouched; JPEGs below 75 skipped and counted |
-| DiffSeg30k and COCO negatives | All PNG after preparation -> JPEG with the GenImage real distribution |
+| DiffSeg30k and COCO negatives | All PNG after preparation -> JPEG with the GenImage real distribution, except one seeded third of each source (any class) at quality 75, 4:2:0 (decision 14) |
 
-Images with a side under 256 are skipped and counted. Sampler: see decision 9 above (spec rev 49
+Images with a side under 256 are skipped and counted. Sampler: see decision 14 above (spec rev 49
 had real = GenImage, SID-Set, COCO one third each; edited = DiffSeg30k two thirds, SID-Set one third). DiffSeg30k training images contain only the 6 training
 editors (mask values 1, 3, 4, 5, 7, 8); validation images with any Glide (6) or Kolors (2) pixel
 are the P2 test set. Validation: 10% of each training source, stratified, seed 42.

@@ -263,10 +263,12 @@ def test_roles_splits_and_holdout(run):
     _, _, res = run
     roles = res["diffseg30k_masks"]["roles"]
     # fake editor sets: train cycles 9 sets (2 hold-out, 1 empty), validation 6 (4 hold-out);
-    # the 2 empty-mask images are real negatives in the training pool (14 Nov 2026)
+    # the 2 empty-mask images leave training (no field says whether the base is a real photo,
+    # spec review of 14 Nov 2026)
     assert roles == {
         "train/excluded_holdout": 4,
-        "train/train_pool": 14,
+        "train/excluded_unedited": 2,
+        "train/train_pool": 12,
         "validation/test_P2": 8,
         "validation/unused_validation": 4,
     }
@@ -274,7 +276,8 @@ def test_roles_splits_and_holdout(run):
     assert by["coco/test/real"] == 6 and len(res["coco_negatives"]["reserved_claims_edit_ids"]) == 6
     assert by["genimage_val/test/real"] == by["genimage_val/test/generated"] == 16
     assert by["sidset/test/edited"] == 5
-    assert by.get("diffseg30k/train/real", 0) + by.get("diffseg30k/val/real", 0) == 2
+    assert not any(k.startswith("diffseg30k/") and k.endswith("/real") for k in by)
+    assert res["counts"]["by_role"]["diffseg30k/excluded_unedited"] == 2
     assert res["counts"]["by_role"]["sidset/excluded_sid_tampered"] == 10
     assert "sidset/train/edited" not in by and "sidset/val/edited" not in by
     assert res["diffseg30k_masks"]["distinct_values"] == list(range(9))
@@ -290,10 +293,12 @@ def test_harmonization_follows_spec_table(run):
     assert plan["sidset/real"]["skip:below_q75"] > 0 and plan["sidset/real"]["keep:at_target"] > 0
     assert plan["sidset/real"]["compress:above_q75"] > 0
     assert "sidset/edited" not in plan  # SID-Set tampered left out of training
-    assert set(plan["diffseg30k/real"]) <= {"compress:lossless", "skip:too_small"}
-    # COCO negatives take DiffSeg30k sizes, including its few under 256 (skipped like them)
+    assert "diffseg30k/real" not in plan  # unedited images left out (spec review, 14 Nov 2026)
+    # COCO negatives take DiffSeg30k sizes, including its few under 256 (skipped like them);
+    # one seeded third of them is compressed at quality 75 like SID-Set (14 Nov 2026)
     assert plan["coco/real"]["compress:lossless"] > 0
-    assert set(plan["coco/real"]) <= {"compress:lossless", "skip:too_small"}
+    assert plan["coco/real"]["compress:q75_third"] > 0
+    assert set(plan["coco/real"]) <= {"compress:lossless", "compress:q75_third", "skip:too_small"}
     dist = res["quality_distribution_genimage_real"]
     assert dist["top_quality"] == 96
     # COCO negatives take the measured sizes of DiffSeg30k training images (14 Nov 2026)
@@ -313,12 +318,14 @@ def test_metadata_classifier_on_harmonized_crops(run):
     assert rep["distinct_values"]["crop_w"] == rep["distinct_values"]["crop_h"] == 1
     assert meta["criterion_score"] <= 0.60
     # the positive control: raw file facts and original size do give the label away
-    # (DiffSeg30k's unedited images are PNG like its edited ones, so raw format alone no
-    # longer separates every source; the control stays far above chance)
     assert meta["diagnostics"]["raw_files_positive_control"] > 0.8
     assert res["crops"]["errors"] == {}
     pcs = res["crops"]["per_class_source"]
-    assert pcs["real/coco"] == pcs["real/diffseg30k"] == 10 and pcs["real/sidset"] == 20
+    # real = GenImage 1/3, SID-Set 1/6, COCO 1/2 of 60 (spec review of 14 Nov 2026)
+    assert pcs["real/genimage"] == 20
+    assert pcs["real/sidset"] == 10
+    assert pcs["real/coco"] == 30
+    assert "real/diffseg30k" not in pcs
     assert "edited/sidset" not in pcs
 
 
@@ -601,43 +608,42 @@ def test_mask_value_outside_card_map_stops(tmp_path):
 
 
 def test_pooled_blockiness_uses_sampler_mix_not_measured_counts():
-    """Sources differ in level, classes within a source do not: the pooled comparison must not
-    flag a class difference just because one source was measured more often in one class."""
+    """Quality 75 (level 1.2 here) is SID-Set and one third of COCO and DiffSeg30k; the rest is
+    1.0. With the shares of the spec review of 14 Nov 2026 every class is one third q75, so the
+    pooled comparison must not flag a class difference, even though SID-Set real was measured
+    10x more often than the other groups."""
     rng = np.random.default_rng(0)
 
     def g(level, n):
         return list(rng.normal(level, 0.01, n))
 
-    groups = {  # SID-Set level 1.2, every other source 1.0; SID-Set real measured 10x more
-        "genimage/real": g(1.0, 20),
-        "sidset/real": g(1.2, 200),
-        "coco/real": g(1.0, 20),
-        "diffseg30k/real": g(1.0, 20),
-        "genimage/generated": g(1.0, 20),
-        "sidset/generated": g(1.2, 20),
-        "diffseg30k/edited": g(1.0, 20),
-        "sidset/edited": g(1.2, 20),
+    def third(n):  # one seeded third at quality 75, the rest at the GenImage distribution
+        return g(1.2, n // 3) + g(1.0, n - n // 3)
+
+    groups = {
+        "genimage/real": g(1.0, 30),
+        "sidset/real": g(1.2, 300),
+        "coco/real": third(30),
+        "genimage/generated": g(1.0, 30),
+        "sidset/generated": g(1.2, 30),
+        "diffseg30k/edited": third(30),
     }
-    samples = [
-        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
-        for k, vs in groups.items()
-        for v in vs
-    ]
-    res = cp1.blockiness_check(samples, seed=42)
-    # real and generated both draw SID-Set one third: not separated, whatever was measured
-    assert res["separation"]["all sources (sampler mix): real vs generated"] < 0.6
-    # since 14 Nov 2026 the edited class has no SID-Set part, so SID-Set's level now separates
-    # real and generated from edited in the sampler mix: the check reports this effect
-    assert res["separation"]["all sources (sampler mix): real vs edited"] > 0.6
-    assert res["stop_and_ask"] is True
-    groups["sidset/edited"] = g(1.3, 20)  # a real class difference inside SID-Set
-    samples = [
-        {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
-        for k, vs in groups.items()
-        for v in vs
-    ]
-    res = cp1.blockiness_check(samples, seed=42)
-    assert res["separation"]["sidset: edited vs real"] > 0.95
+
+    def samples_of(gr):
+        return [
+            {"source": k.split("/")[0], "label": k.split("/")[1], "blockiness": v}
+            for k, vs in gr.items()
+            for v in vs
+        ]
+
+    res = cp1.blockiness_check(samples_of(groups), seed=42)
+    for pair in ("real vs not real", "real vs generated", "real vs edited", "generated vs edited"):
+        assert res["separation"][f"all sources (sampler mix): {pair}"] < 0.6, pair
+    assert res["separation"]["real (coco) vs diffseg30k edited"] < 0.6
+    assert res["stop_and_ask"] is False
+    groups["sidset/generated"] = g(1.3, 30)  # a real class difference inside SID-Set
+    res = cp1.blockiness_check(samples_of(groups), seed=42)
+    assert res["separation"]["sidset: generated vs real"] > 0.95
     assert res["stop_and_ask"] is True
 
 
@@ -752,8 +758,45 @@ def test_accepted_blockiness_pair_is_reported_not_a_stop():
     assert acc["separation"]["genimage: generated vs real"] > 0.95  # still reported
 
 
-def test_plan_has_q75_third_for_diffseg_edited(run):
+def test_plan_has_q75_third_for_diffseg_and_coco(run):
     _, _, res = run
-    assert res["harmonization_plan"]["diffseg30k/edited"].get("compress:q75_third", 0) > 0
-    assert "compress:q75_third" not in res["harmonization_plan"]["diffseg30k/real"]
+    plan = res["harmonization_plan"]
+    assert plan["diffseg30k/edited"].get("compress:q75_third", 0) > 0
+    assert plan["coco/real"].get("compress:q75_third", 0) > 0
+    assert "compress:q75_third" not in plan["genimage/generated"]
     assert "genimage: generated vs real" in res["config"]["blockiness_accepted"]
+
+
+def test_run_records_jsonl_census_q75_share_and_new_separations(run):
+    """Spec review of 14 Nov 2026: what the record must show for CP1 run 4."""
+    _, _, res = run
+    masks = res["diffseg30k_masks"]
+    census = {j["file"]: j for j in masks["jsonl"]}
+    assert set(census) == {
+        "diffseg30k/train_copy/metadata.jsonl",
+        "diffseg30k/validation_copy/metadata.jsonl",
+    }
+    assert census["diffseg30k/train_copy/metadata.jsonl"]["lines"] == 18
+    assert census["diffseg30k/validation_copy/metadata.jsonl"]["keys"] == {
+        "image_file_name": 12,
+        "mask_file_name": 12,
+    }
+    assert masks["jsonl_unexpected_keys"] == []
+    assert res["stop_and_ask"]["diffseg_jsonl_unexpected_keys"] is False
+    assert masks["jsonl_census_complete"] is True
+    assert res["stop_and_ask"]["diffseg_jsonl_census_incomplete"] is False
+    assert sum(masks["size_indication"]["unedited_train"].values()) == 2
+    assert sum(masks["size_indication"]["edited_train_pool"].values()) == 12
+    q75 = res["quality_75"]
+    assert set(q75["per_class"]) == {"real", "generated", "edited"}
+    assert q75["per_class_source"]["generated/sidset"]["q75_420"] == 1.0
+    # GenImage keeps its own measured qualities, which include some quality 75 (about 5% in
+    # the real data), so only SID-Set is exactly 1.0
+    for c in ("real", "edited"):
+        assert 0 < q75["per_class"][c]["q75_420"] < 1
+    block = res["blockiness"]
+    assert "real (coco) vs diffseg30k edited" in block["separation"]
+    assert "diffseg30k: edited vs real" in block["not_applicable"]
+    failed = res["crops"]["edited_crop_failed"]
+    assert failed["drawn"] == 60
+    assert failed["failed_1_90_rule"] == 0

@@ -46,8 +46,9 @@ def diffseg_role(dataset_split: str, editors: set[int]) -> str:
     """Where a DiffSeg30k image goes.
 
     train split: 'train_pool' (only training editors), 'excluded_holdout' (any Glide / Kolors
-    pixel), 'real_pool' (empty mask: an unedited image, used as a real negative, decision of
-    14 Nov 2026), 'excluded_unknown_value' (value outside 1-8).
+    pixel), 'excluded_unedited' (empty mask: an unedited image; left out of training because
+    nothing in the release says whether its base is a real photo or AI-generated, spec review
+    of 14 Nov 2026), 'excluded_unknown_value' (value outside 1-8).
     validation split: 'test_P2' (any Glide / Kolors pixel), else 'unused_validation'.
     """
     if editors - set(DIFFSEG_EDITORS):
@@ -56,7 +57,7 @@ def diffseg_role(dataset_split: str, editors: set[int]) -> str:
     if dataset_split == "validation":
         return "test_P2" if held else "unused_validation"
     if not editors:
-        return "real_pool"
+        return "excluded_unedited"
     return "excluded_holdout" if held else "train_pool"
 
 

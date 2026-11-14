@@ -192,7 +192,10 @@ def make_diffseg(folder: Path, n_train: int, n_val: int, seed: _Seeds) -> None:
                 editors = sets[i % len(sets)]
                 zf.writestr(f"{split}_copy/{ident}.image.png", png(texture(s, w, h)))
                 zf.writestr(f"{split}_copy/{ident}.mask.png", png(_mask(w, h, editors, s)))
-                meta.append({"id": ident, "edits": editors})
+                # the real layout (run-3 record): only the two file names per line
+                meta.append(
+                    {"image_file_name": f"{ident}.image.png", "mask_file_name": f"{ident}.mask.png"}
+                )
             zf.writestr(
                 f"{split}_copy/metadata.jsonl", "\n".join(json.dumps(m) for m in meta) + "\n"
             )

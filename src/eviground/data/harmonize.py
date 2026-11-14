@@ -11,8 +11,10 @@ once, as whole images before cropping; an image already at that compression is l
 | SID-Set | real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 /
   4:2:0 untouched; JPEGs below quality 75 skipped and counted |
 | DiffSeg30k, COCO negatives | all PNG after preparation -> JPEG with the GenImage real
-  distribution; COCO negatives take sizes drawn from DiffSeg30k's measured sizes; one seeded
-  third of DiffSeg30k edited images at quality 75, 4:2:0 instead (14 Nov 2026) |
+  distribution, except one seeded third of the images of both sources (any class), which is
+  compressed at quality 75, 4:2:0 like SID-Set, so compression does not depend on the class
+  inside a source; COCO negatives take sizes drawn from DiffSeg30k's measured sizes
+  (decisions of 14 Nov 2026) |
 
 The plan for each image is a pure function of its header facts and its id (seed 42), so the
 same image is always compressed the same way, in every session and every epoch.
@@ -36,6 +38,8 @@ SEED = 42
 MIN_SIDE = 256  # training crops are 256x256; smaller images are skipped and counted
 SUBSAMPLING_CODE = {"4:4:4": 0, "4:2:2": 1, "4:2:0": 2}
 SID_TARGET = (75, "4:2:0")
+# sources whose lossless images are compressed at SID_TARGET for one seeded third of the ids
+Q75_THIRD_SOURCES = ("diffseg30k", "coco")
 
 # source -> rule (see the module docstring)
 RULES = {
@@ -170,9 +174,10 @@ def plan_image(
     if dist is None:
         raise ValueError(f"{source}: the GenImage real quality distribution is required")
     if lossless:
-        if source == "diffseg30k" and label == "edited" and q75_third(uid, seed):
-            # one third of the edited class at SID-Set's compression, so that quality 75 makes
-            # up one third of every class (decision of 14 Nov 2026 after CP1 run 2)
+        if source in Q75_THIRD_SOURCES and q75_third(uid, seed):
+            # one seeded third of every image of these sources, whatever its class, at
+            # SID-Set's compression: quality 75 makes up one third of every class and does not
+            # depend on the class inside a source (spec review of 14 Nov 2026)
             return compress(*SID_TARGET, "q75_third")
         q, ss = dist.sample(uid, seed)
         return compress(q, ss, "lossless")

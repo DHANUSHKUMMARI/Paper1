@@ -523,10 +523,7 @@ def assign_diffseg_roles(rows: list[dict[str, Any]]) -> None:
             continue
         values = splits.parse_editors(r.get("mask_values"))
         r["editors"] = splits.editors_text(values)
-        role = splits.diffseg_role(r["dataset_split"], values - {0})
-        if role == "real_pool":  # an unedited image: a real negative (decision of 14 Nov 2026)
-            role, r["label"] = "train_pool", "real"
-        r["role"] = role
+        r["role"] = splits.diffseg_role(r["dataset_split"], values - {0})
 
 
 def _coco_prepared_phash(row: dict[str, Any]) -> dict[str, Any]:
@@ -994,6 +991,35 @@ def _sampler_weighted(
     return values, labels, weights
 
 
+def quality_75_share(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """Share of the sampled training files at quality 75 (with 4:2:0, and any subsampling),
+    per class and per class and source, as the sampler drew them."""
+
+    def share(group: list[dict[str, Any]]) -> dict[str, Any]:
+        n = len(group)
+        q = [s for s in group if s.get("h_format") == "jpeg" and s.get("h_quality") == 75]
+        q420 = [s for s in q if s.get("h_subsampling") == "4:2:0"]
+        return {
+            "n": n,
+            "q75_420": round(len(q420) / n, 4) if n else None,
+            "q75_any": round(len(q) / n, 4) if n else None,
+        }
+
+    ok = [s for s in samples if "error" not in s]
+    per_class = {c: share([s for s in ok if s["label"] == c]) for c in sampler.CLASSES}
+    pairs = sorted({(s["label"], s["source"]) for s in ok})
+    per_source = {
+        f"{c}/{src}": share([s for s in ok if s["label"] == c and s["source"] == src])
+        for c, src in pairs
+    }
+    return {
+        "metric": "share of sampled crops whose harmonized file is JPEG quality 75",
+        "target": "one third of every class (spec review of 14 Nov 2026)",
+        "per_class": per_class,
+        "per_class_source": per_source,
+    }
+
+
 def _pair_separations(groups: dict[str, list[float]], seed: int) -> dict[str, float]:
     """Within each source, threshold separation of every pair of classes (>= 10 values each)."""
     out: dict[str, float] = {}
@@ -1010,6 +1036,31 @@ def _pair_separations(groups: dict[str, list[float]], seed: int) -> dict[str, fl
                     y = [a] * len(labs[a]) + [b] * len(labs[b])
                     out[f"{src}: {a} vs {b}"] = round(shortcut.threshold_cv(vals, y, seed=seed), 4)
     return out
+
+
+def _real_vs_diffseg_edited(groups: dict[str, list[float]], seed: int) -> dict[str, float]:
+    """The real negatives that sit beside DiffSeg30k's edited images (COCO, and DiffSeg30k's own
+    reals if any) against those edited images, each real source weighted by its sampler share
+    (spec review of 14 Nov 2026). Empty if a side has fewer than 10 values."""
+    real_sources = [s for s in ("coco", "diffseg30k") if len(groups.get(f"{s}/real", [])) >= 10]
+    edited = groups.get("diffseg30k/edited", [])
+    if not real_sources or len(edited) < 10:
+        return {}
+    shares = sampler.SHARES["unified"]["real"]
+    total = sum(shares.get(s, 0.0) for s in real_sources) or 1.0
+    vals: list[float] = []
+    ys: list[str] = []
+    ws: list[float] = []
+    for s in real_sources:
+        v = groups[f"{s}/real"]
+        vals += v
+        ys += ["real"] * len(v)
+        ws += [shares.get(s, 0.0) / total / len(v)] * len(v)
+    vals += edited
+    ys += ["edited"] * len(edited)
+    ws += [1.0 / len(edited)] * len(edited)
+    name = f"real ({' + '.join(real_sources)}) vs diffseg30k edited"
+    return {name: round(shortcut.threshold_cv(vals, ys, seed=seed, weights=ws), 4)}
 
 
 def blockiness_check(
@@ -1068,6 +1119,13 @@ def blockiness_check(
             )
         for name, score in pairs.items():
             out["separation"][f"all sources (sampler mix): {name}"] = score
+    out["separation"].update(_real_vs_diffseg_edited(groups, seed))
+    out["not_applicable"] = {}
+    if len(groups.get("diffseg30k/real", [])) < 10:
+        out["not_applicable"]["diffseg30k: edited vs real"] = (
+            "no DiffSeg30k real images in training (unedited images left out, spec review of "
+            "14 Nov 2026)"
+        )
     above = {k: v for k, v in out["separation"].items() if v > shortcut.CRITERION}
     out["accepted"] = {
         k: {"separation": v, "why": accepted[k]} for k, v in above.items() if k in accepted
@@ -1140,15 +1198,10 @@ def diffseg_mask_report(rows: list[dict[str, Any]], local: Path) -> dict[str, An
             for v, c in zip(vs, cs, strict=True):
                 values[v] += 1
                 pixels[v] += c
-    jsonl = []
-    for p in sorted((local / "diffseg30k").rglob("*.jsonl")):
-        with open(p, errors="replace") as fh:
-            jsonl.append(
-                {
-                    "file": p.relative_to(local).as_posix(),
-                    "first_lines": [fh.readline()[:300] for _ in range(3)],
-                }
-            )
+    jsonl = [jsonl_census(p, local) for p in sorted((local / "diffseg30k").rglob("*.jsonl"))]
+    unexpected = sorted({k for j in jsonl for k in j["keys"] if k not in DIFFSEG_JSONL_KEYS})
+    # the census proves the absence of a base-type field only if every line was read
+    census_complete = bool(jsonl) and all(j["unparsable_lines"] == 0 for j in jsonl)
     roles = Counter((r["dataset_split"], r["role"]) for r in ds)
     return {
         "masks": len(ds),
@@ -1164,7 +1217,67 @@ def diffseg_mask_report(rows: list[dict[str, Any]], local: Path) -> dict[str, An
         "editor_map": {str(k): v for k, v in splits.DIFFSEG_EDITORS.items()},
         "roles": {f"{s}/{r}": n for (s, r), n in sorted(roles.items())},
         "jsonl": jsonl,
+        "jsonl_unexpected_keys": unexpected,
+        "jsonl_census_complete": census_complete,
+        "size_indication": {
+            "note": "image size, not a base-type field: COCO photos are at most 640 px a side; "
+            "1024x1024 suggests an AI-generated base (paper: about half of the bases)",
+            "unedited_train": _size_kinds(
+                r for r in ds if r["dataset_split"] == "train" and r["role"] == "excluded_unedited"
+            ),
+            "edited_train_pool": _size_kinds(r for r in ds if r["role"] == "train_pool"),
+        },
     }
+
+
+# keys of DiffSeg30k's metadata.jsonl seen in the run-3 record (first lines of both files);
+# any other key could say what the base image is, so CP1 stops and asks (14 Nov 2026)
+DIFFSEG_JSONL_KEYS = ("image_file_name", "mask_file_name")
+
+
+def jsonl_census(path: Path, local: Path) -> dict[str, Any]:
+    """Every line of one .jsonl: line count, unparsable lines, and how often each key occurs."""
+    keys: Counter[str] = Counter()
+    lines = bad = 0
+    first: list[str] = []
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            lines += 1
+            if len(first) < 3:
+                first.append(line[:300])
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                bad += 1
+                continue
+            if isinstance(obj, dict):
+                keys.update(str(k) for k in obj)
+            else:
+                bad += 1
+    return {
+        "file": path.relative_to(local).as_posix(),
+        "lines": lines,
+        "unparsable_lines": bad,
+        "keys": dict(sorted(keys.items())),
+        "first_lines": first,
+    }
+
+
+def _size_kinds(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
+    c: Counter[str] = Counter()
+    for r in rows:
+        w, h = r.get("width"), r.get("height")
+        if not w or not h:
+            c["unknown"] += 1
+        elif (w, h) == (1024, 1024):
+            c["1024x1024"] += 1
+        elif max(w, h) <= 640:
+            c["both_sides_le_640"] += 1
+        else:
+            c["other"] += 1
+    return dict(sorted(c.items()))
 
 
 def sid_mask_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1270,7 +1383,7 @@ def run_cp1(
         + index_coco(local, set(reserved))
     )
     for r in rows:
-        r["indexed_label"] = r["label"]  # DiffSeg30k unedited images later become "real"
+        r["indexed_label"] = r["label"]
     say(f"indexed {len(rows)} images: {_counts(rows, 'source')}")
     facts = scan(
         rows,
@@ -1337,6 +1450,7 @@ def run_cp1(
         samples = [sample_row(t) for t in tasks]
     errors = Counter(s["error"] for s in samples if "error" in s)
     meta = metadata_check(samples, cfg.seed)
+    q75 = quality_75_share(samples)
     block = blockiness_check(samples, cfg.seed, cfg.blockiness_accepted)
     grids = make_grids(samples, {r["uid"]: r for r in rows}, out_dir, cfg.grid)
     edited_shares = [
@@ -1358,6 +1472,11 @@ def run_cp1(
         ),
         # mask values outside the card's map: the editor map cannot be trusted (12 Nov 2026)
         "diffseg_mask_values_outside_0_8": bool(masks["values_outside_0_8"]),
+        # a .jsonl key beyond the two file names may say whether a base image is a real photo
+        # (spec review of 14 Nov 2026): look at it before DiffSeg30k is used further
+        "diffseg_jsonl_unexpected_keys": bool(masks["jsonl_unexpected_keys"]),
+        # no .jsonl found, or a line that is not a JSON object: the census is incomplete
+        "diffseg_jsonl_census_incomplete": not masks["jsonl_census_complete"],
         # an image that could not be read (corrupt, or a read that never returned) was left out
         # of the duplicate checks, so CP1 cannot pass until it is looked at
         "images_not_scanned": any(r.get("error") for r in rows),
@@ -1406,8 +1525,15 @@ def run_cp1(
                 [s for s in samples if "error" not in s], "label", "source"
             ),
             "edited_share": shortcut.describe(edited_shares),
+            "edited_crop_failed": {
+                "drawn": sum(1 for s in samples if s["label"] == "edited"),
+                "failed_1_90_rule": sum(
+                    1 for s in samples if s["label"] == "edited" and s.get("error") == "crop_failed"
+                ),
+            },
         },
         "metadata_classifier": meta,
+        "quality_75": q75,
         "blockiness": block,
         "grids": grids,
     }

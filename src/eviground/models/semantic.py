@@ -35,7 +35,10 @@ def load_clip(
     tiny: dict[str, Any] | None = None,
     cache_dir: str | None = None,
     local_files_only: bool = False,
+    revision: str | None = None,
 ) -> nn.Module:
+    """``revision``: the pinned Hugging Face commit hash of ``backbone`` (config key
+    ``model.semantic.revision``); the trainer refuses a real backbone without one."""
     from transformers import CLIPVisionConfig, CLIPVisionModel
 
     if tiny is not None:
@@ -49,6 +52,7 @@ def load_clip(
         attn_implementation="sdpa",
         cache_dir=cache_dir,
         local_files_only=local_files_only,
+        revision=revision,
     )
 
 
@@ -68,13 +72,18 @@ class SemanticBranch(nn.Module):
         tiny: dict[str, Any] | None = None,
         cache_dir: str | None = None,
         local_files_only: bool = False,
+        revision: str | None = None,
         clip: nn.Module | None = None,
     ) -> None:
         super().__init__()
         from peft import LoraConfig, inject_adapter_in_model
 
         model = clip or load_clip(
-            backbone, tiny=tiny, cache_dir=cache_dir, local_files_only=local_files_only
+            backbone,
+            tiny=tiny,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            revision=revision,
         )
         for p in model.parameters():
             p.requires_grad_(False)

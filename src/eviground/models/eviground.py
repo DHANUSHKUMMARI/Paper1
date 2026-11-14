@@ -145,6 +145,7 @@ def build_model(cfg: Mapping[str, Any]) -> EviGround:
         "tiny": dict(sem["tiny"]) if sem.get("tiny") else None,
         "cache_dir": sem.get("cache_dir"),
         "local_files_only": bool(sem.get("local_files_only", False)),
+        "revision": sem.get("revision"),
         "lora_rank": int(lora.get("rank", 8)),
         "lora_alpha": int(lora.get("alpha", 16)),
         "lora_layers": list(lora.get("layers", [20, 21, 22, 23])),

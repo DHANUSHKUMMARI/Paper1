@@ -181,6 +181,7 @@ def read_json(path: Path | str) -> Any | None:
 class Member:
     name: str
     size: int
+    mtime: float = 0.0  # seconds since the epoch, as stored in the archive
 
 
 def archive_kind(path: Path | str) -> str:
@@ -202,6 +203,14 @@ def safe_member_name(name: str) -> str:
     if pure.is_absolute() or ".." in pure.parts or not pure.parts:
         raise VerificationError(f"unsafe archive member name: {name!r}")
     return pure.as_posix()
+
+
+def _zip_mtime(info: zipfile.ZipInfo) -> float:
+    """A zip member's timestamp (stored without a time zone) read as UTC, so it is the same
+    number on every machine."""
+    import calendar
+
+    return float(calendar.timegm((*info.date_time, 0, 0, 0)))
 
 
 class ArchiveReader:
@@ -237,9 +246,15 @@ class ArchiveReader:
     def members(self) -> list[Member]:
         """Regular files only, in archive order."""
         if self._zip is not None:
-            return [Member(i.filename, i.file_size) for i in self._zip.infolist() if not i.is_dir()]
+            return [
+                Member(i.filename, i.file_size, _zip_mtime(i))
+                for i in self._zip.infolist()
+                if not i.is_dir()
+            ]
         assert self._tar is not None
-        return [Member(m.name, m.size) for m in self._tar.getmembers() if m.isfile()]
+        return [
+            Member(m.name, m.size, float(m.mtime)) for m in self._tar.getmembers() if m.isfile()
+        ]
 
     def read(self, name: str) -> bytes:
         """One member's bytes (zip checks the CRC while reading)."""
@@ -371,12 +386,16 @@ def extract_archive(
             reserve_gb=reserve_gb,
         )
         sizes = {m.name: m.size for m in todo}
+        mtimes = {m.name: m.mtime for m in todo}
         prog = Progress(f"unpacking {Path(archive).name}", len(todo), sum(sizes.values()), report)
         for name, data in reader.iter_read(sizes):
             target = dest / safe_member_name(name)
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(target.name + ".part")
             tmp.write_bytes(data)
+            # the archive's timestamp, so a file unpacked again in a new session is identical
+            # (size and time) and cached results that check them stay valid
+            os.utime(tmp, (mtimes[name], mtimes[name]))
             os.replace(tmp, target)
             prog.add(len(data))
     bad = [
@@ -428,6 +447,8 @@ def copy_files(
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(target.name + ".part")
         shutil.copyfile(src_root / rel, tmp)
+        st = os.stat(src_root / rel)  # keep the source's time, as for unpacked files
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
         os.replace(tmp, target)
         prog.add(todo[rel])
 

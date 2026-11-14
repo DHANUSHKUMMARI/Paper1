@@ -242,6 +242,41 @@ def index_coco(local: Path, reserved: set[int]) -> list[dict[str, Any]]:
     return rows
 
 
+STAGED_KEYS = ("genimage_sd14", "diffseg30k", "sidset", "coco_val2017")
+
+
+def check_staged(paths: Paths) -> dict[str, Any]:
+    """Every dataset CP1 reads from the local disk must be there in full.
+
+    The local copies live on the Colab machine's disk and are gone in a new runtime; without
+    this check CP1 would index only what is left and fail much later with a confusing error.
+    Requires ``local_data/<key>/_STAGED.json`` (written by ``stage()`` after verification) and at
+    least as many files on disk as it records.
+    """
+    problems, found = [], {}
+    for key in STAGED_KEYS:
+        dest = paths.local_data / key
+        marker = dest / "_STAGED.json"
+        if not marker.is_file():
+            problems.append(f"{key}: not staged")
+            continue
+        want = int(json.loads(marker.read_text()).get("files", 0))
+        have = sum(
+            1
+            for p in dest.rglob("*")
+            if p.is_file() and p.name != "_STAGED.json" and not p.name.endswith(".part")
+        )
+        found[key] = {"expected": want, "on_disk": have}
+        if have < want:
+            problems.append(f"{key}: {have} of {want} files")
+    if problems:
+        raise RuntimeError(
+            "local copies are missing or incomplete (" + "; ".join(problems) + "). This happens "
+            "in a new Colab runtime: run Cell 3 (ensure_data with stage_local=True) first."
+        )
+    return found
+
+
 # --------------------------------------------------------------------------------------
 # Scan: one pass over every image
 # --------------------------------------------------------------------------------------
@@ -1047,6 +1082,8 @@ def run_cp1(
     say = progress or (lambda _m: None)
     t0 = time.time()
     local = paths.local_data
+    staged = check_staged(paths)
+    say(f"local copies complete: {staged}")
     coco = cfg.coco or (read_done(paths.datasets / REGISTRY["coco_val2017"].folder) or {}).get(
         "params"
     )

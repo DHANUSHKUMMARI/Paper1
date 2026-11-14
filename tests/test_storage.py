@@ -232,3 +232,23 @@ def test_extract_archive_reports_progress(tmp_path: Path) -> None:
     lines: list[str] = []
     extract_archive(arc, tmp_path / "local", progress=lines.append)
     assert lines[-1].startswith("unpacking d.zip: 3/3 files")
+
+
+def test_unpacked_and_copied_files_keep_source_times(tmp_path: Path) -> None:
+    import os
+
+    arc = _zip(tmp_path / "t.zip")
+    a, b = tmp_path / "a", tmp_path / "b"
+    extract_archive(arc, a)
+    extract_archive(arc, b)  # a second session unpacking the same archive
+    for name in ("a/x.png", "a/y.jpg", "b/z.txt"):
+        assert (a / name).stat().st_mtime == (b / name).stat().st_mtime
+    with zipfile.ZipFile(arc) as zf:
+        info = zf.getinfo("a/x.png")
+    assert (a / "a/x.png").stat().st_mtime == storage._zip_mtime(info)
+    src = tmp_path / "drive"
+    (src / "d").mkdir(parents=True)
+    (src / "d/f.jpg").write_bytes(b"abc")
+    os.utime(src / "d/f.jpg", (1_600_000_000, 1_600_000_000))
+    storage.copy_files(src, {"d/f.jpg": 3}, tmp_path / "local", workers=2)
+    assert (tmp_path / "local/d/f.jpg").stat().st_mtime == 1_600_000_000

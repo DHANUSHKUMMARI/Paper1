@@ -387,10 +387,13 @@ def test_near_duplicates_over_one_percent_stop(tmp_path):
 def test_class_count_mismatch_is_reported(tmp_path):
     paths, sources = _world(tmp_path)
     _ensure(paths, sources)
-    victim = sorted((paths.local_data / "diffseg30k/train_copy").glob("*.image.png"))[0]
-    victim.unlink()
+    # the dataset card promises one image more than the data holds
     res = cp1.run_cp1(
-        paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None
+        paths,
+        _cfg(diffseg_card_splits={"train": CARD["train"] + 1, "validation": CARD["validation"]}),
+        out_dir=tmp_path / "o",
+        cache_dir=tmp_path / "c",
+        progress=None,
     )
     bad = [t for t in res["class_counts"]["table"] if not t["equal"]]
     assert bad == [
@@ -398,12 +401,57 @@ def test_class_count_mismatch_is_reported(tmp_path):
             "source": "diffseg30k",
             "dataset_split": "train",
             "label": "edited",
-            "expected": 18,
-            "found": 17,
+            "expected": 19,
+            "found": 18,
             "equal": False,
         }
     ]
     assert res["criteria"]["class_counts_equal_manifests"] is False
+
+
+def test_missing_local_copies_stop_before_any_scan(tmp_path, monkeypatch):
+    """A new Colab runtime has no local copies (14 Nov 2026): stop at once, say what to do."""
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+
+    def boom(row):
+        raise AssertionError("scanned without local copies")
+
+    monkeypatch.setattr(cp1, "scan_row", boom)
+    shutil.rmtree(paths.local_data / "genimage_sd14")
+    victim = sorted((paths.local_data / "diffseg30k/train_copy").glob("*.image.png"))[0]
+    victim.unlink()
+    with pytest.raises(RuntimeError) as err:
+        cp1.run_cp1(paths, _cfg(), out_dir=tmp_path / "o", cache_dir=tmp_path / "c", progress=None)
+    msg = str(err.value)
+    # DiffSeg30k zips: 30 images + 30 masks + 2 metadata files; one image deleted
+    assert "genimage_sd14: not staged" in msg and "diffseg30k: 61 of 62 files" in msg
+    assert "run Cell 3" in msg
+
+
+def test_scan_cache_survives_restaging(tmp_path, monkeypatch):
+    """Unpacked and copied files keep their source times, so a new runtime that stages again
+    reuses the scan saved on Drive instead of scanning everything again."""
+    from eviground.data.download import stage
+
+    paths, sources = _world(tmp_path)
+    _ensure(paths, sources)
+    first = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o1", cache_dir=tmp_path / "c", progress=None
+    )
+    shutil.rmtree(paths.local_data)  # a new runtime: the local disk is empty
+    for key in cp1.STAGED_KEYS:
+        stage(key, paths=paths, reserve_gb=0)
+
+    def boom(row):
+        raise AssertionError("scanned again after re-staging")
+
+    monkeypatch.setattr(cp1, "scan_row", boom)
+    second = cp1.run_cp1(
+        paths, _cfg(), out_dir=tmp_path / "o2", cache_dir=tmp_path / "c", progress=None
+    )
+    assert first["exact_duplicates"] == second["exact_duplicates"]
+    assert first["metadata_classifier"] == second["metadata_classifier"]
 
 
 def test_process_pool_gives_same_result(tmp_path):

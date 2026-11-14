@@ -94,7 +94,8 @@ def test_quality_distribution_measure_and_deterministic_sample():
     ]
     d = harmonize.QualityDistribution.measure(infos)
     assert d.counts == {(96, "4:4:4"): 2, (80, "4:2:0"): 1}
-    assert d.sample("a/b.png") == d.sample("a/b.png")
+    again = harmonize.QualityDistribution.measure(infos)  # a new session, same data
+    assert again.sample("a/b.png") == d.sample("a/b.png")
     draws = [d.sample(f"img{i}") for i in range(3000)]
     share = sum(x == (96, "4:4:4") for x in draws) / len(draws)
     assert 0.62 < share < 0.71
@@ -189,7 +190,8 @@ def test_size_distribution_sampling():
     sizes = [(1024, 1024)] * 3 + [(640, 480)] * 1
     d = harmonize.SizeDistribution.measure(sizes)
     assert d.n == 4 and d.summary()["top"] == {"1024x1024": 3, "640x480": 1}
-    assert d.sample("coco/a.jpg") == d.sample("coco/a.jpg")
+    again = harmonize.SizeDistribution.measure(sizes)  # a new session, same data
+    assert again.sample("coco/a.jpg") == d.sample("coco/a.jpg")
     draws = [d.sample(f"u{i}") for i in range(4000)]
     assert 0.70 < draws.count((1024, 1024)) / len(draws) < 0.80
     with pytest.raises(ValueError):

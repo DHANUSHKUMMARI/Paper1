@@ -53,6 +53,7 @@ TEST_ROLES = {
     "test_P3b": "SID-Set validation (P3b)",
     "test_P7": "COCO photos reserved for Claims-Edit (P7)",
 }
+READ_TIMEOUT = "read timeout"  # error recorded for an image whose read never returned
 # Split sizes published on the DiffSeg30k card (read 13 Nov 2026)
 DIFFSEG_CARD_SPLITS = {"train": 28_998, "validation": 6_001}
 
@@ -434,7 +435,7 @@ def scan(
 
     With ``workers > 1`` the images are read by :func:`run_watched`: a read that has not
     returned after ``stall_s`` seconds (a stuck Drive mount) is retried in a fresh process,
-    and after ``retries`` stalls the image is recorded with ``error="read timeout"``."""
+    and after ``retries`` stalls the image is recorded as a read timeout (``READ_TIMEOUT``)."""
     cache.mkdir(parents=True, exist_ok=True)
     by_source: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -487,7 +488,7 @@ def scan(
             _write_csv_gz(path, got, SCAN_COLUMNS)
             results.update({g["uid"]: _typed(g) for g in got})
             if progress:
-                timeouts = sum(1 for g in got if g.get("error") == "read timeout")
+                timeouts = sum(1 for g in got if g.get("error") == READ_TIMEOUT)
                 progress(
                     f"scan {source}: {k + len(part)}/{len(src_rows)} "
                     f"({len(part) / max(time.time() - t0, 1e-6):.0f} images/s"
@@ -498,7 +499,7 @@ def scan(
 
 
 def _timeout_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {"uid": row["uid"], "fingerprint": fingerprint(row), "error": "read timeout"}
+    return {"uid": row["uid"], "fingerprint": fingerprint(row), "error": READ_TIMEOUT}
 
 
 # --------------------------------------------------------------------------------------
@@ -560,7 +561,7 @@ def prepare_coco_negatives(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[s
             cfg.workers,
             stall_s=cfg.stall_s,
             retries=cfg.scan_retries,
-            on_timeout=lambda t: {"error": "read timeout"},
+            on_timeout=lambda t: {"error": READ_TIMEOUT},
             describe=lambda t: t["uid"],
         )
     else:

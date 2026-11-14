@@ -7,7 +7,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP | Day | Stage | Status | Verified by |
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
-| CP1 | 2 | Data integrity and leakage | pending | |
+| CP1 | 2 | Data integrity and leakage | **FAIL** (14 Nov 2026), stop and ask | |
 | CP2 | 4 | Model build | pending | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
@@ -63,3 +63,45 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Carried forward to later checkpoints:** (1) this run used a CPU runtime, so the GPU is first exercised at CP2; (2) Colab ships transformers 5.x, so the CLIP layer names targeted by LoRA are asserted at CP2; (3) `bitsandbytes`, `grad-cam` and `diffusers` inpainting are not needed yet and are installed and locked when first used; (4) whether each dataset folder is complete (`_DONE` markers, file counts) is checked at CP1, not here.
 - **Not checked by this checkpoint:** the Drive copy of the downloader notebook, and whether the tokens pasted in chat on 10 Nov were rotated (only Dhanush can confirm).
 - **Verified by Dhanush:** PASS
+
+---
+
+### CP1 — Data integrity and leakage — 2026-11-14
+
+- **Run / commit:** Colab CPU runtime, `main` at `git a14d717`; record Drive
+  `Paper 1/runs/checkpoints/cp1_data_integrity.json` (written 2026-11-14 09:28 UTC); sample grids
+  and `manifest_cp1.csv.gz` in `Paper 1/runs/checkpoints/cp1/`. Wall time 161.5 min (Cells 1–5;
+  `run_cp1` itself 5,715.7 s). CU not recorded.
+- **What was run:** `notebooks/01_cp1_data_integrity.ipynb`, Cells 1–5 (`ensure_data('cp1',
+  stage_local=True)`, `run_cp1` with 3,000 sampler crops per class, seed 42). COCO negatives were
+  still prepared with the earlier rule (shorter side 1024, centre crop 1024); the DiffSeg30k-size
+  rule decided on 14 Nov is not yet in this run.
+- **Scanned:** 255,999 images (COCO 5,000; DiffSeg30k 34,999; GenImage SD v1.4 80,000; GenImage
+  Validation 100,000; SID-Set 36,000); 0 unreadable; local copies complete (80,000 / 70,000 /
+  48,000 / 5,000 files).
+- **Numbers, against the pass criteria of Research Specification 9.1 (rev 49):**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| 0 duplicate image hashes across train / val / test | 169 file-hash groups and 169 pixel-hash groups shared across splits (test+train 149, test+val 14, train+val 6); all 20 recorded examples are GenImage SD v1.4 training "nature" (ImageNet train) = GenImage Validation "nature" (ImageNet val) images. Within-split duplicate groups (reported only): 70 | **FAIL** |
+| Class counts equal the manifests | all 13 (source, split, class) counts equal (e.g. SD v1.4 40,000 + 40,000; DiffSeg30k 28,998 / 6,001; SID-Set 10,000 / 2,000 per class; COCO 5,000) | PASS |
+| Metadata classifier (format, JPEG quality, crop size) ≤ 60% real vs not real | 0.5353 balanced accuracy on 7,866 harmonized crops (format 0.50, JPEG quality 0.5353, crop width 0.50, crop height 0.50); three classes 0.3821 | PASS |
+| Blockiness per class: a clear class difference means stop and ask | harmonized medians: GenImage real 1.0156 / generated 1.0451; SID-Set real 1.2586 / synthetic 1.2984 / tampered 1.3267; DiffSeg30k edited 1.0222; COCO real 1.0501. Separation above 0.60: GenImage generated vs real 0.6675; SID-Set tampered vs real 0.6587; all sources (sampler mix) generated vs edited 0.6089 | **stop and ask** |
+
+- **Near-duplicates of test images in train + val** (pHash Hamming ≤ 6; more than 1% means stop and
+  ask): P1 GenImage Validation 193 of 100,000 (0.19%); P2 DiffSeg30k Glide/Kolors 33 of 2,809
+  (**1.18%**, 30 of them nearest to SID-Set training tampered images); P3b SID-Set validation 353 of
+  6,000 (**5.88%**, 315 nearest to SID-Set training images, 35 to DiffSeg30k); P7 Claims-Edit 1 of 150
+  (0.67%, an identical SID-Set training real image). COCO negatives dropped as near-duplicates of a
+  test image: 10 of 4,850.
+- **Other diagnostics:** DiffSeg30k mask values {0,…,8}, PNG mode L, no size mismatch; roles: train
+  pool 12,746, excluded hold-out 11,252, **excluded with an empty mask 5,000**, P2 test 2,809, unused
+  validation 3,192. Harmonization: GenImage real kept 35,811, too small 4,189; SID-Set real
+  recompressed to 75 / 4:2:0 8,800, kept 1,000, skipped below 75: 193, no quality: 7. Crops: 1,134 of
+  9,000 draws failed the 1–90% edited share in 10 tries (DiffSeg30k 948 of 2,000 edited draws
+  succeeded). Diagnostics (not criteria): original size 0.818, harmonized file bytes 0.6151, raw
+  files 0.8715.
+- **Result:** **FAIL** (cross-split duplicates), with two stop-and-ask flags (near-duplicates over 1%
+  in P2 and P3b; blockiness class differences). Reported to Dhanush with proposed fixes; nothing
+  changed until he decides.
+- **Verified by Dhanush:** ☐

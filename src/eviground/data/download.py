@@ -61,11 +61,13 @@ from eviground.data.storage import (
     check_space,
     copy_files,
     extract_archive,
+    read_file_list,
     read_json,
     safe_member_name,
     sha256_file,
     tar_index,
     verify_tar,
+    write_file_list,
     write_json_atomic,
     write_tar_shard,
     write_text_atomic,
@@ -1177,6 +1179,16 @@ def stage(
     return result
 
 
+def _all_present(dest: Path, listed: dict[str, int]) -> bool:
+    for rel, size in listed.items():
+        try:
+            if (dest / rel).stat().st_size != size:
+                return False
+        except FileNotFoundError:
+            return False
+    return True
+
+
 def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
     spec = REGISTRY[key]
     folder = paths.datasets / spec.folder
@@ -1193,6 +1205,7 @@ def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
         if files is None:
             raise VerificationError(f"{key}: a manifest is missing")
         res = copy_files(folder, files, dest, reserve_gb=reserve_gb)
+        write_file_list(dest, {safe_member_name(rel): size for rel, size in files.items()})
         write_json_atomic(dest / "_STAGED.json", {**res, "dest": str(dest)})
         return {"staged": True, "skipped": res["copied"] == 0, **res, "dest": str(dest)}
     if method in ("hf_files", "url_files"):
@@ -1205,11 +1218,23 @@ def _stage(key: str, paths: Paths, reserve_gb: float) -> dict[str, Any]:
     marker = read_json(dest / "_STAGED.json")
     names = [a.name for a in archives]
     if marker and marker.get("archives") == names:
-        return {"staged": True, "skipped": True, **marker}
+        listed = read_file_list(dest)
+        if listed is None:  # staged by an older version: build the list from the archives
+            listed = {}
+            for arc in archives:
+                with ArchiveReader(arc) as reader:
+                    listed.update({safe_member_name(m.name): m.size for m in reader.members()})
+        if _all_present(dest, listed):
+            write_file_list(dest, listed)
+            return {"staged": True, "skipped": True, **marker}
+        # a file is missing or has another size: unpack again (only those files are written)
+        log.warning("%s: local copy incomplete, unpacking the missing files again", key)
     files = nbytes = 0
+    listed = {}
     for arc in archives:
-        res = extract_archive(arc, dest, reserve_gb=reserve_gb)
+        res = extract_archive(arc, dest, reserve_gb=reserve_gb, index=listed)
         files, nbytes = files + res["files"], nbytes + res["bytes"]
     record = {"archives": names, "files": files, "bytes": nbytes, "dest": str(dest)}
+    write_file_list(dest, listed)
     write_json_atomic(dest / "_STAGED.json", record)
     return {"staged": True, "skipped": False, **record}

@@ -32,7 +32,7 @@ folder keeps only small files needed to reproduce it exactly (`manifests/`).
 | `sidset` | Hugging Face `saberzl/SID_Set` (already on Drive) | `03_SID-Set/` | The existing loose files from the retired downloader, `<split>/<class>/images/` and tampered `masks/`, with `train_manifest.csv` and `validation_manifest.csv`: 10,000 per class from train, 2,000 per class from validation. Verified in place, never downloaded again; copied to the local disk each session | CC-BY-4.0 | Real / synthetic / tampered; validation = P3b test set |
 | `brgen` | Hugging Face `clpbc/BR-Gen` (68.5 GB split zip) | `04_BR-Gen/` | Not downloaded for CP1; a subset plan is proposed before P3 | See dataset card | P3 cross-dataset test |
 | `chameleon` | Manual (AIDE repository links) | `05_Chameleon/` | Partly unpacked by hand (1,412 of 26,033 images, 13 Nov 2026); the zip is being put back. Not needed for CP1 | See source | P4 hard test set |
-| `coco_val2017` | images.cocodataset.org (`val2017.zip`, `annotations_trainval2017.zip`) | `06_COCO/` | Both zips as published, CRC-tested, 5,000 images counted, SHA-256 recorded; only the images are unpacked locally | Images: Flickr terms; annotations CC-BY-4.0 | 150 photos reserved for Claims-Edit (P7); the other ~4,850 are real negatives for DiffSeg30k, prepared like its base images (shorter side to 1024, centre crop 1024) |
+| `coco_val2017` | images.cocodataset.org (`val2017.zip`, `annotations_trainval2017.zip`) | `06_COCO/` | Both zips as published, CRC-tested, 5,000 images counted, SHA-256 recorded; only the images are unpacked locally | Images: Flickr terms; annotations CC-BY-4.0 | 150 photos reserved for Claims-Edit (P7); the other ~4,850 are real negatives for DiffSeg30k, each at a size drawn from the measured sizes of DiffSeg30k's training images (Lanczos resize by the smallest factor that covers it, centre crop; decision of 14 Nov 2026) |
 
 How the subsets are chosen:
 
@@ -55,6 +55,35 @@ How the subsets are chosen:
   (P7) and never used for training. COCO negatives with a near-duplicate (pHash Hamming <= 6, raw or
   prepared) in any test set are dropped.
 
+## CP1 decisions confirmed by Dhanush (14 Nov 2026)
+
+1. COCO negatives match DiffSeg30k's measured image sizes (not a fixed 1024 × 1024 crop).
+2. Claims-Edit reservation: 150 COCO photos with a non-crowd car, couch, chair, dining table or
+   laptop covering at least 5% of the image; categories take turns, seed 42.
+3. The 60% metadata criterion uses 5-fold cross-validated balanced accuracy (real vs not real).
+4. Near-duplicate: pHash Hamming distance at most 6 (counts at 0–10 are reported).
+5. Blockiness "clear class difference": a single threshold separates two classes with
+   cross-validated balanced accuracy above 0.60.
+
+After the first CP1 run (FAIL, 14 Nov 2026; see `docs/CHECKPOINTS.md`), Dhanush decided:
+
+6. Training images whose file or pixel hash equals a test image's, or with a near-duplicate
+   (pHash ≤ 6) in any test set, are left out of training; test sets stay as published. Identical
+   images inside the training pool go to the same split.
+7. SID-Set tampered images are left out of training (the agreed blockiness fallback); SID-Set
+   validation (P3b) keeps them.
+8. DiffSeg30k's 5,000 training images with an empty mask (unedited) are real negatives; COCO
+   negatives are kept.
+9. Sampler: real = GenImage 1/3, SID-Set 1/3, COCO 1/6, DiffSeg30k-real 1/6; generated = GenImage
+   2/3, SID-Set 1/3; edited = DiffSeg30k only.
+10. GenImage's blockiness difference is investigated with two diagnostics: separation on the raw
+    files, and the same ratio on the mid-block lines (JPEG has no edges there; an upsampling
+    decoder can).
+
+Staged copies: `stage()` records every local file with its size (`_STAGED_FILES.csv.gz`); CP1
+starts only if the local disk matches that list exactly (none missing, none with another size,
+no extra files).
+
 ## Harmonization of the training data (spec section 8, M1, revision 49)
 
 Within each source every class ends with the compression history of its most compressed class.
@@ -67,9 +96,8 @@ Compression happens once, on the whole image, before the 256 crop
 | SID-Set | Real, synthetic and PNG tampered -> JPEG quality 75, 4:2:0; images already at 75 / 4:2:0 untouched; JPEGs below 75 skipped and counted |
 | DiffSeg30k and COCO negatives | All PNG after preparation -> JPEG with the GenImage real distribution |
 
-Images with a side under 256 are skipped and counted. Sampler (spec section 9): real = GenImage,
-SID-Set, COCO one third each; generated = GenImage two thirds, SID-Set one third; edited =
-DiffSeg30k two thirds, SID-Set one third. DiffSeg30k training images contain only the 6 training
+Images with a side under 256 are skipped and counted. Sampler: see decision 9 above (spec rev 49
+had real = GenImage, SID-Set, COCO one third each; edited = DiffSeg30k two thirds, SID-Set one third). DiffSeg30k training images contain only the 6 training
 editors (mask values 1, 3, 4, 5, 7, 8); validation images with any Glide (6) or Kolors (2) pixel
 are the P2 test set. Validation: 10% of each training source, stratified, seed 42.
 

@@ -351,6 +351,36 @@ def write_tar_shard(
 # --------------------------------------------------------------------------------------
 
 
+STAGED_FILES = "_STAGED_FILES.csv.gz"
+
+
+def write_file_list(dest: Path | str, files: dict[str, int]) -> None:
+    """Record every staged file (relative path, size) next to the copy, atomically."""
+    import csv
+    import gzip
+
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    tmp = dest / (STAGED_FILES + ".part")
+    with gzip.open(tmp, "wt", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["path", "bytes"])
+        for rel in sorted(files):
+            w.writerow([rel, files[rel]])
+    os.replace(tmp, dest / STAGED_FILES)
+
+
+def read_file_list(dest: Path | str) -> dict[str, int] | None:
+    import csv
+    import gzip
+
+    path = Path(dest) / STAGED_FILES
+    if not path.is_file():
+        return None
+    with gzip.open(path, "rt", newline="") as fh:
+        return {r["path"]: int(r["bytes"]) for r in csv.DictReader(fh)}
+
+
 def extract_archive(
     archive: Path | str,
     dest: Path | str,
@@ -358,6 +388,7 @@ def extract_archive(
     reserve_gb: float = DEFAULT_RESERVE_GB,
     names: Iterable[str] | None = None,
     progress: Callable[[str], None] | None = None,
+    index: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Unpack ``archive`` (or only ``names``) into ``dest``; resumable and verified.
 
@@ -370,6 +401,8 @@ def extract_archive(
     report = progress
     with ArchiveReader(archive) as reader:
         members = reader.members()
+        if index is not None:  # every member's local path and size, for the staged file list
+            index.update({safe_member_name(m.name): m.size for m in members})
         if names is not None:
             wanted = set(names)
             members = [m for m in members if m.name in wanted]

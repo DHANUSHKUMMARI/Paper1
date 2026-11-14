@@ -316,4 +316,4 @@ def cp1_overrides(coco_images: int, claims_n: int = 6) -> dict[str, dict[str, An
     for f in files.values():
         f["gb_estimate"] = 0.001
     claims = {**REGISTRY["coco_val2017"].params["claims_edit"], "n": claims_n}
-    return {"coco_val2017": {"files": files, "claims_edit": claims, "negatives_size": 288}}
+    return {"coco_val2017": {"files": files, "claims_edit": claims}}

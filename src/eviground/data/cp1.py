@@ -53,6 +53,7 @@ TEST_ROLES = {
     "test_P3b": "SID-Set validation (P3b)",
     "test_P7": "COCO photos reserved for Claims-Edit (P7)",
 }
+READ_TIMEOUT = "read timeout"  # error recorded for an image whose read never returned
 # Split sizes published on the DiffSeg30k card (read 13 Nov 2026)
 DIFFSEG_CARD_SPLITS = {"train": 28_998, "validation": 6_001}
 
@@ -68,6 +69,8 @@ class CP1Config:
     near_dup_primary: int = hashing.NEAR_DUP_PRIMARY
     near_dup_test_share: float = 0.01  # more than this share of a test set -> stop and ask
     scan_part_rows: int = 2000
+    # blockiness fallback decided on 14 Nov 2026 after the first CP1 run
+    sid_tampered_in_training: bool = False
     stall_s: float = 180.0  # a single image read taking longer is treated as stuck
     scan_retries: int = 2
     diffseg_card_splits: dict[str, int] | None = None
@@ -246,33 +249,53 @@ STAGED_KEYS = ("genimage_sd14", "diffseg30k", "sidset", "coco_val2017")
 
 
 def check_staged(paths: Paths) -> dict[str, Any]:
-    """Every dataset CP1 reads from the local disk must be there in full.
+    """Every dataset CP1 reads from the local disk must be there exactly as staged.
 
     The local copies live on the Colab machine's disk and are gone in a new runtime; without
     this check CP1 would index only what is left and fail much later with a confusing error.
-    Requires ``local_data/<key>/_STAGED.json`` (written by ``stage()`` after verification) and at
-    least as many files on disk as it records.
+    ``stage()`` writes ``_STAGED.json`` and the list of every staged file with its size
+    (``_STAGED_FILES.csv.gz``); the files on disk must match that list exactly: none missing,
+    none with another size, and no extra files the indexers would pick up.
     """
+    from eviground.data.storage import STAGED_FILES, read_file_list
+
     problems, found = [], {}
+    skip = {"_STAGED.json", STAGED_FILES}
     for key in STAGED_KEYS:
         dest = paths.local_data / key
-        marker = dest / "_STAGED.json"
-        if not marker.is_file():
+        if not (dest / "_STAGED.json").is_file():
             problems.append(f"{key}: not staged")
             continue
-        want = int(json.loads(marker.read_text()).get("files", 0))
-        have = sum(
-            1
-            for p in dest.rglob("*")
-            if p.is_file() and p.name != "_STAGED.json" and not p.name.endswith(".part")
-        )
-        found[key] = {"expected": want, "on_disk": have}
-        if have < want:
-            problems.append(f"{key}: {have} of {want} files")
+        listed = read_file_list(dest)
+        if listed is None:
+            problems.append(f"{key}: no list of staged files (staged by an older version)")
+            continue
+        missing, wrong = [], []
+        for rel, size in listed.items():
+            try:
+                if (dest / rel).stat().st_size != size:
+                    wrong.append(rel)
+            except FileNotFoundError:
+                missing.append(rel)
+        extra = []
+        for root, _dirs, names in os.walk(dest):
+            for name in names:
+                if name in skip or name.endswith(".part"):
+                    continue
+                rel = Path(root, name).relative_to(dest).as_posix()
+                if rel not in listed:
+                    extra.append(rel)
+        found[key] = {"files": len(listed), "missing": len(missing), "wrong_size": len(wrong)}
+        found[key]["extra"] = len(extra)
+        for what, items in (("missing", missing), ("with another size", wrong), ("extra", extra)):
+            if items:
+                problems.append(f"{key}: {len(items)} {what} (e.g. {sorted(items)[:3]})")
     if problems:
         raise RuntimeError(
-            "local copies are missing or incomplete (" + "; ".join(problems) + "). This happens "
-            "in a new Colab runtime: run Cell 3 (ensure_data with stage_local=True) first."
+            "local copies are missing or differ from what was staged ("
+            + "; ".join(problems)
+            + "). This happens in a new Colab runtime: run Cell 3 (ensure_data with "
+            "stage_local=True) first."
         )
     return found
 
@@ -333,10 +356,6 @@ def scan_row(row: dict[str, Any]) -> dict[str, Any]:
     out.update(sha256=h["sha256"], pixel_sha256=h.get("pixel_sha256"), phash=h.get("phash"))
     if "error" in h or "error" in info:
         out["error"] = h.get("error") or info.get("error")
-    if row["source"] == "coco" and "error" not in out:
-        with Image.open(io.BytesIO(data)) as img:
-            prepared = harmonize.prepare_like_diffseg(img, row.get("_prep_size", 1024))
-        out["phash_prepared"] = hashing.phash(prepared)
     if row["source"] == "diffseg30k" or (row["source"] == "sidset" and row["mask_path"]):
         out.update(_mask_facts(row["mask_path"]))
     return out
@@ -416,7 +435,7 @@ def scan(
 
     With ``workers > 1`` the images are read by :func:`run_watched`: a read that has not
     returned after ``stall_s`` seconds (a stuck Drive mount) is retried in a fresh process,
-    and after ``retries`` stalls the image is recorded with ``error="read timeout"``."""
+    and after ``retries`` stalls the image is recorded as a read timeout (``READ_TIMEOUT``)."""
     cache.mkdir(parents=True, exist_ok=True)
     by_source: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -469,7 +488,7 @@ def scan(
             _write_csv_gz(path, got, SCAN_COLUMNS)
             results.update({g["uid"]: _typed(g) for g in got})
             if progress:
-                timeouts = sum(1 for g in got if g.get("error") == "read timeout")
+                timeouts = sum(1 for g in got if g.get("error") == READ_TIMEOUT)
                 progress(
                     f"scan {source}: {k + len(part)}/{len(src_rows)} "
                     f"({len(part) / max(time.time() - t0, 1e-6):.0f} images/s"
@@ -480,7 +499,7 @@ def scan(
 
 
 def _timeout_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {"uid": row["uid"], "fingerprint": fingerprint(row), "error": "read timeout"}
+    return {"uid": row["uid"], "fingerprint": fingerprint(row), "error": READ_TIMEOUT}
 
 
 # --------------------------------------------------------------------------------------
@@ -497,35 +516,135 @@ def assign_diffseg_roles(rows: list[dict[str, Any]]) -> None:
             continue
         values = splits.parse_editors(r.get("mask_values"))
         r["editors"] = splits.editors_text(values)
-        r["role"] = splits.diffseg_role(r["dataset_split"], values - {0})
+        role = splits.diffseg_role(r["dataset_split"], values - {0})
+        if role == "real_pool":  # an unedited image: a real negative (decision of 14 Nov 2026)
+            role, r["label"] = "train_pool", "real"
+        r["role"] = role
 
 
-def near_dup_filter_coco(rows: list[dict[str, Any]], threshold: int) -> dict[str, Any]:
-    """Drop COCO negatives with a near-duplicate in any test set (raw or prepared pHash)."""
-    test = [r for r in rows if r["role"].startswith("test_") and r.get("phash") is not None]
-    ref = hashing.as_uint64([r["phash"] for r in test])
-    coco = [r for r in rows if r["source"] == "coco" and r["role"] == "train_pool"]
-    if not coco:
-        return {"checked": 0, "dropped": 0}
-    d_raw, i_raw = hashing.min_hamming(hashing.as_uint64([r["phash"] for r in coco]), ref)
-    d_prep, i_prep = hashing.min_hamming(
-        hashing.as_uint64([r.get("phash_prepared") or r["phash"] for r in coco]), ref
+def _coco_prepared_phash(row: dict[str, Any]) -> dict[str, Any]:
+    """pHash of a COCO photo after preparation at its target size (worker process)."""
+    try:
+        with Image.open(row["path"]) as img:
+            prepared = harmonize.prepare_to_size(img, (row["prep_w"], row["prep_h"]))
+        return {"phash_prepared": hashing.phash(prepared)}
+    except Exception as exc:
+        return {"error": f"prepare: {type(exc).__name__}"}
+
+
+def prepare_coco_negatives(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[str, Any]:
+    """Give every COCO negative a size drawn from the measured sizes of the DiffSeg30k
+    training images (decision of 14 Nov 2026) and its pHash after that preparation."""
+    sizes = harmonize.SizeDistribution.measure(
+        (r["width"], r["height"])
+        for r in rows
+        if r["source"] == "diffseg30k"
+        and r["role"] == "train_pool"
+        and r["label"] == "edited"
+        and r.get("width")
     )
-    dropped = Counter()
-    examples = []
-    for r, dr, ir, dp, ip in zip(coco, d_raw, i_raw, d_prep, i_prep, strict=True):
-        d, i = (dr, ir) if dr <= dp else (dp, ip)
-        if d <= threshold:
-            r["role"] = "excluded_near_dup_test"
-            dropped[test[i]["role"]] += 1
-            if len(examples) < 20:
-                examples.append({"coco": r["uid"], "test": test[i]["uid"], "hamming": int(d)})
+    coco = [r for r in rows if r["source"] == "coco" and r["role"] == "train_pool"]
+    kinds: Counter[str] = Counter()
+    for r in coco:
+        r["prep_w"], r["prep_h"] = sizes.sample(r["uid"], cfg.seed)
+        if r.get("width"):
+            kinds[harmonize.resampling((r["width"], r["height"]), (r["prep_w"], r["prep_h"]))] += 1
+    tasks = [
+        {"uid": r["uid"], "path": r["path"], "prep_w": r["prep_w"], "prep_h": r["prep_h"]}
+        for r in coco
+        if not r.get("error")
+    ]
+    if cfg.workers > 1 and tasks:
+        got = run_watched(
+            _coco_prepared_phash,
+            tasks,
+            cfg.workers,
+            stall_s=cfg.stall_s,
+            retries=cfg.scan_retries,
+            on_timeout=lambda t: {"error": READ_TIMEOUT},
+            describe=lambda t: t["uid"],
+        )
+    else:
+        got = [_coco_prepared_phash(t) for t in tasks]
+    by_uid = {t["uid"]: g for t, g in zip(tasks, got, strict=True)}
+    for r in coco:
+        res = by_uid.get(r["uid"])
+        if isinstance(res, dict) and "phash_prepared" in res:
+            r["phash_prepared"] = res["phash_prepared"]
+        else:
+            r["phash_prepared"] = None
+            r["error"] = r.get("error") or (res or {}).get("error", "prepare failed")
+    targets: Counter[str] = Counter(f"{r['prep_w']}x{r['prep_h']}" for r in coco)
     return {
-        "checked": len(coco),
-        "dropped": int(sum(dropped.values())),
-        "dropped_by_test_set": dict(dropped),
-        "threshold": threshold,
-        "examples": examples,
+        "size_policy": "sizes drawn from DiffSeg30k training images (decision of 14 Nov 2026)",
+        "diffseg30k_sizes": sizes.summary(),
+        "target_sizes_top": dict(targets.most_common(10)),
+        "resampling": dict(sorted(kinds.items())),
+    }
+
+
+def filter_training_leaks(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[str, Any]:
+    """Remove leaks from the training pool only; test sets stay as published (decisions of
+    14 Nov 2026 after the first CP1 run).
+
+    - SID-Set tampered images (blockiness fallback, unless ``cfg.sid_tampered_in_training``);
+    - training images whose file or pixel hash equals a test image's;
+    - training images with a near-duplicate (pHash Hamming <= ``cfg.near_dup_primary``) in any
+      test set; COCO negatives are also compared after their preparation.
+    """
+    pool = [r for r in rows if r["role"] == "train_pool"]
+    sid_out = 0
+    if not cfg.sid_tampered_in_training:
+        for r in pool:
+            if r["source"] == "sidset" and r["label"] == "edited":
+                r["role"] = "excluded_sid_tampered"
+                sid_out += 1
+    test = [r for r in rows if r["role"].startswith("test_")]
+    test_hash: dict[str, str] = {}
+    for r in test:
+        for key in ("sha256", "pixel_sha256"):
+            if r.get(key):
+                test_hash.setdefault(r[key], r["role"])
+    exact: Counter[str] = Counter()
+    exact_examples = []
+    for r in pool:
+        if r["role"] != "train_pool":
+            continue
+        hit = test_hash.get(r.get("sha256") or "") or test_hash.get(r.get("pixel_sha256") or "")
+        if hit:
+            r["role"] = "excluded_dup_test"
+            exact[f"{r['source']} -> {hit}"] += 1
+            if len(exact_examples) < 20:
+                exact_examples.append(r["uid"])
+    test_ph = [r for r in test if r.get("phash") is not None]
+    ref = hashing.as_uint64([r["phash"] for r in test_ph])
+    cand = [r for r in pool if r["role"] == "train_pool" and r.get("phash") is not None]
+    near: Counter[str] = Counter()
+    near_examples = []
+    if cand and test_ph:
+        d_raw, i_raw = hashing.min_hamming(hashing.as_uint64([r["phash"] for r in cand]), ref)
+        d_prep, i_prep = hashing.min_hamming(
+            hashing.as_uint64([r.get("phash_prepared") or r["phash"] for r in cand]), ref
+        )
+        for r, dr, ir, dp, ip in zip(cand, d_raw, i_raw, d_prep, i_prep, strict=True):
+            d, i = (dr, ir) if dr <= dp else (dp, ip)
+            if d <= cfg.near_dup_primary:
+                r["role"] = "excluded_near_dup_test"
+                near[f"{r['source']} -> {test_ph[i]['role']}"] += 1
+                if len(near_examples) < 20:
+                    near_examples.append(
+                        {"train": r["uid"], "test": test_ph[i]["uid"], "hamming": int(d)}
+                    )
+    return {
+        "training_pool_before": len(pool),
+        "sid_tampered_left_out": sid_out,
+        "exact_duplicates_of_test": int(sum(exact.values())),
+        "exact_by_source_and_test_set": dict(sorted(exact.items())),
+        "exact_examples": exact_examples,
+        "near_duplicates_of_test": int(sum(near.values())),
+        "near_by_source_and_test_set": dict(sorted(near.items())),
+        "near_examples": near_examples,
+        "threshold": cfg.near_dup_primary,
     }
 
 
@@ -549,6 +668,18 @@ def assign_splits(rows: list[dict[str, Any]], seed: int) -> None:
         out = splits.stratified_val([r["uid"] for r in rs], strata, seed=seed)
         for r, s in zip(rs, out, strict=True):
             r["split"] = s
+    # identical images inside the training pool go to one split (that of their first uid)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for rs in pool.values():
+        for r in rs:
+            for key in ("sha256", "pixel_sha256"):
+                if r.get(key):
+                    groups.setdefault(f"{key}:{r[key]}", []).append(r)
+    for members in groups.values():
+        if len({m["split"] for m in members}) > 1:
+            first = min(members, key=lambda m: m["uid"])
+            for m in members:
+                m["split"] = first["split"]
 
 
 def exact_duplicates(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -631,7 +762,9 @@ def near_duplicates(rows: list[dict[str, Any]], cfg: CP1Config) -> dict[str, Any
 
 
 def class_counts(rows: list[dict[str, Any]], paths: Paths, cfg: CP1Config) -> dict[str, Any]:
-    found = Counter((r["source"], r["dataset_split"], r["label"]) for r in rows)
+    found = Counter(
+        (r["source"], r["dataset_split"], r.get("indexed_label", r["label"])) for r in rows
+    )
     expected: dict[tuple[str, str, str], int] = {}
     ds = paths.datasets
     # GenImage SD v1.4 subset: manifest.csv on Drive
@@ -681,24 +814,22 @@ def class_counts(rows: list[dict[str, Any]], paths: Paths, cfg: CP1Config) -> di
 # --------------------------------------------------------------------------------------
 
 
-def _plan_info(r: dict[str, Any], prep_size: int) -> dict[str, Any]:
-    if r["source"] == "coco":  # prepared like DiffSeg30k: a lossless 1024x1024 image
-        return {"format": "png", "width": prep_size, "height": prep_size}
+def _plan_info(r: dict[str, Any]) -> dict[str, Any]:
+    if r["source"] == "coco":  # prepared at a DiffSeg30k size: a lossless image of that size
+        return {"format": "png", "width": r["prep_w"], "height": r["prep_h"]}
     return {
         k: r.get(k) for k in ("format", "width", "height", "jpeg_quality", "subsampling", "error")
     }
 
 
 def plan_rows(
-    rows: list[dict[str, Any]], dist: harmonize.QualityDistribution, seed: int, prep_size: int
+    rows: list[dict[str, Any]], dist: harmonize.QualityDistribution, seed: int
 ) -> dict[str, Any]:
     summary: dict[str, Counter] = {}
     for r in rows:
         if r.get("split") not in ("train", "val"):
             continue
-        p = harmonize.plan_image(
-            r["source"], r["label"], _plan_info(r, prep_size), r["uid"], dist, seed=seed
-        )
+        p = harmonize.plan_image(r["source"], r["label"], _plan_info(r), r["uid"], dist, seed=seed)
         r["h_action"], r["h_quality"], r["h_subsampling"], r["h_reason"] = (
             p["action"],
             p["quality"],
@@ -721,13 +852,13 @@ def _load_mask(r: dict[str, Any]) -> np.ndarray | None:
     return arr
 
 
-def harmonized_bytes(r: dict[str, Any], prep_size: int) -> bytes | None:
+def harmonized_bytes(r: dict[str, Any]) -> bytes | None:
     """The training file of one row after preparation and harmonization."""
     data = Path(r["path"]).read_bytes()
     plan = {"action": r["h_action"], "quality": r["h_quality"], "subsampling": r["h_subsampling"]}
     if r["source"] == "coco":
         with Image.open(io.BytesIO(data)) as img:
-            prepared = harmonize.prepare_like_diffseg(img, prep_size)
+            prepared = harmonize.prepare_to_size(img, (r["prep_w"], r["prep_h"]))
         if plan["action"] != "compress":
             return harmonize.png_bytes(prepared)
         return harmonize.encode_jpeg(prepared, plan["quality"], plan["subsampling"])
@@ -736,10 +867,10 @@ def harmonized_bytes(r: dict[str, Any], prep_size: int) -> bytes | None:
 
 def sample_row(task: tuple[dict[str, Any], int, int, int, bool]) -> dict[str, Any]:
     """Harmonize one drawn image, take its training crop, measure it (worker process)."""
-    r, draw_seed, prep_size, crop_size, want_block = task
+    r, draw_seed, crop_size, want_block = task
     out: dict[str, Any] = {"uid": r["uid"], "source": r["source"], "label": r["label"]}
     try:
-        hb = harmonized_bytes(r, prep_size)
+        hb = harmonized_bytes(r)
         if hb is None:
             out["error"] = "skipped"
             return out
@@ -771,8 +902,13 @@ def sample_row(task: tuple[dict[str, Any], int, int, int, bool]) -> dict[str, An
         out.update(crop_w=right - left, crop_h=bottom - top, box=[left, top, right, bottom])
         if want_block:
             out["blockiness"] = blockiness(rgb)
+            # mid-block lines (pixel 4 of each 8-pixel block): JPEG puts no edges there, an
+            # upsampling decoder (e.g. a latent-diffusion VAE) can (diagnostic, 14 Nov 2026)
+            out["grid_mid"] = blockiness(rgb, phase=(4, 4))
             raw = np.asarray(Image.open(r["path"]).convert("RGB"))
-            out["blockiness_raw"] = blockiness(raw) if min(raw.shape[:2]) >= 16 else None
+            if min(raw.shape[:2]) >= 16:
+                out["blockiness_raw"] = blockiness(raw)
+                out["grid_mid_raw"] = blockiness(raw, phase=(4, 4))
     except Exception as exc:  # report, never crash the check
         out["error"] = f"{type(exc).__name__}: {exc}"[:200]
     return out
@@ -851,21 +987,9 @@ def _sampler_weighted(
     return values, labels, weights
 
 
-def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
-    ok = [s for s in samples if "error" not in s and s.get("blockiness") is not None]
-    groups: dict[str, list[float]] = {}
-    raw: dict[str, list[float]] = {}
-    for s in ok:
-        groups.setdefault(f"{s['source']}/{s['label']}", []).append(s["blockiness"])
-        if s.get("blockiness_raw") is not None:
-            raw.setdefault(f"{s['source']}/{s['label']}", []).append(s["blockiness_raw"])
-    out: dict[str, Any] = {
-        "metric": "pixel-level 8x8 blockiness of the harmonized whole image (about 1.0 = no "
-        "block artefacts); separation = cross-validated balanced accuracy of the best threshold",
-        "harmonized": {k: shortcut.describe(v) for k, v in sorted(groups.items())},
-        "raw": {k: shortcut.describe(v) for k, v in sorted(raw.items())},
-        "separation": {},
-    }
+def _pair_separations(groups: dict[str, list[float]], seed: int) -> dict[str, float]:
+    """Within each source, threshold separation of every pair of classes (>= 10 values each)."""
+    out: dict[str, float] = {}
     by_source: dict[str, dict[str, list[float]]] = {}
     for key, v in groups.items():
         src, lab = key.split("/")
@@ -877,9 +1001,38 @@ def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]
                 if len(labs[a]) >= 10 and len(labs[b]) >= 10:
                     vals = labs[a] + labs[b]
                     y = [a] * len(labs[a]) + [b] * len(labs[b])
-                    out["separation"][f"{src}: {a} vs {b}"] = round(
-                        shortcut.threshold_cv(vals, y, seed=seed), 4
-                    )
+                    out[f"{src}: {a} vs {b}"] = round(shortcut.threshold_cv(vals, y, seed=seed), 4)
+    return out
+
+
+def blockiness_check(samples: list[dict[str, Any]], seed: int) -> dict[str, Any]:
+    ok = [s for s in samples if "error" not in s and s.get("blockiness") is not None]
+
+    def collect(field: str) -> dict[str, list[float]]:
+        g: dict[str, list[float]] = {}
+        for s in ok:
+            if s.get(field) is not None:
+                g.setdefault(f"{s['source']}/{s['label']}", []).append(s[field])
+        return g
+
+    groups, raw = collect("blockiness"), collect("blockiness_raw")
+    mid, mid_raw = collect("grid_mid"), collect("grid_mid_raw")
+    out: dict[str, Any] = {
+        "metric": "pixel-level 8x8 blockiness of the harmonized whole image (about 1.0 = no "
+        "block artefacts); separation = cross-validated balanced accuracy of the best threshold",
+        "harmonized": {k: shortcut.describe(v) for k, v in sorted(groups.items())},
+        "raw": {k: shortcut.describe(v) for k, v in sorted(raw.items())},
+        "separation": _pair_separations(groups, seed),
+        # diagnostics (14 Nov 2026): does a difference exist before harmonization, and is it at
+        # the block boundaries only (JPEG) or also mid-block (an upsampling generator)?
+        "raw_separation": _pair_separations(raw, seed),
+        "grid_mid": {
+            "metric": "same ratio measured on the lines at pixel 4 of each 8-pixel block",
+            "harmonized": {k: shortcut.describe(v) for k, v in sorted(mid.items())},
+            "raw": {k: shortcut.describe(v) for k, v in sorted(mid_raw.items())},
+            "raw_separation": _pair_separations(mid_raw, seed),
+        },
+    }
     # Pooled over sources, each (class, source) group weighted by its sampler share, so the
     # comparison sees the same mix of sources as training (SID-Set one third of every class).
     pooled = _sampler_weighted(groups)
@@ -913,7 +1066,6 @@ def make_grids(
     rows_by_uid: dict[str, dict[str, Any]],
     out_dir: Path,
     grid: int,
-    prep_size: int,
 ) -> dict[str, Any]:
     """A grid x grid sheet of harmonized training crops per class (edited: with a mask sheet)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -928,7 +1080,7 @@ def make_grids(
         tiles = []
         for k, s in enumerate(picks):
             r = rows_by_uid[s["uid"]]
-            hb = harmonized_bytes(r, prep_size)
+            hb = harmonized_bytes(r)
             with Image.open(io.BytesIO(hb)) as img:
                 tile = img.convert("RGB").crop(tuple(s["box"]))
             sheet.paste(tile, ((k % grid) * size, (k // grid) * size))
@@ -1051,6 +1203,8 @@ MANIFEST_COLUMNS = [
     "pixel_sha256",
     "phash",
     "phash_prepared",
+    "prep_w",
+    "prep_h",
     "mask_values",
     "h_action",
     "h_quality",
@@ -1089,7 +1243,6 @@ def run_cp1(
     )
     if not coco:
         raise RuntimeError("coco_val2017 is not verified; run ensure_data first")
-    prep = int(coco["negatives_size"])
     reserved = reserve_claims_edit(coco_instances(paths.datasets), coco["claims_edit"])
     say(f"Claims-Edit: {len(reserved)} COCO photos reserved")
 
@@ -1101,8 +1254,7 @@ def run_cp1(
         + index_coco(local, set(reserved))
     )
     for r in rows:
-        if r["source"] == "coco":
-            r["_prep_size"] = prep
+        r["indexed_label"] = r["label"]  # DiffSeg30k unedited images later become "real"
     say(f"indexed {len(rows)} images: {_counts(rows, 'source')}")
     facts = scan(
         rows,
@@ -1116,7 +1268,14 @@ def run_cp1(
     for r in rows:
         r.update({k: v for k, v in facts[r["uid"]].items() if k != "uid"})
     assign_diffseg_roles(rows)
-    coco_filter = near_dup_filter_coco(rows, cfg.near_dup_primary)
+    negatives = prepare_coco_negatives(rows, cfg)
+    say(f"COCO negatives sized like DiffSeg30k: {negatives['resampling']}")
+    leaks = filter_training_leaks(rows, cfg)
+    say(
+        f"left out of training: {leaks['exact_duplicates_of_test']} exact and "
+        f"{leaks['near_duplicates_of_test']} near duplicates of test images, "
+        f"{leaks['sid_tampered_left_out']} SID-Set tampered"
+    )
     assign_splits(rows, cfg.split_seed)
     say("roles and splits assigned")
 
@@ -1130,7 +1289,7 @@ def run_cp1(
         if r["source"] == "genimage" and r["label"] == "real" and r["split"] == "train"
     ]
     dist = harmonize.QualityDistribution.measure(real_train)
-    plan = plan_rows(rows, dist, cfg.seed, prep)
+    plan = plan_rows(rows, dist, cfg.seed)
     say("harmonization planned")
 
     eligible = [
@@ -1153,7 +1312,7 @@ def run_cp1(
             block_quota[key] += 1
             measured.add(r["uid"])
         clean = {kk: vv for kk, vv in r.items() if not kk.startswith("_")}
-        tasks.append((clean, cfg.seed * 1_000_003 + k, prep, crops.CROP, want))
+        tasks.append((clean, cfg.seed * 1_000_003 + k, crops.CROP, want))
     say(f"harmonizing and cropping {len(tasks)} sampled images")
     if cfg.workers > 1:
         with ProcessPoolExecutor(max_workers=cfg.workers) as pool:
@@ -1163,7 +1322,7 @@ def run_cp1(
     errors = Counter(s["error"] for s in samples if "error" in s)
     meta = metadata_check(samples, cfg.seed)
     block = blockiness_check(samples, cfg.seed)
-    grids = make_grids(samples, {r["uid"]: r for r in rows}, out_dir, cfg.grid, prep)
+    grids = make_grids(samples, {r["uid"]: r for r in rows}, out_dir, cfg.grid)
     edited_shares = [
         s["edited_share"] for s in samples if s.get("edited_share") is not None and "error" not in s
     ]
@@ -1205,12 +1364,17 @@ def run_cp1(
             "scan_errors": _counts([r for r in rows if r.get("error")], "source", "error"),
         },
         "class_counts": counts,
+        "training_leak_filter": leaks,
         "exact_duplicates": dups,
         "near_duplicates": near,
         "coco_negatives": {
             "reserved_claims_edit_ids": reserved,
-            "near_dup_filter": coco_filter,
-            "prepared_size": prep,
+            "near_dup_filter": {
+                k: v
+                for k, v in leaks["near_by_source_and_test_set"].items()
+                if k.startswith("coco")
+            },
+            **negatives,
         },
         "diffseg30k_masks": masks,
         "sidset_masks": sid_mask_report(rows),

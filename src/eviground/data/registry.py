@@ -104,7 +104,8 @@ REGISTRY: dict[str, DatasetSpec] = {
         folder="06_COCO",
         method="url_files",
         source="https://cocodataset.org (images.cocodataset.org)",
-        role="Real negatives for DiffSeg30k (about 4,850, prepared like its base images) and the "
+        role="Real negatives for DiffSeg30k (about 4,850, at sizes drawn from DiffSeg30k's "
+        "measured image sizes, decision of 14 Nov 2026) and the "
         "150 real photos reserved for the Claims-Edit case study (decision of 13 Nov 2026)",
         licence="COCO images: Flickr terms of use; annotations CC-BY-4.0",
         citation="Lin et al., Microsoft COCO, ECCV 2014",
@@ -130,7 +131,6 @@ REGISTRY: dict[str, DatasetSpec] = {
                 "min_area_share": 0.05,
                 "seed": 42,
             },
-            "negatives_size": 1024,
         },
     ),
     "brgen": DatasetSpec(

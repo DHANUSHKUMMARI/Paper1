@@ -63,7 +63,7 @@ Tests (`tests/test_trainer.py`, 14, CPU, tiny CLIP on the fake-world shards):
 
 Sandbox runs:
 - `ruff check src tests scripts` and `ruff format --check`: clean.
-- `python -m pytest -q`: 327 passed (14 new).
+- `python -m pytest -q`: 330 passed (14 new; on PR B with its review fixes).
 - `python -m eviground.utils.repo_audit`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 00–05: passed. The dry run of 05 runs every
   cell on the CPU with the tiny CLIP: kill and resume passes there. The overfit and timing checks

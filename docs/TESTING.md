@@ -3,6 +3,46 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 3, PR B — packed shards, datasets, augmentation — 2026-11-15
+
+Modules (decisions of 15 Nov 2026): `data/pack.py` writes the training and validation images that
+harmonization keeps as their **harmonized bytes** (`cp1.harmonized_bytes`: the CP1 plan, COCO
+prepared to its DiffSeg30k size) into ~1 GB tar shards per source, plus a **1-bit PNG edit mask**
+for every edited image (CP1 reading rule: an AI base's value read as 0); `index.parquet` holds one
+row per image (labels, roles, generator / editors, byte offsets of image and mask, `mask_base`,
+`valid_crop`, the mask-rule version); `_DONE.json` holds the counts, the manifest sha256 and the
+size estimate. Before writing, the shard size is estimated from a seeded sample per source and
+packing stops (`PackSpaceError`, stop and ask) if Drive free space < estimate + 10 GB. Shards are
+written atomically with a side-car index, so an interrupted pack resumes; with `_DONE.json` for the
+same manifest nothing is read again. `data/datasets.py` (`ForensicDataset`) reads by offset and
+decodes (no harmonization at load time, no local cache): training follows a deterministic plan per
+(seed, epoch) with the sampler shares, `edited_crop` on the (resized) edit mask and replacement of
+failed draws (`epoch.epoch_plan`); edited images with `valid_crop` False are left out and listed;
+validation has one fixed crop per image from (seed, uid), no augmentation; the detection profile
+has GenImage real and generated only. `data/transforms.py` (`Augment`): resize 0.5–1.5× before
+the crop (p 0.3, short side ≥ 256, mask nearest), flip (p 0.5), JPEG 60–100 (p 0.5), blur σ 0–2
+(p 0.2), noise σ 0–3/255 (p 0.2); `Augment(enabled=False)` switches it off. `epoch.CropFn` may now
+return any crop spec (here box + resize factor).
+
+Tests (`tests/test_data_pipeline.py`, 19, CPU, ~13 s, on the fake CP1 world): the shards hold
+exactly the kept training and validation images, no test or excluded row; no held-out uid and no
+Glide/Kolors name; packed bytes equal a fresh harmonization for every packed image of every source
+(coco, diffseg30k, genimage, sidset); shard round trip by offset; the stored edit mask equals
+`edit_mask(mask, mask_base) > 0`, 1-bit, with the rule version; the free-space stop (also before
+anything is written); no source image read when `_DONE` exists; a shard cut off mid-write is
+rewritten and the rest skipped; training crops are 256 × 256 inside the (resized) image, never
+padded; edited crops hold 1–90% edited pixels; class ratio exactly 1 : 1 : 1 and every source
+share within ±5% over 3,000 draws; plans and items identical across instances (resume at any
+item) and different between epochs; never-valid edited images left out and listed; validation
+crops fixed across instances and epochs; the detection profile; flip and resize keep image and
+mask aligned (> 98% agreement on a test pattern); augmentation off returns the crop unchanged;
+photometric steps are seeded.
+
+Sandbox runs: `ruff check src tests`, `ruff format --check src tests`, `python -m pytest -q` →
+313 passed. Fake-world pack: 73 images, 21 shards, estimate 3.29 MB vs 3.33 MB written,
+`verify_sample` 73 / 73 equal. Not run here: packing the real data on Drive (notebook 04, PR C),
+loader throughput (CP2 notebook).
+
 ## Milestone 3, PR A — model M1–M4 and losses — 2026-11-15
 
 Modules (spec section 8; brief M1–M4): `models/views.py` (RGB 224 CLIP-normalised; SRM with the

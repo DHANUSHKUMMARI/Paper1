@@ -22,10 +22,25 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-14 | CP1 run 4 (`01`, commit `0f8b35c`), Cells 1–5 | none (CPU runtime) | 1.169 (70.1 min) | not recorded | not recorded | **CP1 PASS** (spec-review design): 0 cross-split duplicates; counts equal; metadata 0.5055; no stop; `.jsonl` keys only file names; q75 share 0.363 / 0.370 / 0.365 |
 | 2026-11-14 | Crop diagnostic (`02`, commit `b087db6`), Cells 1–4 | none (CPU runtime) | 0.343 (20.6 min) | not recorded | not recorded | Run 4 reproduced (1,585 of 3,000 edited draws failed); 1,583 failed above 90%, 2 below 1%; 5,930 of 11,382 edited training images have no valid window; median edited share 100% (1,048,576 px) |
 | 2026-11-14 | CP1 run 5 (`01`, commit `9a134bc`), Cells 1–5 | none (CPU runtime) | 1.478 (88.7 min) | not recorded | not recorded | **CP1 PASS** (accepted): criteria met (metadata 0.5071); stop flag base disagreement 13.1% accepted by Dhanush; P2 2,434 (1,287 real-base); 68 of 3,000 edited draws failed, all replaced |
+| 2026-11-15 | Pack training shards (`04`, commit `7c7dcfb`), Cells 1–5 | none (CPU runtime) | 1.239 (74.3 min; about 44 min of it staging the four sources) | 0.10 (1.239 h × 0.08 CU/h, the rate shown in Colab's resource panel) | 88 (balance read in Colab after the run) | 116,759 images in 18 shards, 15.75 GB (estimate 16.30 GB); 11,779 edit masks; packed bytes equal a fresh harmonization for 800 / 800 sampled images (200 per source); index sha256 `1085a527…` |
 
 ## Runs
 
 No training or evaluation run has been made yet.
+
+### Training shards (Milestone 3), 15 Nov 2026
+
+From Drive `Paper 1/runs/checkpoints/pack_shards.json` (notebook 04, commit `7c7dcfb`):
+
+- Manifest: CP1 run 5 (`manifest_sha256` `ef4f4f12…`); mask rule "diffseg30k: AI-generated base read
+  as 0 (border + most frequent value), v1, 14 Nov 2026"; `index_sha256` `1085a527…`.
+- 116,759 images (train / val): COCO real 4,340 / 483; DiffSeg30k edited 10,602 / 1,177 and real
+  4,344 / 479; GenImage generated 35,937 / 3,993 and real 32,139 / 3,597; SID-Set generated 8,890 / 988
+  and real 8,804 / 986. Edit masks: 11,779 (every edited image, no other).
+- 18 shards, 15.75 GB on Drive (estimate 16.30 GB: 3.5% above); Drive quota free before: 5,250.8 GB.
+- Check: packed bytes equal a fresh harmonization (and the stored edit mask the CP1 mask) for 200
+  seeded images of each source: 0 mismatches.
+- The session record's `drive_free_gb` (109.8) is the Colab file system's figure, not the quota.
 
 ### Data downloads (Milestone 2), 12–13 Nov 2026
 

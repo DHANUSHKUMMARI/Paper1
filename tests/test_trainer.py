@@ -136,6 +136,10 @@ def test_kill_and_resume_gives_the_same_steps(full_run, packed, tmp_path):  # no
         assert a["first_uid"] == b["first_uid"]
         la, lb = float(a["loss_total"]), float(b["loss_total"])
         assert abs(la - lb) <= 0.01 * abs(la), (step, la, lb)
+    # the epoch's train loss covers all its micro-batches, also across the kill
+    full_m, cut_m = _rows(run_dir / "metrics.csv"), _rows(tmp_path / "metrics.csv")
+    for x, y in zip(full_m, cut_m, strict=True):
+        assert float(x["train_total"]) == pytest.approx(float(y["train_total"]), rel=0.01)
 
 
 def test_an_interrupted_save_keeps_the_previous_checkpoint(tmp_path, monkeypatch):
@@ -281,3 +285,40 @@ def test_selection_score_for_both_profiles():
     assert metrics.selection_score("unified", labels, probs, None)["selection"] == 1.0
     det = metrics.selection_score("detection", labels, probs, None)
     assert det["selection"] == det["det_auc"] == 1.0
+
+
+def test_a_resume_with_another_profile_or_seed_stops(full_run, packed, tmp_path):  # noqa: F811
+    _tr, _out, run_dir = full_run
+    det = Trainer(
+        _cfg(), packed["out"], tmp_path / "d", seed=42, profile="detection", log=None, resume=None
+    )
+    with pytest.raises(ckpt.CheckpointMismatch, match="profile"):
+        det.resume(run_dir / "last.pt")
+    state = ckpt.load(run_dir / "last.pt")
+    state["seed"] = 123
+    ckpt.save(tmp_path / "other_seed.pt", state)
+    same = Trainer(_cfg(), packed["out"], tmp_path / "s", seed=42, log=None, resume=None)
+    with pytest.raises(ckpt.CheckpointMismatch, match="seed"):
+        same.resume(tmp_path / "other_seed.pt")
+
+
+def test_a_short_last_accumulation_group_is_scaled_by_its_size(packed, tmp_path):  # noqa: F811
+    tr = Trainer(_cfg(**{"train.grad_accum": 4}), packed["out"], tmp_path, log=None, resume=None)
+    assert tr.micro_per_epoch == 6 and tr.steps_per_epoch == 2
+    sizes = []
+    for k in range(tr.micro_per_epoch):
+        tr.state["step_in_epoch"] = k
+        sizes.append(tr._group_size())
+    assert sizes == [4, 4, 4, 4, 2, 2]
+
+
+def test_max_steps_then_resume_keeps_the_epoch_loss(full_run, packed, tmp_path):  # noqa: F811
+    _tr, _out, run_dir = full_run
+    first = _trainer(packed, tmp_path)
+    first.fit(max_steps=3)  # stops inside epoch 0 (6 steps)
+    again = _trainer(packed, tmp_path)
+    assert again.state["epoch_micro"] == 3
+    again.fit()
+    want, got = _rows(run_dir / "metrics.csv"), _rows(tmp_path / "metrics.csv")
+    for x, y in zip(want, got, strict=True):
+        assert float(x["train_total"]) == pytest.approx(float(y["train_total"]), rel=0.01)

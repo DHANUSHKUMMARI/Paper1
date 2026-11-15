@@ -169,6 +169,10 @@ class Trainer:
             "bad_epochs": 0,
             "stopped": False,
             "gpu_seconds": 0.0,
+            # running loss sums of the current epoch (kept in checkpoints, so a resumed epoch
+            # reports the mean over all its micro-batches)
+            "epoch_loss_sums": dict.fromkeys(LOSS_TERMS, 0.0),
+            "epoch_micro": 0,
         }
         OmegaConf.save(OmegaConf.create(self.cfg), self.run_dir / "config.yaml")
         if resume:
@@ -210,6 +214,12 @@ class Trainer:
                 raise FileNotFoundError(path)
             return False
         state = ckpt.load(path)
+        for key, now in (("profile", self.profile), ("seed", self.seed)):
+            if state.get(key) != now:
+                raise ckpt.CheckpointMismatch(
+                    f"the checkpoint was trained with {key} {state.get(key)!r}, this run uses "
+                    f"{now!r}: stop"
+                )
         ckpt.restore_model(
             self.model, state, clip_revision=self.clip_revision, clip_sha256=self.clip_sha256
         )
@@ -281,17 +291,16 @@ class Trainer:
         workers = int(self.cfg.get("data", {}).get("num_workers", 0))
         self.train_ds.set_epoch(ep)
         self.model.train()
-        sums = dict.fromkeys(LOSS_TERMS, 0.0)
-        n_micro = 0
+        sums = self.state["epoch_loss_sums"]
         self._t0 = time.time()
         start = self.state["step_in_epoch"] * self.batch
         self.optimizer.zero_grad(set_to_none=True)
         for batch in self.loader(self.train_ds, start, self.batch, workers):
             _out, loss = self._loss(batch)
-            self.scaler.scale(loss["total"] / self.accum).backward()
+            self.scaler.scale(loss["total"] / self._group_size()).backward()
             for k in LOSS_TERMS:
                 sums[k] += float(loss[k].detach())
-            n_micro += 1
+            self.state["epoch_micro"] += 1
             self.state["step_in_epoch"] += 1
             last_micro = self.state["step_in_epoch"] == self.micro_per_epoch
             if self.state["step_in_epoch"] % self.accum and not last_micro:
@@ -301,7 +310,14 @@ class Trainer:
             if self._after_step(max_steps):
                 return {}, True
         self._add_time(self._t0)
-        return {k: v / max(n_micro, 1) for k, v in sums.items()}, False
+        n = max(self.state["epoch_micro"], 1)
+        return {k: v / n for k, v in sums.items()}, False
+
+    def _group_size(self) -> int:
+        """Micro-batches in the accumulation group of the next micro-batch: ``grad_accum``, or
+        fewer for the last group of an epoch whose length is not a multiple of it."""
+        first = self.state["step_in_epoch"] // self.accum * self.accum
+        return min(self.accum, self.micro_per_epoch - first)
 
     def _clipped_step(self) -> None:
         """Unscale, clip at ``train.grad_clip``, step, clear the gradients."""
@@ -342,6 +358,8 @@ class Trainer:
         else:
             self.state["bad_epochs"] += 1
         self.state["epoch"], self.state["step_in_epoch"] = ep + 1, 0
+        self.state["epoch_loss_sums"] = dict.fromkeys(LOSS_TERMS, 0.0)
+        self.state["epoch_micro"] = 0
         self.state["stopped"] = self.state["bad_epochs"] >= patience
         self._write_metrics(ep, train, val)
         if improved:

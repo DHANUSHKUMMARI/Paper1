@@ -147,12 +147,11 @@ class Trainer:
         self.steps_per_epoch = math.ceil(self.micro_per_epoch / self.accum)
 
         oc = dict(self.cfg.get("optim", {}))
-        self.optimizer = torch.optim.AdamW(
-            self.model.param_groups(
-                float(oc.get("lr", 1e-4)),
-                float(oc.get("lr_lora", 5e-5)),
-                float(oc.get("weight_decay", 0.05)),
-            )
+        lr, wd = float(oc.get("lr", 1e-4)), float(oc.get("weight_decay", 0.05))
+        self.optimizer = torch.optim.AdamW(  # each group sets its own lr; LoRA's is lr_lora
+            self.model.param_groups(lr, float(oc.get("lr_lora", 5e-5)), wd),
+            lr=lr,
+            weight_decay=wd,
         )
         total = self.epochs * self.steps_per_epoch
         warm = max(1, int(float(tc.get("warmup_epochs", 1)) * self.steps_per_epoch))
@@ -267,54 +266,73 @@ class Trainer:
 
     def fit(self, max_steps: int | None = None) -> dict[str, Any]:
         """Train until the last epoch, early stopping or ``max_steps`` optimizer steps."""
-        workers = int(self.cfg.get("data", {}).get("num_workers", 0))
-        every = int(self.cfg.get("checkpoint", {}).get("every_steps", 500))
-        clip = float(self.tc.get("grad_clip", 1.0))
         patience = int(self.tc.get("patience", 4))
         while self.state["epoch"] < self.epochs and not self.state["stopped"]:
             ep = self.state["epoch"]
-            self.train_ds.set_epoch(ep)
-            self.model.train()
-            sums = dict.fromkeys(LOSS_TERMS, 0.0)
-            n_micro = 0
-            t0 = time.time()
-            start = self.state["step_in_epoch"] * self.batch
-            self.optimizer.zero_grad(set_to_none=True)
-            for batch in self.loader(self.train_ds, start, self.batch, workers):
-                _out, loss = self._loss(batch)
-                self.scaler.scale(loss["total"] / self.accum).backward()
-                for k in LOSS_TERMS:
-                    sums[k] += float(loss[k].detach())
-                n_micro += 1
-                self.state["step_in_epoch"] += 1
-                last_micro = self.state["step_in_epoch"] == self.micro_per_epoch
-                if self.state["step_in_epoch"] % self.accum and not last_micro:
-                    continue
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    [p for p in self.model.parameters() if p.requires_grad], clip
-                )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scheduler.step()
-                self.state["global_step"] += 1
-                self._log_step(ep, loss, batch)
-                if self.state["global_step"] % every == 0:
-                    self._add_time(t0)
-                    t0 = time.time()
-                    self.save_step()
-                if self.kill_at_step == self.state["global_step"]:
-                    raise KilledForTest(f"killed after step {self.state['global_step']}")
-                if max_steps is not None and self.state["global_step"] >= max_steps:
-                    self._add_time(t0)
-                    self.save_step()
-                    return self.summary()
-            self._add_time(t0)
-            train_means = {k: v / max(n_micro, 1) for k, v in sums.items()}
-            val = self.validate()
-            self._end_epoch(ep, train_means, val, patience)
+            train_means, reached_max = self._train_epoch(ep, max_steps)
+            if reached_max:
+                return self.summary()
+            self._end_epoch(ep, train_means, self.validate(), patience)
         return self.summary()
+
+    def _train_epoch(self, ep: int, max_steps: int | None) -> tuple[dict[str, float], bool]:
+        """The rest of epoch ``ep`` from the saved position; returns the mean loss terms and
+        whether ``max_steps`` was reached."""
+        workers = int(self.cfg.get("data", {}).get("num_workers", 0))
+        self.train_ds.set_epoch(ep)
+        self.model.train()
+        sums = dict.fromkeys(LOSS_TERMS, 0.0)
+        n_micro = 0
+        self._t0 = time.time()
+        start = self.state["step_in_epoch"] * self.batch
+        self.optimizer.zero_grad(set_to_none=True)
+        for batch in self.loader(self.train_ds, start, self.batch, workers):
+            _out, loss = self._loss(batch)
+            self.scaler.scale(loss["total"] / self.accum).backward()
+            for k in LOSS_TERMS:
+                sums[k] += float(loss[k].detach())
+            n_micro += 1
+            self.state["step_in_epoch"] += 1
+            last_micro = self.state["step_in_epoch"] == self.micro_per_epoch
+            if self.state["step_in_epoch"] % self.accum and not last_micro:
+                continue
+            self._optimizer_step()
+            self._log_step(ep, loss, batch)
+            if self._after_step(max_steps):
+                return {}, True
+        self._add_time(self._t0)
+        return {k: v / max(n_micro, 1) for k, v in sums.items()}, False
+
+    def _clipped_step(self) -> None:
+        """Unscale, clip at ``train.grad_clip``, step, clear the gradients."""
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(
+            [p for p in self.model.parameters() if p.requires_grad],
+            float(self.tc.get("grad_clip", 1.0)),
+        )
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        self.optimizer.zero_grad(set_to_none=True)
+
+    def _optimizer_step(self) -> None:
+        self._clipped_step()
+        self.scheduler.step()
+        self.state["global_step"] += 1
+
+    def _after_step(self, max_steps: int | None) -> bool:
+        """Checkpoint every ``checkpoint.every_steps``; the test kill; True at ``max_steps``."""
+        step = self.state["global_step"]
+        if step % int(self.cfg.get("checkpoint", {}).get("every_steps", 500)) == 0:
+            self._add_time(self._t0)
+            self._t0 = time.time()
+            self.save_step()
+        if self.kill_at_step == step:
+            raise KilledForTest(f"killed after step {step}")
+        if max_steps is not None and step >= max_steps:
+            self._add_time(self._t0)
+            self.save_step()
+            return True
+        return False
 
     def _end_epoch(self, ep: int, train: dict, val: dict, patience: int) -> None:
         score = val.get("selection")
@@ -395,31 +413,20 @@ class Trainer:
         disable_dropout(self.model)
         for g in self.optimizer.param_groups:  # the configured rates, no warm-up or decay
             g["lr"] = g["initial_lr"]
-        clip = float(self.tc.get("grad_clip", 1.0))
+        batches = _cycle(lambda: self.loader(fixed, 0, self.batch, 0))
         history = []
-        step = 0
-        while step < steps:
+        for step in range(1, steps + 1):
             self.model.train()
-            for batch in self.loader(fixed, 0, self.batch, 0):
-                _out, loss = self._loss(batch)
-                self.optimizer.zero_grad(set_to_none=True)
-                self.scaler.scale(loss["total"]).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    [p for p in self.model.parameters() if p.requires_grad], clip
-                )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                step += 1
-                if step % every == 0 or step == steps:
-                    p = self.predict(fixed, self.batch)
-                    acc = float((p["probs"].argmax(1) == p["labels"]).mean())
-                    history.append({"step": step, "loss": float(loss["total"]), "acc": acc})
-                    if acc >= target:
-                        return _overfit_result(rows, history, target, step)
-                    self.model.train()
-                if step >= steps:
-                    break
+            _out, loss = self._loss(next(batches))
+            self.scaler.scale(loss["total"]).backward()
+            self._clipped_step()
+            if step % every and step != steps:
+                continue
+            p = self.predict(fixed, self.batch)
+            acc = float((p["probs"].argmax(1) == p["labels"]).mean())
+            history.append({"step": step, "loss": float(loss["total"]), "acc": acc})
+            if acc >= target:
+                return _overfit_result(rows, history, target, step)
         return _overfit_result(rows, history, target, None)
 
     # ---------------------------------------------------------------- logs
@@ -450,7 +457,7 @@ class Trainer:
         row["best"] = self.state["best"]
         row["bad_epochs"] = self.state["bad_epochs"]
         if "per_source" in val:
-            row.update({k: v for k, v in metrics.metrics_row(ep, val["per_source"]).items()})
+            row.update(metrics.metrics_row(ep, val["per_source"]))
         row.update(self.versions)  # fix 5
         row["clip_revision"] = self.clip_revision
         _append_csv(self.run_dir / "metrics.csv", row)
@@ -479,6 +486,12 @@ class Trainer:
             "clip_sha256": self.clip_sha256,
             **self.versions,
         }
+
+
+def _cycle(make: Callable[[], Any]):
+    """Batches of ``make()`` again and again."""
+    while True:
+        yield from make()
 
 
 def _lr_factor(step: int, warm: int, total: int) -> float:

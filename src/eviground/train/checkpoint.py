@@ -61,10 +61,22 @@ def frozen_clip_sha256(model: nn.Module) -> str:
     return h.hexdigest()
 
 
+def _numpy_state() -> dict[str, Any]:
+    """NumPy's RNG state as plain values and a tensor (loadable with ``weights_only=True``)."""
+    name, keys, pos, has_gauss, cached = np.random.get_state()
+    return {
+        "name": str(name),
+        "keys": torch.from_numpy(np.asarray(keys, dtype=np.int64)),
+        "pos": int(pos),
+        "has_gauss": int(has_gauss),
+        "cached": float(cached),
+    }
+
+
 def rng_state() -> dict[str, Any]:
     state: dict[str, Any] = {
         "python": random.getstate(),
-        "numpy": np.random.get_state(),
+        "numpy": _numpy_state(),
         "torch": torch.get_rng_state(),
     }
     if torch.cuda.is_available():
@@ -74,7 +86,10 @@ def rng_state() -> dict[str, Any]:
 
 def set_rng_state(state: dict[str, Any]) -> None:
     random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
+    n = state["numpy"]
+    np.random.set_state(
+        (n["name"], n["keys"].numpy().astype(np.uint32), n["pos"], n["has_gauss"], n["cached"])
+    )
     torch.set_rng_state(state["torch"])
     if state.get("cuda") is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(state["cuda"])
@@ -100,7 +115,9 @@ def copy(src: Path, dst: Path) -> None:
 
 
 def load(path: Path) -> dict[str, Any]:
-    return torch.load(Path(path), map_location="cpu", weights_only=False)
+    """Tensors and plain Python values only (``weights_only=True``): loading a checkpoint never
+    runs code from the file."""
+    return torch.load(Path(path), map_location="cpu", weights_only=True)
 
 
 def restore_model(

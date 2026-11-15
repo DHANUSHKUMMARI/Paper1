@@ -44,7 +44,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> None:
     args = parse(argv)
     cfg = load_config(args.config, args.overrides)
     seed = args.seed if args.seed is not None else int(cfg.get("seed", 42))
@@ -82,20 +82,19 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(json.dumps(info, indent=1, default=str))
     if args.dry_run:
-        return 0
+        return
     if args.overfit:
         result = trainer.overfit()
         (run_dir / "overfit.json").write_text(json.dumps(result, indent=1))
         print(json.dumps({k: v for k, v in result.items() if k != "history"}, indent=1))
-        return 0
+        return
     try:
         out = trainer.fit(max_steps=args.max_steps)
     except KilledForTest as e:
         print(f"{e}; exiting without cleanup", flush=True)
         os._exit(137)  # like a killed process: no cleanup, no further writes
     print(json.dumps(out, indent=1, default=str))
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

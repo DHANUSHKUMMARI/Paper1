@@ -319,8 +319,11 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
     of the shards).
   - PyTorch warns that the flash-attention backward pass is not deterministic. The resumed run's losses
     stay within 0.024% of the reference.
-  - channels_last is 1.5% faster per training step (0.459 vs 0.466 s), so by the config's rule it can
-    be switched on.
+  - channels_last stays **off** (Dhanush, 15 Nov). The training step was 1.5% faster (0.459 vs
+    0.466 s), but the views stage was 16% slower in the same measurement (0.074 vs 0.064 ms per
+    image), so the difference is within noise.
+  - The run passed the CLIP commit as an override, which is redundant now that `configs/base.yaml`
+    pins it; notebook 05 no longer adds it. Colab ran Python 3.13, so 3.13 joins CI.
 - **Result:** **PASS** on every criterion (script verdict).
 - **Verified by Dhanush:** DHANUSH
 

@@ -44,7 +44,7 @@ Notebooks:
   without channels_last, loader images/s, and a validation pass. It resolves and records the CLIP
   commit hash. Writes `runs/checkpoints/cp2_model_build.json` with the script's verdict.
 
-Tests (`tests/test_trainer.py`, 14, CPU, tiny CLIP on the fake-world shards):
+Tests (`tests/test_trainer.py`, 17, CPU, tiny CLIP on the fake-world shards):
 - a 2-epoch run writes `config.yaml`, `metrics.csv` (with every new column), `steps.csv`,
   `compute.json`, `best.pt` and `last.pt`, and keeps 2 step files;
 - a checkpoint holds BatchNorm buffers, LoRA, no frozen CLIP key, the RNG states and the versions;
@@ -60,10 +60,13 @@ Tests (`tests/test_trainer.py`, 14, CPU, tiny CLIP on the fake-world shards):
 - binary AUC equals the pair count;
 - per-image vs pooled mask F1, IoU and the real-crop numbers;
 - the selection score for both profiles.
+- review fixes: a short last accumulation group is scaled by its own size; a resume with another
+  profile or seed stops; an epoch stopped by `max_steps` or a kill reports its loss over all its
+  micro-batches; checkpoints load with `torch.load(weights_only=True)`.
 
 Sandbox runs:
 - `ruff check src tests scripts` and `ruff format --check`: clean.
-- `python -m pytest -q`: 330 passed (14 new; on PR B with its review fixes).
+- `python -m pytest -q`: 333 passed (17 new, after the SonarCloud and Codex review fixes).
 - `python -m eviground.utils.repo_audit`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 00–05: passed. The dry run of 05 runs every
   cell on the CPU with the tiny CLIP: kill and resume passes there. The overfit and timing checks

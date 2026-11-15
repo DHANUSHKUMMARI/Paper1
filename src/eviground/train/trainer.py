@@ -47,6 +47,7 @@ from eviground.utils.seed import make_generator, seed_everything, seed_worker
 
 CLASS_NAMES = {v: k for k, v in LABELS.items()}
 LOSS_TERMS = ("total", "ce", "bce", "dice", "att")
+LAST = "last.pt"  # the newest checkpoint of a run
 
 
 class NonFiniteLoss(RuntimeError):
@@ -219,11 +220,11 @@ class Trainer:
 
     def save_step(self) -> None:
         path = self.save(f"step_{self.state['global_step']:07d}.pt")
-        ckpt.copy(path, self.run_dir / "last.pt")
+        ckpt.copy(path, self.run_dir / LAST)
         ckpt.rotate(self.run_dir, int(self.cfg.get("checkpoint", {}).get("keep_last", 2)))
 
     def resume(self, which: str | Path) -> bool:
-        path = self.run_dir / "last.pt" if str(which) == "auto" else Path(which)
+        path = self.run_dir / LAST if str(which) == "auto" else Path(which)
         if not path.is_file():
             if str(which) != "auto":
                 raise FileNotFoundError(path)
@@ -310,43 +311,46 @@ class Trainer:
         self._t0 = time.time()
         start = self.state["step_in_epoch"] * self.batch
         self.optimizer.zero_grad(set_to_none=True)
-        bar = self._bar(ep)
-        for batch in self.loader(self.train_ds, start, self.batch, workers):
-            _out, loss = self._loss(batch)
-            self._check_finite(ep, loss)
-            self.scaler.scale(loss["total"] / self._group_size()).backward()
-            for k in LOSS_TERMS:
-                sums[k] += float(loss[k].detach())
-            self.state["epoch_micro"] += 1
-            self.state["step_in_epoch"] += 1
-            last_micro = self.state["step_in_epoch"] == self.micro_per_epoch
-            if self.state["step_in_epoch"] % self.accum and not last_micro:
-                continue
-            grad_norm = self._optimizer_step()
-            if not math.isfinite(grad_norm):
-                self._stop_nonfinite(ep, {"grad_norm": grad_norm})
-            self._log_step(ep, loss, batch, grad_norm)
-            if bar is not None:
-                bar.update(1)
-                if self.state["global_step"] % 10 == 0:
-                    bar.set_postfix(
-                        loss=f"{float(loss['total']):.4f}",
-                        lr=f"{self.optimizer.param_groups[1]['lr']:.2e}",
-                    )
-            if self._after_step(max_steps):
-                if bar is not None:
-                    bar.close()
-                return {}, True
-        if bar is not None:
-            bar.close()
+        with self._bar(ep) as bar:
+            for batch in self.loader(self.train_ds, start, self.batch, workers):
+                loss = self._accumulate(ep, batch, sums)
+                if loss is None:  # inside an accumulation group
+                    continue
+                self._step_and_log(ep, loss, batch, bar)
+                if self._after_step(max_steps):
+                    return {}, True
         self._add_time(self._t0)
         n = max(self.state["epoch_micro"], 1)
         return {k: v / n for k, v in sums.items()}, False
 
-    def _bar(self, ep: int):
-        """A progress bar over the optimizer steps left in epoch ``ep`` (notebooks only)."""
-        if not self.progress:
+    def _accumulate(self, ep: int, batch: dict, sums: dict[str, float]) -> dict | None:
+        """Forward and backward of one micro-batch; its loss terms when an optimizer step follows
+        (the last micro-batch of a group or of the epoch), else None."""
+        _out, loss = self._loss(batch)
+        self._check_finite(ep, loss)
+        self.scaler.scale(loss["total"] / self._group_size()).backward()
+        for k in LOSS_TERMS:
+            sums[k] += float(loss[k].detach())
+        self.state["epoch_micro"] += 1
+        self.state["step_in_epoch"] += 1
+        last_micro = self.state["step_in_epoch"] == self.micro_per_epoch
+        if self.state["step_in_epoch"] % self.accum and not last_micro:
             return None
+        return loss
+
+    def _step_and_log(self, ep: int, loss: dict, batch: dict, bar: Any) -> None:
+        grad_norm = self._optimizer_step(ep)
+        self._log_step(ep, loss, batch, grad_norm)
+        bar.update(1)
+        if self.state["global_step"] % 10 == 0:
+            bar.set_postfix(
+                loss=f"{float(loss['total'].detach()):.4f}",
+                lr=f"{self.optimizer.param_groups[1]['lr']:.2e}",
+            )
+
+    def _bar(self, ep: int):
+        """A progress bar over the optimizer steps left in epoch ``ep`` (shown in notebooks,
+        disabled otherwise)."""
         from tqdm.auto import tqdm
 
         done = self.state["step_in_epoch"] // self.accum
@@ -355,6 +359,7 @@ class Trainer:
             initial=done,
             desc=f"{self.profile} seed {self.seed} epoch {ep + 1}/{self.epochs}",
             unit="step",
+            disable=not self.progress,
         )
 
     def _check_finite(self, ep: int, loss: dict[str, torch.Tensor]) -> None:
@@ -372,7 +377,7 @@ class Trainer:
         step = self.state["global_step"] + 1
         record = {"epoch": ep, "global_step": step, "non_finite": bad}
         (self.run_dir / "nonfinite.json").write_text(json.dumps(record, indent=1))
-        self.save("last.pt")
+        self.save(LAST)
         raise NonFiniteLoss(f"non-finite values at step {step} (epoch {ep}): {bad}")
 
     def _group_size(self) -> int:
@@ -381,21 +386,30 @@ class Trainer:
         first = self.state["step_in_epoch"] // self.accum * self.accum
         return min(self.accum, self.micro_per_epoch - first)
 
-    def _clipped_step(self) -> float:
+    def _clipped_step(self, ep: int | None = None) -> float:
         """Unscale, clip at ``train.grad_clip``, step, clear the gradients; returns the gradient
-        norm before clipping."""
+        norm before clipping.
+
+        With ``ep`` (training), a non-finite norm stops the run **before** the optimizer and the
+        scheduler move (S1), so ``last.pt`` keeps the weights of the previous step. Under fp16
+        the GradScaler is on and skips such a step itself (an overflow lowers the scale), so the
+        run goes on; bf16 and fp32 have no such guard."""
         self.scaler.unscale_(self.optimizer)
-        norm = torch.nn.utils.clip_grad_norm_(
-            [p for p in self.model.parameters() if p.requires_grad],
-            float(self.tc.get("grad_clip", 1.0)),
+        norm = float(
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in self.model.parameters() if p.requires_grad],
+                float(self.tc.get("grad_clip", 1.0)),
+            )
         )
+        if ep is not None and not math.isfinite(norm) and not self.scaler.is_enabled():
+            self._stop_nonfinite(ep, {"grad_norm": str(norm)})
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
-        return float(norm)
+        return norm
 
-    def _optimizer_step(self) -> float:
-        norm = self._clipped_step()
+    def _optimizer_step(self, ep: int | None = None) -> float:
+        norm = self._clipped_step(ep)
         self.scheduler.step()
         self.state["global_step"] += 1
         return norm
@@ -522,14 +536,7 @@ class Trainer:
         target, every = float(oc.get("target", 0.99)), int(oc.get("eval_every", 25))
         mask_target = float(oc.get("mask_target", 0.80))
         rows = _balanced_rows(self.train_ds.rows, n, self.seed)
-        fixed = ForensicDataset(
-            self.shard_dir,
-            "val",
-            rows=[{**r, "split": "val"} for r in rows],
-            crop=self.train_ds.crop,
-            seed=self.seed,
-        )
-        assert not fixed.augment.enabled
+        fixed = self._fixed_crops(rows)
         has_edited = any(r["label"] == "edited" for r in rows)
         disable_dropout(self.model)
         for g in self.optimizer.param_groups:  # the configured rates, no warm-up or decay
@@ -538,19 +545,15 @@ class Trainer:
         history: list[dict[str, Any]] = []
         acc_at = mask_at = None
         for step in range(1, mask_steps + 1):
-            self.model.train()
-            _out, loss = self._loss(next(batches))
-            self.scaler.scale(loss["total"]).backward()
-            self._clipped_step()
+            loss = self._overfit_step(next(batches))
             if step % every and step != mask_steps:
                 continue
-            point = self._overfit_point(fixed, step, float(loss["total"].detach()))
+            point = self._overfit_point(fixed, step, loss)
             history.append(point)
-            if acc_at is None and point["acc"] >= target:
-                acc_at = step
-            if mask_at is None and has_edited and (point["mask_f1"] or 0.0) >= mask_target:
-                mask_at = step
-            if acc_at is not None and (mask_at is not None or not has_edited):
+            acc_at = acc_at or (step if point["acc"] >= target else None)
+            mask_ok = has_edited and (point["mask_f1"] or 0.0) >= mask_target
+            mask_at = mask_at or (step if mask_ok else None)
+            if acc_at and (mask_at or not has_edited):
                 break
         return _overfit_result(
             rows,
@@ -559,6 +562,25 @@ class Trainer:
             acc_at,
             mask_at if has_edited else None,
         )
+
+    def _fixed_crops(self, rows: list[dict[str, Any]]) -> ForensicDataset:
+        """One fixed crop per row (seeded by uid), no augmentation."""
+        fixed = ForensicDataset(
+            self.shard_dir,
+            "val",
+            rows=[{**r, "split": "val"} for r in rows],
+            crop=self.train_ds.crop,
+            seed=self.seed,
+        )
+        assert not fixed.augment.enabled
+        return fixed
+
+    def _overfit_step(self, batch: dict[str, Any]) -> float:
+        self.model.train()
+        _out, loss = self._loss(batch)
+        self.scaler.scale(loss["total"]).backward()
+        self._clipped_step()
+        return float(loss["total"].detach())
 
     def _overfit_point(self, ds: ForensicDataset, step: int, loss: float) -> dict[str, Any]:
         p = self.predict(ds, self.batch)

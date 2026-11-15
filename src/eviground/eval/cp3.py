@@ -195,6 +195,13 @@ def check_r1(best: dict[str, str]) -> dict:
     }
 
 
+def _verdict(statuses: list[str]) -> str:
+    """FAIL if any check fails, else STOP_AND_ASK if any asks, else PASS (REPORT never decides)."""
+    if FAIL in statuses:
+        return FAIL
+    return STOP if STOP in statuses else PASS
+
+
 def evaluate_run(
     run_dir: Path, profile: str, overfit: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -219,7 +226,7 @@ def evaluate_run(
         miou = _num(best.get("val_mask_miou_binary"))
         checks["R2"] = {"status": REPORT, "mask_miou_binary": miou}
     statuses = [c["status"] for c in checks.values()]
-    verdict = FAIL if FAIL in statuses else STOP if STOP in statuses else PASS
+    verdict = _verdict(statuses)
     vs_untrained = {
         k: {"untrained": v, "best": _num(best.get(k))}
         for k, v in UNTRAINED_CP2.items()

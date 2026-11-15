@@ -58,7 +58,7 @@ Tests (`tests/test_cp3.py`, 20, plus the adjusted overfit test in `tests/test_tr
 
 Sandbox runs:
 - `ruff check src tests scripts` and `ruff format --check src tests scripts`: clean.
-- `python -m pytest -p no:warnings`: 365 passed.
+- `python -m pytest -p no:warnings`: 366 passed (after the review fixes below).
 - `python -m eviground.utils.repo_audit`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake`:
   - notebooks 00–05: 8 passed;
@@ -73,6 +73,18 @@ Sandbox runs:
   - validation with the training-subset evaluation;
   - `cp3.evaluate_run`.
   - Everything ran; 56 s in all.
+
+Review fixes (PR #28):
+- Codex: under bf16 and fp32 a non-finite gradient norm stopped the run only after the optimizer
+  and the scheduler had moved, so `last.pt` could hold the bad step's weights. The norm is now
+  checked before the step. Under fp16 the GradScaler skips such a step itself.
+  - New test: a NaN norm at step 3 leaves 2 optimizer calls and `last.pt` at step 2.
+  - The test fails with the guard removed and passes with it.
+- SonarCloud:
+  - `_train_epoch` and `overfit()` split into smaller helpers;
+  - a `LAST` constant replaces the repeated `"last.pt"`;
+  - `cp3._verdict` replaces a nested conditional;
+  - the composite test assertions are split.
 
 Not run here: the L4 times, real convergence, the compute units used, and whether the criteria
 hold on the real data. Notebook 06 records these.

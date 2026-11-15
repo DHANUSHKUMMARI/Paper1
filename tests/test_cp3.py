@@ -14,6 +14,8 @@ pytest.importorskip("timm")
 pytest.importorskip("peft")
 pytest.importorskip("transformers")
 
+import torch  # noqa: E402
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from test_data_pipeline import packed  # noqa: E402, F401  (module fixture: fake-world shards)
@@ -38,8 +40,10 @@ def test_binary_miou_and_generated_crops_by_hand():
     # edited crop: TP 1, FP 1, FN 1, TN 5 -> IoU edited 1/3, IoU background 5/7
     assert s["mask_iou_pooled"] == pytest.approx(1 / 3)
     assert s["mask_miou_binary"] == pytest.approx((1 / 3 + 5 / 7) / 2)
-    assert s["gen_any_pred"] == 1.0 and s["gen_pred_area"] == pytest.approx(1 / 8)
-    assert s["real_any_pred"] == 0.0 and s["real_pred_area"] == 0.0
+    assert s["gen_any_pred"] == 1.0
+    assert s["gen_pred_area"] == pytest.approx(1 / 8)
+    assert s["real_any_pred"] == 0.0
+    assert s["real_pred_area"] == 0.0
 
 
 def test_per_source_mask_report():
@@ -98,7 +102,8 @@ def test_a_run_logs_train_eval_per_source_and_grad_norm(packed, tmp_path):  # no
         assert col in row, col
     steps = _rows(tmp_path / "steps.csv")
     assert all(np.isfinite(float(r["grad_norm"])) for r in steps)
-    assert "still_improving_at_end" in out and out["best_epoch"] is not None
+    assert "still_improving_at_end" in out
+    assert out["best_epoch"] is not None
 
 
 def test_overfit_runs_until_both_targets_and_records_mask_f1(packed, tmp_path, monkeypatch):  # noqa: F811
@@ -113,7 +118,8 @@ def test_overfit_runs_until_both_targets_and_records_mask_f1(packed, tmp_path, m
     res = tr.overfit()  # eval every 2 steps (debug)
     assert res["acc_reached_at_step"] == 4  # within steps=4
     assert res["mask_f1_reached_at_step"] == 6
-    assert res["acc_pass"] is True and res["mask_pass"] is True
+    assert res["acc_pass"] is True
+    assert res["mask_pass"] is True
     assert [h["step"] for h in res["history"]] == [2, 4, 6]  # stopped once both held
     assert res["final_mask_f1"] == 0.85
 
@@ -126,7 +132,8 @@ def test_overfit_fails_when_accuracy_comes_after_its_window(packed, tmp_path, mo
 
     monkeypatch.setattr(tr, "_overfit_point", point)
     res = tr.overfit()
-    assert res["acc_reached_at_step"] == 6 and res["acc_pass"] is False
+    assert res["acc_reached_at_step"] == 6
+    assert res["acc_pass"] is False
     assert res["reached_at_step"] is None
 
 
@@ -147,8 +154,38 @@ def test_a_non_finite_loss_stops_without_a_step(packed, tmp_path, monkeypatch): 
         tr.fit()
     assert tr.state["global_step"] == 2
     record = json.loads((tmp_path / "nonfinite.json").read_text())
-    assert record["global_step"] == 3 and "bce" in record["non_finite"]
+    assert record["global_step"] == 3
+    assert "bce" in record["non_finite"]
     assert (tmp_path / "last.pt").is_file()
+
+
+def test_a_non_finite_gradient_stops_before_the_optimizer_step(packed, tmp_path, monkeypatch):  # noqa: F811
+    tr = Trainer(_cfg(), packed["out"], tmp_path, seed=42, log=None)
+    steps = {"n": 0}
+    real_step = tr.optimizer.step
+
+    def counting_step(*a, **k):
+        steps["n"] += 1
+        return real_step(*a, **k)
+
+    monkeypatch.setattr(tr.optimizer, "step", counting_step)
+    real_clip = torch.nn.utils.clip_grad_norm_
+    calls = {"n": 0}
+
+    def flaky_clip(params, max_norm):
+        norm = real_clip(params, max_norm)
+        calls["n"] += 1
+        return norm * float("nan") if calls["n"] == 3 else norm
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", flaky_clip)
+    with pytest.raises(NonFiniteLoss, match="step 3"):
+        tr.fit()
+    assert steps["n"] == 2  # the optimizer never ran on the bad gradients
+    assert tr.state["global_step"] == 2
+    record = json.loads((tmp_path / "nonfinite.json").read_text())
+    assert "grad_norm" in record["non_finite"]
+    saved = torch.load(tmp_path / "last.pt", weights_only=True)
+    assert saved["run"]["global_step"] == 2
 
 
 def test_still_improving_at_end(packed, tmp_path):  # noqa: F811
@@ -257,7 +294,8 @@ def test_an_all_empty_mask_model_passes_a2_a3_but_fails_a4(tmp_path):
         "val_gen_pred_area": 0.0,
     }
     rep = cp3.evaluate_run(_write_run(tmp_path / "u", _epochs(empty)), "unified", OVERFIT_OK)
-    assert rep["checks"]["A2"]["status"] == "PASS" and rep["checks"]["A3"]["status"] == "PASS"
+    assert rep["checks"]["A2"]["status"] == "PASS"
+    assert rep["checks"]["A3"]["status"] == "PASS"
     assert rep["checks"]["A4"]["status"] == "FAIL"
 
 
@@ -265,7 +303,8 @@ def test_cp3_stop_and_ask_cases(tmp_path):
     weak = cp3.evaluate_run(
         _write_run(tmp_path / "a", _epochs({**GOOD, "val_auc_edited": 0.75})), "unified", OVERFIT_OK
     )
-    assert weak["checks"]["S2a"]["status"] == "STOP_AND_ASK" and weak["verdict"] == "STOP_AND_ASK"
+    assert weak["checks"]["S2a"]["status"] == "STOP_AND_ASK"
+    assert weak["verdict"] == "STOP_AND_ASK"
     style = cp3.evaluate_run(
         _write_run(tmp_path / "b", _epochs({**GOOD, "val_diffseg30k_real_called_edited": 0.2})),
         "unified",

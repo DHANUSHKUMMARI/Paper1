@@ -530,38 +530,56 @@ class Trainer:
         accuracy, loss and the per-image mean mask F1 on the edited images; it runs until accuracy
         has reached ``target`` and mask F1 ``mask_target`` (when there are edited images), or
         ``mask_steps`` steps pass. Accuracy must be reached within ``steps``."""
-        oc = dict(self.tc.get("overfit") or {})
-        n, steps = int(oc.get("images", 64)), int(oc.get("steps", 300))
-        mask_steps = max(steps, int(oc.get("mask_steps", 1000)))
-        target, every = float(oc.get("target", 0.99)), int(oc.get("eval_every", 25))
-        mask_target = float(oc.get("mask_target", 0.80))
-        rows = _balanced_rows(self.train_ds.rows, n, self.seed)
+        oc = self._overfit_settings()
+        rows = _balanced_rows(self.train_ds.rows, oc["images"], self.seed)
         fixed = self._fixed_crops(rows)
         has_edited = any(r["label"] == "edited" for r in rows)
         disable_dropout(self.model)
         for g in self.optimizer.param_groups:  # the configured rates, no warm-up or decay
             g["lr"] = g["initial_lr"]
+        history, acc_at, mask_at = self._overfit_loop(fixed, oc, has_edited)
+        targets = {
+            "acc": oc["target"],
+            "mask_f1": oc["mask_target"],
+            "acc_steps": oc["steps"],
+            "mask_steps": oc["mask_steps"],
+        }
+        return _overfit_result(rows, history, targets, acc_at, mask_at if has_edited else None)
+
+    def _overfit_settings(self) -> dict[str, Any]:
+        oc = dict(self.tc.get("overfit") or {})
+        steps = int(oc.get("steps", 300))
+        return {
+            "images": int(oc.get("images", 64)),
+            "steps": steps,
+            "mask_steps": max(steps, int(oc.get("mask_steps", 1000))),
+            "target": float(oc.get("target", 0.99)),
+            "mask_target": float(oc.get("mask_target", 0.80)),
+            "every": int(oc.get("eval_every", 25)),
+        }
+
+    def _overfit_loop(
+        self, fixed: ForensicDataset, oc: dict[str, Any], has_edited: bool
+    ) -> tuple[list[dict[str, Any]], int | None, int | None]:
+        """Steps on the fixed crops, scored every ``every`` steps, until both targets hold (only
+        accuracy without edited images) or ``mask_steps`` pass; returns the history and the
+        steps at which accuracy and mask F1 were first reached."""
         batches = _cycle(lambda: self.loader(fixed, 0, self.batch, 0))
         history: list[dict[str, Any]] = []
         acc_at = mask_at = None
-        for step in range(1, mask_steps + 1):
+        for step in range(1, oc["mask_steps"] + 1):
             loss = self._overfit_step(next(batches))
-            if step % every and step != mask_steps:
+            if step % oc["every"] and step != oc["mask_steps"]:
                 continue
             point = self._overfit_point(fixed, step, loss)
             history.append(point)
-            acc_at = acc_at or (step if point["acc"] >= target else None)
-            mask_ok = has_edited and (point["mask_f1"] or 0.0) >= mask_target
-            mask_at = mask_at or (step if mask_ok else None)
-            if acc_at and (mask_at or not has_edited):
+            if acc_at is None and point["acc"] >= oc["target"]:
+                acc_at = step
+            if mask_at is None and has_edited and (point["mask_f1"] or 0.0) >= oc["mask_target"]:
+                mask_at = step
+            if acc_at is not None and (mask_at is not None or not has_edited):
                 break
-        return _overfit_result(
-            rows,
-            history,
-            {"acc": target, "mask_f1": mask_target, "acc_steps": steps, "mask_steps": mask_steps},
-            acc_at,
-            mask_at if has_edited else None,
-        )
+        return history, acc_at, mask_at
 
     def _fixed_crops(self, rows: list[dict[str, Any]]) -> ForensicDataset:
         """One fixed crop per row (seeded by uid), no augmentation."""

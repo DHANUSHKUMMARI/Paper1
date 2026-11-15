@@ -19,9 +19,10 @@ Changes (approved by Dhanush, 15 Nov):
   - the index must hash the same, so the data versions in checkpoints do not change;
   - shards already there with the right size are skipped;
   - it stops if the local disk lacks the space plus 2 GB.
-- Notebook 05 stages the shards to `/content/shards` in Cell 3 and reads them there. It records the
-  staging summary in `cp2_model_build.json`.
-- `scripts/train.py --stage-to DIR` does the same for training runs.
+- Notebook 05 stages the shards to `<local data>/shards` (`/content/data/shards` on Colab) in Cell 3
+  and reads them there. It records the staging summary in `cp2_model_build.json`.
+- `scripts/train.py --stage-local` does the same for training runs; the folder comes from the
+  environment, not the command line (SonarCloud S8707).
 - `ShardReader` opens each shard once per process and reads with `os.pread`, which takes the
   offset as an argument and so is safe for forked loader workers. It does not pickle descriptors.
 

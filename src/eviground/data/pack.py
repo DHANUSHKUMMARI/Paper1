@@ -47,6 +47,8 @@ MASK_RULE = (
 SHARD_BYTES = 1_000_000_000
 MARGIN_BYTES = 10_000_000_000
 INDEX_FILE = "index.parquet"
+DONE_FILE = "_DONE.json"
+PART = ".part"
 SOURCE_NAME = re.compile(r"[a-z0-9_]+")
 SPLITS = ("train", "val")
 INDEX_COLUMNS = (
@@ -276,7 +278,7 @@ def write_shard(
 ) -> list[dict[str, Any]]:
     """Write one shard atomically; returns its index entries."""
     payloads = _map(_payload, list(rows), workers)
-    tmp = path.with_name(path.name + ".part")
+    tmp = path.with_name(path.name + PART)
     path.parent.mkdir(parents=True, exist_ok=True)
     entries = []
     with tarfile.open(tmp, "w", format=tarfile.USTAR_FORMAT) as tar:
@@ -345,7 +347,7 @@ def write_index(entries: Sequence[dict[str, Any]], path: Path) -> None:
     import pyarrow.parquet as pq
 
     cols = {c: [e.get(c) for e in entries] for c in INDEX_COLUMNS}
-    tmp = path.with_name(path.name + ".part")
+    tmp = path.with_name(path.name + PART)
     pq.write_table(pa.table(cols), tmp)
     os.replace(tmp, path)
 
@@ -425,13 +427,13 @@ def pack(
         "estimate": estimate,
         "elapsed_s": round(time.time() - t0, 1),
     }
-    (out_dir / "_DONE.json").write_text(json.dumps(summary, indent=1))
+    (out_dir / DONE_FILE).write_text(json.dumps(summary, indent=1))
     return summary
 
 
 def read_done(out_dir: Path) -> dict[str, Any] | None:
     """The ``_DONE.json`` summary of a finished pack, or None."""
-    path = out_dir / "_DONE.json"
+    path = out_dir / DONE_FILE
     if not (path.is_file() and (out_dir / INDEX_FILE).is_file()):
         return None
     return json.loads(path.read_text())
@@ -440,7 +442,7 @@ def read_done(out_dir: Path) -> dict[str, Any] | None:
 def _copy_verified(src: Path, dst: Path, size: int) -> None:
     """Copy ``src`` to ``dst`` (atomic) and check the size; raises if it differs."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".part")
+    tmp = dst.with_name(dst.name + PART)
     shutil.copyfile(src, tmp)
     if tmp.stat().st_size != size:
         got = tmp.stat().st_size
@@ -493,7 +495,7 @@ def stage_shards(
     for k, name in enumerate(todo, 1):
         _copy_verified(inside(shard_dir, name), inside(local_dir, name), sizes[name])
         say(f"  {k}/{len(todo)} {name}: {sizes[name] / 1e9:.2f} GB, {time.time() - t0:.0f} s")
-    for name in (INDEX_FILE, "_DONE.json"):
+    for name in (INDEX_FILE, DONE_FILE):
         src = shard_dir / name
         _copy_verified(src, local_dir / name, src.stat().st_size)
     if file_sha256(local_dir / INDEX_FILE) != file_sha256(shard_dir / INDEX_FILE):

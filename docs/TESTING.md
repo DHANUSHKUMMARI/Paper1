@@ -26,17 +26,22 @@ Changes (approved by Dhanush, 15 Nov):
 - `ShardReader` opens each shard once per process and reads with `os.pread`, which takes the
   offset as an argument and so is safe for forked loader workers. It does not pickle descriptors.
 
-Tests (4 new in `tests/test_data_pipeline.py`):
+Tests (6 new in `tests/test_data_pipeline.py`):
 - a staged copy is byte-identical (every shard's sha256, index and `_DONE.json`);
 - staging again skips everything, and a cut-off local shard is copied again;
 - a disk without space stops staging;
 - training items from the local copy equal those from the original (plans, images, masks);
 - the reader opens each shard once over two passes of every image and returns the same bytes as
   `pack.read_image_bytes`; a pickled reader carries no descriptor and still reads.
+- (Codex) a local copy made for another pack is never reused: after a re-pack whose shard keeps
+  its size but not its bytes, every shard is copied again. `_STAGED.json` names the index the
+  local shards belong to;
+- an interrupted staging resumes for the same pack: shards copied before the interruption are
+  skipped, and the marker turns complete at the end.
 
 Sandbox runs:
 - `ruff check src tests scripts`: clean.
-- `python -m pytest -q`: 343 passed.
+- `python -m pytest -q`: 345 passed.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 00–05: passed.
 - Repo audit: ok.
 

@@ -48,6 +48,7 @@ SHARD_BYTES = 1_000_000_000
 MARGIN_BYTES = 10_000_000_000
 INDEX_FILE = "index.parquet"
 DONE_FILE = "_DONE.json"
+STAGED_FILE = "_STAGED.json"
 PART = ".part"
 SOURCE_NAME = re.compile(r"[a-z0-9_]+")
 SPLITS = ("train", "val")
@@ -451,6 +452,23 @@ def _copy_verified(src: Path, dst: Path, size: int) -> None:
     os.replace(tmp, dst)
 
 
+def _write_marker(marker: Path, index_sha: str, *, complete: bool) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    tmp = marker.with_name(marker.name + PART)
+    tmp.write_text(json.dumps({"index_sha256": index_sha, "complete": complete}))
+    os.replace(tmp, marker)
+
+
+def _clear_staged(local_dir: Path) -> None:
+    """Remove a previous local copy (shards, index, summary, marker) from ``local_dir``."""
+    if not local_dir.is_dir():
+        return
+    for p in list(local_dir.rglob("*.tar")) + list(local_dir.rglob("*" + PART)):
+        p.unlink()
+    for name in (INDEX_FILE, DONE_FILE, STAGED_FILE):
+        (local_dir / name).unlink(missing_ok=True)
+
+
 def stage_shards(
     shard_dir: Path,
     local_dir: Path,
@@ -464,7 +482,9 @@ def stage_shards(
 
     Every shard's size is checked against its side-car's ``tar_bytes``; ``index.parquet`` and
     ``_DONE.json`` are copied as they are (the index hash, hence the data versions, stay the
-    same). A shard already there with the right size is skipped, so staging resumes. Returns the
+    same). ``_STAGED.json`` in the local folder names the index the local shards belong to: a
+    shard already there with the right size is skipped only if it was staged for this same index
+    (so staging resumes), and a local folder staged for another pack is cleared first. Returns the
     local folder's summary; raises if the local disk lacks space or a copy differs.
     """
     say = progress or log.info
@@ -477,10 +497,17 @@ def stage_shards(
     for name in shards:
         meta = json.loads(_sidecar(inside(shard_dir, name)).read_text())
         sizes[name] = int(meta["tar_bytes"])
+    index_sha = file_sha256(shard_dir / INDEX_FILE)
+    marker = local_dir / STAGED_FILE
+    same_pack = marker.is_file() and json.loads(marker.read_text()).get("index_sha256") == index_sha
     todo = [
         n
         for n in shards
-        if not (inside(local_dir, n).is_file() and inside(local_dir, n).stat().st_size == sizes[n])
+        if not (
+            same_pack
+            and inside(local_dir, n).is_file()
+            and inside(local_dir, n).stat().st_size == sizes[n]
+        )
     ]
     need = sum(sizes[n] for n in todo)
     if free_bytes is None:
@@ -491,6 +518,9 @@ def stage_shards(
             f"local disk has {free_bytes / 1e9:.1f} GB free; the shards need "
             f"{need / 1e9:.1f} GB + {reserve_bytes / 1e9:.0f} GB"
         )
+    if not same_pack:  # another pack (or none) was staged here: nothing local can be reused
+        _clear_staged(local_dir)
+    _write_marker(marker, index_sha, complete=False)
     say(f"staging {len(todo)} of {len(shards)} shards ({need / 1e9:.2f} GB) to {local_dir}")
     for k, name in enumerate(todo, 1):
         _copy_verified(inside(shard_dir, name), inside(local_dir, name), sizes[name])
@@ -498,8 +528,9 @@ def stage_shards(
     for name in (INDEX_FILE, DONE_FILE):
         src = shard_dir / name
         _copy_verified(src, local_dir / name, src.stat().st_size)
-    if file_sha256(local_dir / INDEX_FILE) != file_sha256(shard_dir / INDEX_FILE):
+    if file_sha256(local_dir / INDEX_FILE) != index_sha:
         raise OSError("the local index differs from the Drive index")
+    _write_marker(marker, index_sha, complete=True)
     return {
         "local_dir": str(local_dir),
         "shards": len(shards),

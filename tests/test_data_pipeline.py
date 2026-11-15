@@ -406,3 +406,49 @@ def test_reader_opens_each_shard_once_and_drops_descriptors_when_pickled(packed,
     assert clone.read(rows[0]) == reader.read(rows[0])
     reader.close()
     assert reader._fds == {}
+
+
+def test_a_local_copy_of_another_pack_is_never_reused(packed, tmp_path):  # noqa: F811
+    """Codex, 15 Nov: a re-packed shard of the same size must not be skipped."""
+    import shutil
+
+    local = tmp_path / "local_shards"
+    pack.stage_shards(packed["out"], local, progress=None)
+    drive2 = tmp_path / "drive2"  # the same folder after a re-pack
+    shutil.copytree(packed["out"], drive2)
+    tars = sorted(p.relative_to(drive2) for p in drive2.rglob("*.tar"))
+    victim = drive2 / tars[0]
+    data = bytearray(victim.read_bytes())
+    data[700] ^= 0xFF  # different bytes, same size
+    victim.write_bytes(bytes(data))
+    rows = pack.read_index(drive2 / pack.INDEX_FILE)
+    rows[0]["role"] = "repacked"  # a new index
+    pack.write_index(rows, drive2 / pack.INDEX_FILE)
+    res = pack.stage_shards(drive2, local, progress=None)
+    assert res["copied"] == len(tars) and res["skipped"] == 0
+    assert (local / tars[0]).read_bytes() == bytes(data)
+    assert json.loads((local / pack.STAGED_FILE).read_text()) == {
+        "index_sha256": pack.file_sha256(drive2 / pack.INDEX_FILE),
+        "complete": True,
+    }
+
+
+def test_an_interrupted_staging_resumes_for_the_same_pack(packed, tmp_path, monkeypatch):  # noqa: F811
+    local = tmp_path / "local_shards"
+    real = pack._copy_verified
+    calls = []
+
+    def flaky(src, dst, size):
+        calls.append(dst)
+        if len(calls) == 3:
+            raise OSError("runtime disconnected")
+        return real(src, dst, size)
+
+    monkeypatch.setattr(pack, "_copy_verified", flaky)
+    with pytest.raises(OSError, match="disconnected"):
+        pack.stage_shards(packed["out"], local, progress=None)
+    assert json.loads((local / pack.STAGED_FILE).read_text())["complete"] is False
+    monkeypatch.setattr(pack, "_copy_verified", real)
+    res = pack.stage_shards(packed["out"], local, progress=None)
+    assert res["skipped"] == 2 and res["copied"] == res["shards"] - 2
+    assert json.loads((local / pack.STAGED_FILE).read_text())["complete"] is True

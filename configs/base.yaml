@@ -36,6 +36,7 @@ model:
   semantic:
     backbone: openai/clip-vit-large-patch14   # transformers CLIPVisionModel, SDPA attention
     revision: 32bd64288804d66eefd0ccbe215aa642df71cc41   # pinned HF commit (resolved in notebook 05, 15 Nov)
+    weights_sha256: a2bf730a0c7debf160f7a6b50b3aaf3703e7e88ac73de7a314903141db026dcb  # model.safetensors at that commit
     tiny: null                # debug: a small random CLIP config instead (no download)
     cache_dir: null           # set by notebook 05 to the local disk: Drive cannot hold HF's symlinks
     local_files_only: false

@@ -50,3 +50,10 @@ jobs:
         env:
           EVIGROUND_DRY_RUN: "1"
         run: pytest -q --nbmake notebooks/00_setup_and_data.ipynb notebooks/00c_data_download.ipynb notebooks/00b_data_probe.ipynb notebooks/01_cp1_data_integrity.ipynb notebooks/02_crop_diagnostic.ipynb notebooks/03_mask_diagnostic.ipynb notebooks/04_pack_shards.ipynb notebooks/05_cp2_model_build.ipynb
+
+      - name: Notebook 06 dry runs (CP3, both profiles)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: |
+          EVIGROUND_PROFILE=unified pytest -q --nbmake notebooks/06_cp3_training.ipynb
+          EVIGROUND_PROFILE=detection pytest -q --nbmake notebooks/06_cp3_training.ipynb

@@ -39,6 +39,7 @@ from eviground.data.datasets import LABELS, ForensicDataset
 from eviground.data.transforms import Augment
 from eviground.env import git_commit
 from eviground.eval import metrics
+from eviground.eval.metrics import PLATEAU_GAIN, plateau_gain
 from eviground.models.eviground import build_model, disable_dropout
 from eviground.train import checkpoint as ckpt
 from eviground.train.losses import eviground_loss
@@ -46,6 +47,10 @@ from eviground.utils.seed import make_generator, seed_everything, seed_worker
 
 CLASS_NAMES = {v: k for k, v in LABELS.items()}
 LOSS_TERMS = ("total", "ce", "bce", "dice", "att")
+
+
+class NonFiniteLoss(RuntimeError):
+    """A loss term or the gradient norm is NaN or infinite: the run stops (CP3 criterion S1)."""
 
 
 class KilledForTest(RuntimeError):
@@ -97,6 +102,7 @@ class Trainer:
         resume: str | Path | None = "auto",
         log: Callable[[str], None] | None = print,
         kill_at_step: int | None = None,
+        progress: bool = False,
     ) -> None:
         self.cfg = _plain(cfg)
         self.seed = int(seed if seed is not None else self.cfg.get("seed", 42))
@@ -147,6 +153,8 @@ class Trainer:
         self.val_ds = ForensicDataset(
             self.shard_dir, "val", profile=self.profile, crop=crop, seed=self.seed
         )
+        self.train_eval_ds = self._train_eval_set(int(tc.get("train_eval_images", 2000)), crop)
+        self.progress = progress
         self.epochs = int(tc.get("epochs", 20))
         self.micro_per_epoch = math.ceil(len(self.train_ds) / self.batch)
         self.steps_per_epoch = math.ceil(self.micro_per_epoch / self.accum)
@@ -178,6 +186,8 @@ class Trainer:
             # reports the mean over all its micro-batches)
             "epoch_loss_sums": dict.fromkeys(LOSS_TERMS, 0.0),
             "epoch_micro": 0,
+            "best_epoch": None,
+            "selection_history": [],
         }
         OmegaConf.save(OmegaConf.create(self.cfg), self.run_dir / "config.yaml")
         if resume:
@@ -300,8 +310,10 @@ class Trainer:
         self._t0 = time.time()
         start = self.state["step_in_epoch"] * self.batch
         self.optimizer.zero_grad(set_to_none=True)
+        bar = self._bar(ep)
         for batch in self.loader(self.train_ds, start, self.batch, workers):
             _out, loss = self._loss(batch)
+            self._check_finite(ep, loss)
             self.scaler.scale(loss["total"] / self._group_size()).backward()
             for k in LOSS_TERMS:
                 sums[k] += float(loss[k].detach())
@@ -310,13 +322,58 @@ class Trainer:
             last_micro = self.state["step_in_epoch"] == self.micro_per_epoch
             if self.state["step_in_epoch"] % self.accum and not last_micro:
                 continue
-            self._optimizer_step()
-            self._log_step(ep, loss, batch)
+            grad_norm = self._optimizer_step()
+            if not math.isfinite(grad_norm):
+                self._stop_nonfinite(ep, {"grad_norm": grad_norm})
+            self._log_step(ep, loss, batch, grad_norm)
+            if bar is not None:
+                bar.update(1)
+                if self.state["global_step"] % 10 == 0:
+                    bar.set_postfix(
+                        loss=f"{float(loss['total']):.4f}",
+                        lr=f"{self.optimizer.param_groups[1]['lr']:.2e}",
+                    )
             if self._after_step(max_steps):
+                if bar is not None:
+                    bar.close()
                 return {}, True
+        if bar is not None:
+            bar.close()
         self._add_time(self._t0)
         n = max(self.state["epoch_micro"], 1)
         return {k: v / n for k, v in sums.items()}, False
+
+    def _bar(self, ep: int):
+        """A progress bar over the optimizer steps left in epoch ``ep`` (notebooks only)."""
+        if not self.progress:
+            return None
+        from tqdm.auto import tqdm
+
+        done = self.state["step_in_epoch"] // self.accum
+        return tqdm(
+            total=self.steps_per_epoch,
+            initial=done,
+            desc=f"{self.profile} seed {self.seed} epoch {ep + 1}/{self.epochs}",
+            unit="step",
+        )
+
+    def _check_finite(self, ep: int, loss: dict[str, torch.Tensor]) -> None:
+        bad = {
+            k: str(float(v.detach()))
+            for k, v in loss.items()
+            if not torch.isfinite(v.detach()).all()
+        }
+        if bad:
+            self._stop_nonfinite(ep, bad)
+
+    def _stop_nonfinite(self, ep: int, bad: dict[str, float]) -> None:
+        """No optimizer step: clear the gradients, keep a checkpoint, record and stop (S1)."""
+        self.optimizer.zero_grad(set_to_none=True)
+        step = self.state["global_step"] + 1
+        record = {"epoch": ep, "global_step": step, "non_finite": bad}
+        (self.run_dir / "nonfinite.json").write_text(json.dumps(record, indent=1))
+        self.save("last.pt")
+        raise NonFiniteLoss(f"non-finite values at step {step} (epoch {ep}): {bad}")
 
     def _group_size(self) -> int:
         """Micro-batches in the accumulation group of the next micro-batch: ``grad_accum``, or
@@ -324,21 +381,24 @@ class Trainer:
         first = self.state["step_in_epoch"] // self.accum * self.accum
         return min(self.accum, self.micro_per_epoch - first)
 
-    def _clipped_step(self) -> None:
-        """Unscale, clip at ``train.grad_clip``, step, clear the gradients."""
+    def _clipped_step(self) -> float:
+        """Unscale, clip at ``train.grad_clip``, step, clear the gradients; returns the gradient
+        norm before clipping."""
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(
+        norm = torch.nn.utils.clip_grad_norm_(
             [p for p in self.model.parameters() if p.requires_grad],
             float(self.tc.get("grad_clip", 1.0)),
         )
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad(set_to_none=True)
+        return float(norm)
 
-    def _optimizer_step(self) -> None:
-        self._clipped_step()
+    def _optimizer_step(self) -> float:
+        norm = self._clipped_step()
         self.scheduler.step()
         self.state["global_step"] += 1
+        return norm
 
     def _after_step(self, max_steps: int | None) -> bool:
         """Checkpoint every ``checkpoint.every_steps``; the test kill; True at ``max_steps``."""
@@ -360,13 +420,16 @@ class Trainer:
         improved = score is not None and (self.state["best"] is None or score > self.state["best"])
         if improved:
             self.state["best"], self.state["bad_epochs"] = score, 0
+            self.state["best_epoch"] = ep
         else:
             self.state["bad_epochs"] += 1
+        self.state["selection_history"] = [*self.state["selection_history"], score]
+        train_eval = self.evaluate(self.train_eval_ds) if self.train_eval_ds is not None else {}
         self.state["epoch"], self.state["step_in_epoch"] = ep + 1, 0
         self.state["epoch_loss_sums"] = dict.fromkeys(LOSS_TERMS, 0.0)
         self.state["epoch_micro"] = 0
         self.state["stopped"] = self.state["bad_epochs"] >= patience
-        self._write_metrics(ep, train, val)
+        self._write_metrics(ep, train, val, train_eval)
         if improved:
             self.save("best.pt")
         self.save_step()
@@ -405,25 +468,59 @@ class Trainer:
         }
 
     def validate(self) -> dict[str, Any]:
-        if len(self.val_ds) == 0:
+        return self.evaluate(self.val_ds)
+
+    def evaluate(self, ds: ForensicDataset) -> dict[str, Any]:
+        """Selection score, per-class AUCs, mask metrics, per-source accuracy and the per-source
+        mask report (R1) on one fixed crop per image of ``ds``."""
+        if len(ds) == 0:
             return {"selection": None}
-        p = self.predict(self.val_ds)
+        p = self.predict(ds)
         ms = metrics.mask_scores(p["pred_masks"], p["masks"], p["labels"])
         sel = metrics.selection_score(self.profile, p["labels"], p["probs"], ms["mask_f1"])
-        y_pred = [CLASS_NAMES[int(i)] for i in p["probs"].argmax(1)]
+        pred_cls = p["probs"].argmax(1)
+        y_pred = [CLASS_NAMES[int(i)] for i in pred_cls]
         y_true = [CLASS_NAMES[int(i)] for i in p["labels"]]
         acc = metrics.per_source_accuracy(y_true, y_pred, p["sources"])
-        return {**sel, **ms, "gate_mean": float(p["gate"].mean()), "per_source": acc}
+        report = metrics.per_source_mask_report(
+            p["pred_masks"], p["labels"], pred_cls, p["sources"]
+        )
+        return {
+            **sel,
+            **ms,
+            "gate_mean": float(p["gate"].mean()),
+            "per_source": acc,
+            "per_source_mask": report,
+        }
+
+    def _train_eval_set(self, n: int, crop: int) -> ForensicDataset | None:
+        """A fixed set of ``n`` training images (classes balanced, seeded), one fixed crop each,
+        no augmentation: the training side of the train-validation gap."""
+        if n <= 0:
+            return None
+        rows = _balanced_rows(self.train_ds.rows, n, self.seed + 1)
+        return ForensicDataset(
+            self.shard_dir,
+            "val",
+            rows=[{**r, "split": "val"} for r in rows],
+            profile=self.profile,
+            crop=crop,
+            seed=self.seed,
+        )
 
     # ---------------------------------------------------------------- 64-image overfit (CP2)
 
     def overfit(self) -> dict[str, Any]:
-        """CP2: the first ``train.overfit.images`` training images (classes balanced, seeded),
-        one fixed crop each, augmentation and dropout off; train until train accuracy reaches
-        the target or ``steps`` optimizer steps pass."""
+        """CP2 / CP3 (A1): ``train.overfit.images`` training images (classes balanced, seeded),
+        one fixed crop each, augmentation and dropout off. Every ``eval_every`` steps it records
+        accuracy, loss and the per-image mean mask F1 on the edited images; it runs until accuracy
+        has reached ``target`` and mask F1 ``mask_target`` (when there are edited images), or
+        ``mask_steps`` steps pass. Accuracy must be reached within ``steps``."""
         oc = dict(self.tc.get("overfit") or {})
         n, steps = int(oc.get("images", 64)), int(oc.get("steps", 300))
+        mask_steps = max(steps, int(oc.get("mask_steps", 1000)))
         target, every = float(oc.get("target", 0.99)), int(oc.get("eval_every", 25))
+        mask_target = float(oc.get("mask_target", 0.80))
         rows = _balanced_rows(self.train_ds.rows, n, self.seed)
         fixed = ForensicDataset(
             self.shard_dir,
@@ -433,40 +530,58 @@ class Trainer:
             seed=self.seed,
         )
         assert not fixed.augment.enabled
+        has_edited = any(r["label"] == "edited" for r in rows)
         disable_dropout(self.model)
         for g in self.optimizer.param_groups:  # the configured rates, no warm-up or decay
             g["lr"] = g["initial_lr"]
         batches = _cycle(lambda: self.loader(fixed, 0, self.batch, 0))
-        history = []
-        for step in range(1, steps + 1):
+        history: list[dict[str, Any]] = []
+        acc_at = mask_at = None
+        for step in range(1, mask_steps + 1):
             self.model.train()
             _out, loss = self._loss(next(batches))
             self.scaler.scale(loss["total"]).backward()
             self._clipped_step()
-            if step % every and step != steps:
+            if step % every and step != mask_steps:
                 continue
-            p = self.predict(fixed, self.batch)
-            acc = float((p["probs"].argmax(1) == p["labels"]).mean())
-            history.append({"step": step, "loss": float(loss["total"]), "acc": acc})
-            if acc >= target:
-                return _overfit_result(rows, history, target, step)
-        return _overfit_result(rows, history, target, None)
+            point = self._overfit_point(fixed, step, float(loss["total"].detach()))
+            history.append(point)
+            if acc_at is None and point["acc"] >= target:
+                acc_at = step
+            if mask_at is None and has_edited and (point["mask_f1"] or 0.0) >= mask_target:
+                mask_at = step
+            if acc_at is not None and (mask_at is not None or not has_edited):
+                break
+        return _overfit_result(
+            rows,
+            history,
+            {"acc": target, "mask_f1": mask_target, "acc_steps": steps, "mask_steps": mask_steps},
+            acc_at,
+            mask_at if has_edited else None,
+        )
+
+    def _overfit_point(self, ds: ForensicDataset, step: int, loss: float) -> dict[str, Any]:
+        p = self.predict(ds, self.batch)
+        ms = metrics.mask_scores(p["pred_masks"], p["masks"], p["labels"])
+        acc = float((p["probs"].argmax(1) == p["labels"]).mean())
+        return {"step": step, "loss": loss, "acc": acc, "mask_f1": ms["mask_f1"]}
 
     # ---------------------------------------------------------------- logs
 
-    def _log_step(self, ep: int, loss: dict, batch: dict) -> None:
+    def _log_step(self, ep: int, loss: dict, batch: dict, grad_norm: float) -> None:
         row = {
             "global_step": self.state["global_step"],
             "epoch": ep,
             "step_in_epoch": self.state["step_in_epoch"],
             **{f"loss_{k}": round(float(loss[k].detach()), 6) for k in LOSS_TERMS},
+            "grad_norm": round(grad_norm, 6),
             "lr": self.optimizer.param_groups[1]["lr"],
             "lr_lora": self.optimizer.param_groups[0]["lr"],
             "first_uid": batch["uid"][0],
         }
         _append_csv(self.run_dir / "steps.csv", row)
 
-    def _write_metrics(self, ep: int, train: dict, val: dict) -> None:
+    def _write_metrics(self, ep: int, train: dict, val: dict, train_eval: dict) -> None:
         row: dict[str, Any] = {
             "epoch": ep,
             "global_step": self.state["global_step"],
@@ -474,10 +589,14 @@ class Trainer:
             "lr_lora": self.optimizer.param_groups[0]["lr"],
             **{f"train_{k}": round(v, 6) for k, v in train.items()},
         }
-        for k, v in val.items():
-            if k != "per_source":
-                row[f"val_{k}"] = None if v is None else round(float(v), 6)
+        for prefix, res in (("val", val), ("train_eval", train_eval)):
+            for k, v in res.items():
+                if k == "per_source_mask":
+                    row.update({f"{prefix}_{kk}": round(vv, 6) for kk, vv in v.items()})
+                elif k != "per_source":
+                    row[f"{prefix}_{k}"] = None if v is None else round(float(v), 6)
         row["best"] = self.state["best"]
+        row["best_epoch"] = self.state["best_epoch"]
         row["bad_epochs"] = self.state["bad_epochs"]
         if "per_source" in val:
             row.update(metrics.metrics_row(ep, val["per_source"]))
@@ -502,8 +621,17 @@ class Trainer:
         (self.run_dir / "compute.json").write_text(json.dumps(info, indent=1))
 
     def summary(self) -> dict[str, Any]:
+        gain = plateau_gain(self.state["selection_history"])
+        still = (
+            not self.state["stopped"]
+            and self.state["epoch"] >= self.epochs
+            and (gain is None or gain >= PLATEAU_GAIN)
+        )
         return {
             **{k: self.state[k] for k in ("epoch", "global_step", "best", "stopped")},
+            "best_epoch": self.state["best_epoch"],
+            "plateau_gain": gain,
+            "still_improving_at_end": still,
             "run_dir": str(self.run_dir),
             "clip_revision": self.clip_revision,
             "clip_sha256": self.clip_sha256,
@@ -557,12 +685,23 @@ def _balanced_rows(rows: list[dict[str, Any]], n: int, seed: int) -> list[dict[s
     return picked
 
 
-def _overfit_result(rows: list, history: list, target: float, reached: int | None) -> dict:
+def _overfit_result(
+    rows: list, history: list, targets: dict, acc_at: int | None, mask_at: int | None
+) -> dict:
+    """The A1 record: when accuracy and mask F1 reached their targets, and the trajectory."""
+    edited = sum(1 for r in rows if r["label"] == "edited")
+    acc_pass = acc_at is not None and acc_at <= targets["acc_steps"]
+    mask_pass = None if edited == 0 else mask_at is not None and mask_at <= targets["mask_steps"]
     return {
         "images": len(rows),
         "by_class": {c: sum(1 for r in rows if r["label"] == c) for c in LABELS},
-        "target": target,
-        "reached_at_step": reached,
+        "targets": targets,
+        "acc_reached_at_step": acc_at,
+        "mask_f1_reached_at_step": mask_at,
+        "reached_at_step": acc_at if acc_pass else None,  # CP2's field (accuracy)
+        "acc_pass": acc_pass,
+        "mask_pass": mask_pass,
         "final_acc": history[-1]["acc"] if history else None,
+        "final_mask_f1": history[-1]["mask_f1"] if history else None,
         "history": history,
     }

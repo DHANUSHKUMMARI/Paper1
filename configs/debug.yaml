@@ -28,7 +28,8 @@ train:
   batch_size: 4
   val_batch_size: 8
   detection: {epochs: 2, crops_per_epoch: 16}
-  overfit: {images: 8, steps: 4, target: 0.99, eval_every: 2}
+  overfit: {images: 8, steps: 4, target: 0.99, mask_steps: 6, mask_target: 0.80, eval_every: 2}
+  train_eval_images: 8
 
 checkpoint:
   every_steps: 2

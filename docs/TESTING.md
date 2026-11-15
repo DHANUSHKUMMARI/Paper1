@@ -3,6 +3,80 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP3 — training health, seed 42 (Milestone 3) — 2026-11-15
+
+Built from the CP3 plan Dhanush approved on 15 Nov (criteria S1–S3, A1–A4, R1, R2).
+
+Code:
+- `eval/metrics.py`:
+  - `mask_scores` adds `mask_miou_binary` (the DiffSeg30k paper's binary mIoU over the edited
+    crops: the mean of edited-class and background IoU from the pooled confusion matrix),
+    `gen_any_pred` and `gen_pred_area`;
+  - `per_source_mask_report` gives, per source and class, the share called edited, `any_pred` and
+    `pred_area`;
+  - the detection selection adds `det_acc` (1 − P(real) ≥ 0.5);
+  - `plateau_gain` (best of the last 4 epochs minus the best before).
+- `train/trainer.py`:
+  - the A1 overfit runs until accuracy ≥ 0.99 and per-image mask F1 on the edited images ≥ 0.80,
+    or 1,000 steps. It records accuracy, loss and mask F1 every 25 steps;
+  - a non-finite loss term or gradient norm stops the run with no optimizer step. It writes
+    `nonfinite.json` and `last.pt`;
+  - `grad_norm` in `steps.csv`;
+  - a fixed 2,000-image training subset is scored each epoch (`train_eval_*` columns);
+  - per-source mask columns;
+  - `best_epoch`;
+  - a tqdm progress bar per epoch;
+  - `summary()` adds `plateau_gain` and `still_improving_at_end`.
+- `eval/cp3.py` scores a run folder at its best epoch against the thresholds. It writes them into
+  its JSON.
+- `notebooks/06_cp3_training.ipynb` (L4), one run per profile:
+  - stage the shards;
+  - A1 (unified; reused if recorded for the same index; training does not start if it fails);
+  - training in the foreground, resumable;
+  - curves;
+  - `runs/checkpoints/cp3_training_health_<profile>_seed42.json`.
+- `configs/base.yaml`: the A1 settings and `train_eval_images: 2000`. The channels_last comment now
+  says it stays off.
+
+Tests (`tests/test_cp3.py`, 20, plus the adjusted overfit test in `tests/test_trainer.py`):
+- binary mIoU, `gen_*` and real-crop numbers on masks worked out by hand;
+- the per-source mask report;
+- `det_acc`;
+- `plateau_gain`;
+- a run writes the new columns and finite `grad_norm`;
+- the overfit stops once both targets hold and fails A1 when accuracy arrives after its window;
+- a NaN loss at step 3 stops with global step 2, `nonfinite.json` and `last.pt`;
+- `still_improving_at_end`;
+- `cp3.py` on hand-made `metrics.csv` files:
+  - a healthy run passes;
+  - each threshold fails on its own (S2a, A2 any-pixel and area, A3, A4);
+  - an all-empty-mask model passes A2 and A3 but fails A4;
+  - stop-and-ask on a per-class AUC below 0.80, on an R1 gap of 0.17, and on a still-rising run;
+  - S1 fails on a NaN step, and A1 fails when the mask target is missed;
+  - the detection run and S3;
+  - the report round trip.
+
+Sandbox runs:
+- `ruff check src tests scripts` and `ruff format --check src tests scripts`: clean.
+- `python -m pytest -p no:warnings`: 365 passed.
+- `python -m eviground.utils.repo_audit`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake`:
+  - notebooks 00–05: 8 passed;
+  - notebook 06 with `EVIGROUND_PROFILE=unified` and with `detection`: passed.
+  - In the dry run the CP3 verdict is FAIL with 2 epochs of a tiny CPU model, as expected.
+  - The fake world has no DiffSeg30k real validation image, so R1's gap is empty there. The real
+    data has 486 (CP1 run 5).
+- Real-CLIP CPU smoke run of notebook 06's code path (not in CI). It used the pinned commit
+  `32bd6428…`, with the weights hash checked on load, on the fake-world shards at batch 4:
+  - A1 for 4 steps;
+  - one training epoch of 3 steps (about 2.4 s per step on CPU);
+  - validation with the training-subset evaluation;
+  - `cp3.evaluate_run`.
+  - Everything ran; 56 s in all.
+
+Not run here: the L4 times, real convergence, the compute units used, and whether the criteria
+hold on the real data. Notebook 06 records these.
+
 ## Local copy of the shards — 2026-11-15
 
 The fourth CP2 attempt stalled for over 40 minutes in notebook 05's Cell 4 while it planned

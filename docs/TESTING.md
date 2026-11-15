@@ -3,6 +3,51 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Local copy of the shards — 2026-11-15
+
+The fourth CP2 attempt stalled for over 40 minutes in notebook 05's Cell 4 while it planned
+epoch 0. The plan reads about 9,000 edit masks from the shards on Drive, and each read through
+Colab's Drive mount took about a quarter of a second. In the sandbox, the computation per edited
+draw (decode a 1-bit 1024 × 1024 mask, resize with p 0.3, `edited_crop`) takes 2.8 ms, so 8,000
+draws need 0.4 min of compute. The rest was waiting on Drive. Training would have had the same
+problem: every crop reads its image from the shards.
+
+Changes (approved by Dhanush, 15 Nov):
+- `pack.stage_shards(shard_dir, local_dir)` copies the 18 shards, `index.parquet` and
+  `_DONE.json` byte for byte to a local disk:
+  - each shard's size is checked against its side-car;
+  - the index must hash the same, so the data versions in checkpoints do not change;
+  - shards already there with the right size are skipped;
+  - it stops if the local disk lacks the space plus 2 GB.
+- Notebook 05 stages the shards to `<local data>/shards` (`/content/data/shards` on Colab) in Cell 3
+  and reads them there. It records the staging summary in `cp2_model_build.json`.
+- `scripts/train.py --stage-local` does the same for training runs; the folder comes from the
+  environment, not the command line (SonarCloud S8707).
+- `ShardReader` opens each shard once per process and reads with `os.pread`, which takes the
+  offset as an argument and so is safe for forked loader workers. It does not pickle descriptors.
+
+Tests (6 new in `tests/test_data_pipeline.py`):
+- a staged copy is byte-identical (every shard's sha256, index and `_DONE.json`);
+- staging again skips everything, and a cut-off local shard is copied again;
+- a disk without space stops staging;
+- training items from the local copy equal those from the original (plans, images, masks);
+- the reader opens each shard once over two passes of every image and returns the same bytes as
+  `pack.read_image_bytes`; a pickled reader carries no descriptor and still reads.
+- (Codex) a local copy made for another pack is never reused: after a re-pack whose shard keeps
+  its size but not its bytes, every shard is copied again. `_STAGED.json` names the index the
+  local shards belong to;
+- an interrupted staging resumes for the same pack: shards copied before the interruption are
+  skipped, and the marker turns complete at the end.
+
+Sandbox runs:
+- `ruff check src tests scripts`: clean.
+- `python -m pytest -q`: 345 passed.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 00–05: passed.
+- Repo audit: ok.
+
+Not measurable here: Drive's latency, and the copy speed and planning time on Colab. Notebook 05
+records both.
+
 ## CP2 set-up fixes and the pinned CLIP weights — 2026-11-15
 
 After the first CP2 run on Colab (notebook 05) failed twice:

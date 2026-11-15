@@ -5,6 +5,7 @@
     python scripts/train.py --config base --dry-run                               # build only
     python scripts/train.py --config base --overfit                               # CP2 overfit
     python scripts/train.py --config base model.semantic.revision=<hash>          # overrides
+    python scripts/train.py --config base --stage-local                           # local copy
 
 Run folder: ``<Paper 1>/runs/<experiment>_<profile>_seed<seed>/``. Shards: ``<Paper 1>/cache/
 shards`` (``--shards`` to override). ``--fresh`` moves an existing run folder aside (never
@@ -39,6 +40,11 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--overfit", action="store_true", help="CP2 64-image overfit test")
     ap.add_argument("--kill-at-step", type=int)
     ap.add_argument("--shards", type=Path)
+    ap.add_argument(
+        "--stage-local",
+        action="store_true",
+        help="copy the shards to <local data>/shards first and read them there",
+    )
     ap.add_argument("--run-dir", type=Path)
     ap.add_argument("overrides", nargs="*", help="key=value config overrides")
     return ap.parse_args(argv)
@@ -51,6 +57,12 @@ def main(argv: list[str] | None = None) -> None:
     profile = args.profile or cfg.get("train", {}).get("profile", "unified")
     paths = get_paths()
     shards = args.shards or paths.shards
+    if args.stage_local:
+        from eviground.data.pack import stage_shards
+
+        local = paths.local_data / "shards"
+        print(json.dumps(stage_shards(shards, local, progress=print), indent=1))
+        shards = local
     name = f"{cfg.get('experiment', 'eviground')}_{profile}_seed{seed}"
     if args.overfit:
         name += "_overfit"

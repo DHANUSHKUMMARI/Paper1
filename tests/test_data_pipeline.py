@@ -343,3 +343,112 @@ def test_stored_offsets_match_the_tar_members(packed):  # noqa: F811
             assert members[e["img_offset"]] == e["img_size"]
             if e["mask_offset"] is not None:
                 assert members[e["mask_offset"]] == e["mask_size"]
+
+
+# ------------------------------------------------------------------ local copy (15 Nov 2026)
+
+
+def test_staged_shards_are_identical_and_staging_resumes(packed, tmp_path):  # noqa: F811
+    local = tmp_path / "local_shards"
+    first = pack.stage_shards(packed["out"], local, progress=None)
+    tars = sorted(p.relative_to(packed["out"]) for p in packed["out"].rglob("*.tar"))
+    assert first["shards"] == first["copied"] == len(tars)
+    for rel in tars:
+        assert pack.file_sha256(local / rel) == pack.file_sha256(packed["out"] / rel)
+    for name in (pack.INDEX_FILE, "_DONE.json"):
+        assert (local / name).read_bytes() == (packed["out"] / name).read_bytes()
+    again = pack.stage_shards(packed["out"], local, progress=None)
+    assert again["copied"] == 0 and again["skipped"] == len(tars)
+    victim = local / tars[0]
+    victim.write_bytes(victim.read_bytes()[:100])  # a copy cut off
+    third = pack.stage_shards(packed["out"], local, progress=None)
+    assert third["copied"] == 1
+    assert pack.file_sha256(victim) == pack.file_sha256(packed["out"] / tars[0])
+
+
+def test_staging_stops_without_local_space(packed, tmp_path):  # noqa: F811
+    with pytest.raises(pack.PackSpaceError, match="local disk"):
+        pack.stage_shards(packed["out"], tmp_path / "x", free_bytes=10, progress=None)
+
+
+def test_training_items_from_the_local_copy_equal_the_originals(packed, tmp_path):  # noqa: F811
+    local = tmp_path / "local_shards"
+    pack.stage_shards(packed["out"], local, progress=None)
+    a = ForensicDataset(packed["out"], "train", n_per_class=10, seed=42)
+    b = ForensicDataset(local, "train", n_per_class=10, seed=42)
+    assert a.items == b.items
+    for k in range(len(a)):
+        x, y = a[k], b[k]
+        assert x["uid"] == y["uid"]
+        assert bool((x["image"] == y["image"]).all()) and bool((x["mask"] == y["mask"]).all())
+
+
+def test_reader_opens_each_shard_once_and_drops_descriptors_when_pickled(packed, monkeypatch):  # noqa: F811
+    import os
+    import pickle
+
+    opened = []
+    real_open = os.open
+
+    def counting_open(path, *a, **k):
+        opened.append(str(path))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(os, "open", counting_open)
+    reader = ShardReader(packed["out"])
+    rows = reader.rows
+    for e in rows + rows:  # every image twice
+        assert reader.read(e) == pack.read_image_bytes(packed["out"], e)
+        assert reader.read(e, "mask") == pack.read_image_bytes(packed["out"], e, "mask")
+    assert sorted(opened) == sorted({str(pack.inside(packed["out"], e["shard"])) for e in rows})
+    clone = pickle.loads(pickle.dumps(reader))
+    assert clone._fds == {} and reader._fds
+    assert clone.read(rows[0]) == reader.read(rows[0])
+    reader.close()
+    assert reader._fds == {}
+
+
+def test_a_local_copy_of_another_pack_is_never_reused(packed, tmp_path):  # noqa: F811
+    """Codex, 15 Nov: a re-packed shard of the same size must not be skipped."""
+    import shutil
+
+    local = tmp_path / "local_shards"
+    pack.stage_shards(packed["out"], local, progress=None)
+    drive2 = tmp_path / "drive2"  # the same folder after a re-pack
+    shutil.copytree(packed["out"], drive2)
+    tars = sorted(p.relative_to(drive2) for p in drive2.rglob("*.tar"))
+    victim = drive2 / tars[0]
+    data = bytearray(victim.read_bytes())
+    data[700] ^= 0xFF  # different bytes, same size
+    victim.write_bytes(bytes(data))
+    rows = pack.read_index(drive2 / pack.INDEX_FILE)
+    rows[0]["role"] = "repacked"  # a new index
+    pack.write_index(rows, drive2 / pack.INDEX_FILE)
+    res = pack.stage_shards(drive2, local, progress=None)
+    assert res["copied"] == len(tars) and res["skipped"] == 0
+    assert (local / tars[0]).read_bytes() == bytes(data)
+    assert json.loads((local / pack.STAGED_FILE).read_text()) == {
+        "index_sha256": pack.file_sha256(drive2 / pack.INDEX_FILE),
+        "complete": True,
+    }
+
+
+def test_an_interrupted_staging_resumes_for_the_same_pack(packed, tmp_path, monkeypatch):  # noqa: F811
+    local = tmp_path / "local_shards"
+    real = pack._copy_verified
+    calls = []
+
+    def flaky(src, dst, size):
+        calls.append(dst)
+        if len(calls) == 3:
+            raise OSError("runtime disconnected")
+        return real(src, dst, size)
+
+    monkeypatch.setattr(pack, "_copy_verified", flaky)
+    with pytest.raises(OSError, match="disconnected"):
+        pack.stage_shards(packed["out"], local, progress=None)
+    assert json.loads((local / pack.STAGED_FILE).read_text())["complete"] is False
+    monkeypatch.setattr(pack, "_copy_verified", real)
+    res = pack.stage_shards(packed["out"], local, progress=None)
+    assert res["skipped"] == 2 and res["copied"] == res["shards"] - 2
+    assert json.loads((local / pack.STAGED_FILE).read_text())["complete"] is True

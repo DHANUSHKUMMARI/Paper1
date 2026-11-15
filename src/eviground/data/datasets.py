@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -45,22 +46,56 @@ def _uid_seed(seed: int, uid: str) -> list[int]:
 
 
 class ShardReader:
-    """Reads images and edit masks from the shards by offset."""
+    """Reads images and edit masks from the shards by offset.
+
+    Each shard is opened once per process and read with ``os.pread``, which takes the offset as
+    an argument: DataLoader workers forked from one process can share the descriptors safely.
+    Descriptors are not pickled; a spawned worker opens its own.
+    """
 
     def __init__(self, shard_dir: Path, rows: Sequence[dict[str, Any]] | None = None) -> None:
         self.shard_dir = Path(shard_dir)
         self.rows = (
             list(rows) if rows is not None else pack.read_index(self.shard_dir / pack.INDEX_FILE)
         )
+        self._fds: dict[str, int] = {}
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state["_fds"] = {}
+        return state
+
+    def __del__(self) -> None:
+        self.close()
+
+    def close(self) -> None:
+        for fd in getattr(self, "_fds", {}).values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds = {}
+
+    def read(self, e: dict[str, Any], which: str = "img") -> bytes | None:
+        off, size = e[f"{which}_offset"], e[f"{which}_size"]
+        if off is None or size is None:
+            return None
+        fd = self._fds.get(e["shard"])
+        if fd is None:
+            fd = os.open(pack.inside(self.shard_dir, e["shard"]), os.O_RDONLY)
+            self._fds[e["shard"]] = fd
+        data = os.pread(fd, int(size), int(off))
+        if len(data) != int(size):
+            raise OSError(f"{e['shard']}: short read at {off} ({len(data)} of {size} bytes)")
+        return data
 
     def image(self, e: dict[str, Any]) -> Image.Image:
-        data = pack.read_image_bytes(self.shard_dir, e)
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(self.read(e)))
         return img.convert("RGB")
 
     def mask(self, e: dict[str, Any]) -> np.ndarray:
         """Boolean edit mask (all False for an image without one)."""
-        data = pack.read_image_bytes(self.shard_dir, e, "mask")
+        data = self.read(e, "mask")
         if data is None:
             return np.zeros((int(e["height"]), int(e["width"])), dtype=bool)
         with Image.open(io.BytesIO(data)) as m:

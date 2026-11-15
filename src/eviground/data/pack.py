@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tarfile
 import time
 from collections import Counter, defaultdict
@@ -434,6 +435,77 @@ def read_done(out_dir: Path) -> dict[str, Any] | None:
     if not (path.is_file() and (out_dir / INDEX_FILE).is_file()):
         return None
     return json.loads(path.read_text())
+
+
+def _copy_verified(src: Path, dst: Path, size: int) -> None:
+    """Copy ``src`` to ``dst`` (atomic) and check the size; raises if it differs."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".part")
+    shutil.copyfile(src, tmp)
+    if tmp.stat().st_size != size:
+        got = tmp.stat().st_size
+        tmp.unlink()
+        raise OSError(f"copy of {src} has {got} bytes, expected {size}")
+    os.replace(tmp, dst)
+
+
+def stage_shards(
+    shard_dir: Path,
+    local_dir: Path,
+    *,
+    reserve_bytes: int = 2_000_000_000,
+    free_bytes: int | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Copy the packed shards byte for byte to a local disk (decision of 15 Nov 2026: reads
+    through Colab's Drive mount cost about a quarter of a second each).
+
+    Every shard's size is checked against its side-car's ``tar_bytes``; ``index.parquet`` and
+    ``_DONE.json`` are copied as they are (the index hash, hence the data versions, stay the
+    same). A shard already there with the right size is skipped, so staging resumes. Returns the
+    local folder's summary; raises if the local disk lacks space or a copy differs.
+    """
+    say = progress or log.info
+    t0 = time.time()
+    done = read_done(shard_dir)
+    if done is None:
+        raise FileNotFoundError(f"no finished shards in {shard_dir}")
+    shards = sorted({e["shard"] for e in read_index(shard_dir / INDEX_FILE)})
+    sizes = {}
+    for name in shards:
+        meta = json.loads(_sidecar(inside(shard_dir, name)).read_text())
+        sizes[name] = int(meta["tar_bytes"])
+    todo = [
+        n
+        for n in shards
+        if not (inside(local_dir, n).is_file() and inside(local_dir, n).stat().st_size == sizes[n])
+    ]
+    need = sum(sizes[n] for n in todo)
+    if free_bytes is None:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(local_dir).free
+    if free_bytes < need + reserve_bytes:
+        raise PackSpaceError(
+            f"local disk has {free_bytes / 1e9:.1f} GB free; the shards need "
+            f"{need / 1e9:.1f} GB + {reserve_bytes / 1e9:.0f} GB"
+        )
+    say(f"staging {len(todo)} of {len(shards)} shards ({need / 1e9:.2f} GB) to {local_dir}")
+    for k, name in enumerate(todo, 1):
+        _copy_verified(inside(shard_dir, name), inside(local_dir, name), sizes[name])
+        say(f"  {k}/{len(todo)} {name}: {sizes[name] / 1e9:.2f} GB, {time.time() - t0:.0f} s")
+    for name in (INDEX_FILE, "_DONE.json"):
+        src = shard_dir / name
+        _copy_verified(src, local_dir / name, src.stat().st_size)
+    if file_sha256(local_dir / INDEX_FILE) != file_sha256(shard_dir / INDEX_FILE):
+        raise OSError("the local index differs from the Drive index")
+    return {
+        "local_dir": str(local_dir),
+        "shards": len(shards),
+        "copied": len(todo),
+        "skipped": len(shards) - len(todo),
+        "bytes_copied": need,
+        "seconds": round(time.time() - t0, 1),
+    }
 
 
 def read_image_bytes(shard_dir: Path, entry: dict[str, Any], which: str = "img") -> bytes | None:

@@ -18,9 +18,9 @@ data:
   num_workers: 4
 
 checkpoint:
-  every_steps: 500
-  keep_last: 2
-  monitor: val_auc
+  every_steps: 500            # optimizer steps between step_*.pt / last.pt
+  keep_last: 2                # step files kept
+  monitor: selection          # unified: mean(macro OvR AUC, per-image mask F1); detection: AUC
   mode: max
 
 logging:
@@ -35,6 +35,7 @@ model:
   edit_threshold: 0.5         # fixed on validation data (test-time rule)
   semantic:
     backbone: openai/clip-vit-large-patch14   # transformers CLIPVisionModel, SDPA attention
+    revision: null            # pinned HF commit hash (fix of 14 Nov); required for training
     tiny: null                # debug: a small random CLIP config instead (no download)
     cache_dir: null           # Drive cache/hf on Colab (filled once, offline afterwards)
     local_files_only: false
@@ -55,3 +56,17 @@ optim:
   lr_lora: 5.0e-5             # first change to propose if CP3 flattens early: 1e-4
   weight_decay: 0.05
 
+
+# Trainer (Milestone 3 plan, step 3)
+train:
+  profile: unified            # unified | detection
+  epochs: 20
+  crops_per_epoch: 24000      # 1 : 1 : 1 (unified); detection: real : generated = 1 : 1
+  batch_size: 32
+  grad_accum: 1
+  warmup_epochs: 1            # linear warm-up, then cosine to 0
+  grad_clip: 1.0
+  patience: 4                 # epochs without a better selection score
+  val_batch_size: 64
+  detection: {epochs: 15, crops_per_epoch: 16000}
+  overfit: {images: 64, steps: 300, target: 0.99, eval_every: 25}

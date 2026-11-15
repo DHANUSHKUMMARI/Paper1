@@ -3,6 +3,81 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## Milestone 3, PR C — trainer, checkpoints, notebooks 04 and 05 — 2026-11-15
+
+Modules: `train/checkpoint.py`, `train/trainer.py`, `scripts/train.py`; metrics added to
+`eval/metrics.py`; `configs/base.yaml` gets `train` and `model.semantic.revision`.
+
+With Dhanush's five fixes of 14 Nov 2026:
+1. **Checkpoint contents:** the full `state_dict` of every module except the frozen CLIP, buffers
+   included (BatchNorm running statistics, `num_batches_tracked`); optimizer, scheduler and scaler
+   states; Python, NumPy, torch CPU and CUDA RNG states.
+2. **Frozen CLIP:** the Hugging Face revision is pinned (`model.semantic.revision`; training refuses
+   a real backbone without one). Its SHA-256 over the frozen weights is computed once per run and
+   stored in every checkpoint; a resume checks both and stops on a mismatch.
+3. **Augmentation RNG:** keyed by (seed, epoch, item) only, so items are identical with 0 or 2
+   loader workers and after a restart.
+4. **Validation metrics:** the selection score uses the mean of per-image mask F1 on edited crops.
+   Also logged: pooled F1 and IoU, and on real crops the share with any predicted edited pixel and
+   the mean predicted area. Losses and metrics are computed in float32 outside autocast.
+5. **Versions:** the shard index sha256, the manifest sha256 and the mask-rule version are in every
+   checkpoint and every `metrics.csv` row; a resume on a different index stops.
+
+Rest of the trainer:
+- AdamW with two learning rates; 1-epoch linear warm-up, then cosine; gradient clip 1.0;
+  gradient accumulation.
+- bf16, or fp16 with GradScaler.
+- Early stopping, patience 4.
+- `step_*.pt` and `last.pt` every 500 optimizer steps and at epoch end (2 step files kept);
+  `best.pt` on improvement; atomic writes.
+- `metrics.csv`, `steps.csv`, and `compute.json` (cumulative GPU hours × CU rate).
+- 64-image overfit mode: fixed crops, augmentation and dropout off, base learning rates.
+- `scripts/train.py`: `--resume auto`, `--fresh` (moves the old folder aside), `--dry-run`,
+  `--max-steps`, `--overfit`, `--kill-at-step` (ends the process abruptly, for CP2).
+
+Notebooks:
+- `04_pack_shards.ipynb` (CPU): Drive free space, then stage, pack (stops and asks if free space <
+  estimate + 10 GB; resumable) and verify. Writes `runs/checkpoints/pack_shards.json`.
+- `05_cp2_model_build.ipynb` (L4): parameter counts, shapes, frozen-CLIP SHA-256 before and after
+  training steps, 64-image overfit, kill and resume in subprocesses (reference run vs a run killed
+  after step 30 with checkpoints every 20, compared step by step), timings and peak memory with and
+  without channels_last, loader images/s, and a validation pass. It resolves and records the CLIP
+  commit hash. Writes `runs/checkpoints/cp2_model_build.json` with the script's verdict.
+
+Tests (`tests/test_trainer.py`, 17, CPU, tiny CLIP on the fake-world shards):
+- a 2-epoch run writes `config.yaml`, `metrics.csv` (with every new column), `steps.csv`,
+  `compute.json`, `best.pt` and `last.pt`, and keeps 2 step files;
+- a checkpoint holds BatchNorm buffers, LoRA, no frozen CLIP key, the RNG states and the versions;
+- a model loaded from a checkpoint gives bit-identical eval outputs (logits, mask logits, α, g);
+- kill after step 3 (checkpoint at 2), then `resume auto`: global step 2, then the same batches
+  and the same losses (within 1%) as the uninterrupted run up to step 12;
+- an interrupted save keeps the previous checkpoint;
+- rotation;
+- a changed frozen weight or a different revision stops a resume; so does a different shard index;
+- a real backbone without a pinned revision is refused;
+- items are equal with 0 and 2 workers and in a restarted process;
+- the overfit path runs with dropout 0;
+- binary AUC equals the pair count;
+- per-image vs pooled mask F1, IoU and the real-crop numbers;
+- the selection score for both profiles.
+- review fixes: a short last accumulation group is scaled by its own size; a resume with another
+  profile or seed stops; an epoch stopped by `max_steps` or a kill reports its loss over all its
+  micro-batches; checkpoints load with `torch.load(weights_only=True)`.
+
+Sandbox runs:
+- `ruff check src tests scripts` and `ruff format --check`: clean.
+- `python -m pytest -q`: 333 passed (17 new, after the SonarCloud and Codex review fixes).
+- `python -m eviground.utils.repo_audit`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 00–05: passed. The dry run of 05 runs every
+  cell on the CPU with the tiny CLIP: kill and resume passes there. The overfit and timing checks
+  report FAIL in the dry run, as expected: 4 CPU steps and no GPU, so nothing is measured.
+
+Not run here:
+- the real CLIP (Hugging Face is blocked from the sandbox, so the commit hash could not be looked
+  up: notebook 05 resolves and records it, and it then goes into `configs/base.yaml`);
+- GPU timing, memory, bf16 and the real overfit (notebook 05 on an L4);
+- packing the real data (notebook 04).
+
 ## Milestone 3, PR B — packed shards, datasets, augmentation — 2026-11-15
 
 Modules (decisions of 15 Nov 2026): `data/pack.py` writes the training and validation images that

@@ -44,7 +44,7 @@ model:
   trace:
     name: efficientnet_b0
     pretrained: true
-    channels_last: false      # switched on if CP2 timing shows it is faster
+    channels_last: false      # off for all runs (Dhanush, 15 Nov 2026)
   fusion: {layers: 2, heads: 8, dropout: 0.1}
 
 loss:
@@ -70,4 +70,7 @@ train:
   patience: 4                 # epochs without a better selection score
   val_batch_size: 64
   detection: {epochs: 15, crops_per_epoch: 16000}
-  overfit: {images: 64, steps: 300, target: 0.99, eval_every: 25}
+  # A1 (CP3): accuracy >= target within `steps`, per-image mean mask F1 on the edited images
+  # >= mask_target within `mask_steps` (Dhanush, 15 Nov 2026)
+  overfit: {images: 64, steps: 300, target: 0.99, mask_steps: 1000, mask_target: 0.80, eval_every: 25}
+  train_eval_images: 2000     # fixed training subset scored every epoch (train-validation gap)

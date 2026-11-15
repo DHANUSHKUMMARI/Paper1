@@ -8,7 +8,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
 | CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | DHANUSH|
-| CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) | |
+| CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) |DHANUSH |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
 | CP5 | 7 | Evidence faithfulness | pending | |
@@ -322,5 +322,5 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   - channels_last is 1.5% faster per training step (0.459 vs 0.466 s), so by the config's rule it can
     be switched on.
 - **Result:** **PASS** on every criterion (script verdict).
-- **Verified by Dhanush:** ☐
+- **Verified by Dhanush:** DHANUSH
 

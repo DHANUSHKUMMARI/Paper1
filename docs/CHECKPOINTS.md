@@ -8,7 +8,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 |----|-----|-------|--------|-------------|
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
 | CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | DHANUSH|
-| CP2 | 4 | Model build | pending | |
+| CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) | |
 | CP3 | 5 | Training health | pending | |
 | CP4 | 6 | Generalization gate | pending | |
 | CP5 | 7 | Evidence faithfulness | pending | |
@@ -271,3 +271,56 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   COCO negatives at DiffSeg30k sizes: 204 unchanged, 490 cropped, 189 downscaled, 3,967 upscaled.
 - **Result:** **PASS** (criteria met; the base-disagreement stop accepted by Dhanush).
 - **Verified by Dhanush:** DHANUSH
+
+---
+
+### CP2 — Model build — 2026-11-15 — **PASS** (script verdict; awaiting Dhanush)
+
+- **Run / commit:** `notebooks/05_cp2_model_build.ipynb`, commit `2673e8f` (main after PR #25), NVIDIA L4
+  (23.7 GB), torch 2.14.1+cu130, Python 3.13.16. Record: Drive `Paper 1/runs/checkpoints/cp2_model_build.json`
+  (2026-11-15 17:20 UTC); run folders `Paper 1/runs/cp2/` (`overfit`, `resume_ref`, `resume_cut`,
+  `validation`).
+- **Inputs:**
+  - CLIP `openai/clip-vit-large-patch14` at commit `32bd6428…`; weights SHA-256 `a2bf730a…`, checked
+    before loading.
+  - Shards: 116,759 images, index sha256 `1085a527…`, manifest `ef4f4f12…`, mask rule v1 of 14 Nov.
+    They were copied to `/content/data/shards` (18 shards, 15.75 GB, 404 s).
+- **What was run:** Cells 1–9 (Run all, fresh session), `CU_PER_HOUR` 1.7.
+- **Numbers, against the pass criteria (Research Specification 9.1 and Implementation Brief):**
+
+| Criterion | Measured | Result |
+|-----------|----------|--------|
+| Output shapes as in section 8 (input 2 × 256²) | logits (2, 3); mask logits (2, 1, 256, 256); α (2, 256); g (2, 1); Z (2, 256, 512) | PASS |
+| M2 trainable parameters < 5 M | 655,872 (LoRA 131,072, projection 524,800). Model total 322,706,209: frozen CLIP 303,179,776, trainable 19,526,433 (M3 3,653,532, M4 fusion 13,138,945, heads 2,078,084) | PASS |
+| Frozen CLIP weights unchanged after training steps | SHA-256 `cdd5e4900ac8dc4d…` before and after the overfit run (the same value as the sandbox CPU build of 15 Nov) | PASS |
+| 64-image overfit: ≥ 99% train accuracy within 300 steps, augmentation and dropout off | 64 images (21 real, 21 generated, 22 edited): accuracy 1.000 at the first evaluation, step 25 (total loss 1.120); 0.32 min | PASS |
+| Killed run resumes at the same step, loss within 1% | killed after step 30 (exit 137), resumed from the step-20 checkpoint, finished at step 40; same batches at every step; loss difference max 0.024%, mean 0.0088% | PASS |
+| Views < 5 ms per image | 0.064 ms (0.074 ms with channels_last), batch 32, bf16 | PASS |
+| Trace branch < 15 ms per image | 0.631 ms (0.614 ms with channels_last) | PASS |
+| Batch 32 at 256² in bf16 fits | peak 5.64 GB of 23.7 GB (5.66 GB with channels_last); training step 0.466 s (0.459 s with channels_last) | PASS |
+| Loader ≥ 150 images/s | 253.9 images/s, 4 workers, from the local copy | PASS |
+| Validation pass (≤ 0.5 CU) | 11,689 images in 1.78 min | PASS |
+
+- **Untrained baseline on validation** (expected near chance):
+  - macro one-vs-rest AUC 0.523: real 0.513, generated 0.545, edited 0.512;
+  - mask F1 per image 0.216, pooled F1 0.234, IoU 0.133;
+  - every real crop has some predicted edited pixels; mean predicted area 0.141;
+  - gate mean 0.452;
+  - selection score 0.370.
+- **Data the model trains on:**
+  - pools: real GenImage 32,139, SID-Set 8,804, COCO 4,340, DiffSeg30k 4,344; generated GenImage 35,937,
+    SID-Set 8,890; edited DiffSeg30k 10,476;
+  - 126 training and 14 validation edited images have no valid crop and are left out;
+  - 24,000 crops per epoch.
+- **Compute:** 0.246 h of wall time (Cells 2–9) at 1.7 CU/h = **0.42 CU**.
+- **Notes:**
+  - The four earlier attempts of 15 Nov stopped in Cell 4 (see `docs/EXPERIMENT_LOG.md`). The fixes are
+    PRs #24 (CLIP cache on the local disk, torchao, pinned commit and weights hash) and #25 (local copy
+    of the shards).
+  - PyTorch warns that the flash-attention backward pass is not deterministic. The resumed run's losses
+    stay within 0.024% of the reference.
+  - channels_last is 1.5% faster per training step (0.459 vs 0.466 s), so by the config's rule it can
+    be switched on.
+- **Result:** **PASS** on every criterion (script verdict).
+- **Verified by Dhanush:** ☐
+

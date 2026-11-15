@@ -3,6 +3,52 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP2 set-up fixes and the pinned CLIP weights — 2026-11-15
+
+After the first CP2 run on Colab (notebook 05) failed twice:
+- The Hugging Face cache on Google Drive held a 79-byte `model.safetensors`: Drive stores the
+  cache's symbolic links as text. Notebook 05 now caches CLIP on the local disk.
+- Colab's `torchao` 0.10.0 made `peft` raise an ImportError while adding the LoRA layers. The
+  setup cell removes a `torchao` older than 0.16.
+- `configs/base.yaml` pins the commit (`revision` `32bd6428…`) and the SHA-256 of its
+  `model.safetensors` (`weights_sha256` `a2bf730a…`, 1,710,540,580 bytes, from the Hub's metadata).
+  `semantic.verified_snapshot` hashes the cached file and loads from that same snapshot folder, so
+  the file checked is the file loaded. A different file stops the run (`WeightsMismatch`) with its
+  size and hash. The trainer refuses a real backbone without both pins.
+
+Sandbox runs with the real weights (Hugging Face reachable since 15 Nov; scratch scripts, not in
+CI), on CPU:
+- **Weights:** the downloaded file is 1,710,540,580 bytes and its SHA-256 equals the Hub's
+  `a2bf730a…`.
+- **Model through `build_model(base)`:**
+  - 322,706,209 parameters, of which 303,179,776 are frozen CLIP and 19,526,433 trainable;
+  - M2 trainable 655,872 (LoRA 131,072, projection 524,800);
+  - M3 3,653,532; M4 fusion 13,138,945; heads 2,078,084.
+- **Shapes at 256 (batch 2):** logits (2, 3), mask (2, 1, 256, 256), α (2, 256), g (2, 1),
+  Z (2, 256, 512). α sums to 1; g in (0, 1).
+- **No-grad split:** layers 0–19 without autograd give exactly CLIP's own last hidden state
+  (max abs difference 0.0).
+- **One AdamW step:**
+  - the frozen CLIP SHA-256 is unchanged (`cdd5e490…`), no frozen parameter gets a gradient, and
+    LoRA moves;
+  - step 1 gives non-zero gradients to the 8 `lora_B` tensors only (B starts at zero); from step 2
+    all 16 LoRA tensors have gradients;
+  - loss terms on a random batch: total 2.558, CE 1.182, BCE 0.492, Dice 0.796, attention 0.877.
+- **CPU times** (not the L4's): forward 1.24 s and a training step 1.90 s for batch 2.
+- **The hash check:**
+  - the verified load passes, with the same frozen-CLIP hash as above; hashing the file takes
+    1.4 s;
+  - a Drive-like 79-byte file stops (`WeightsMismatch`), and so does the file one byte short.
+
+Tests (`tests/test_clip_weights.py`, 6, CI, no network; a fake cache with a tiny CLIP laid out
+like Hugging Face's):
+- matching weights load from the checked snapshot folder, with identical tensors;
+- a wrong hash stops before anything loads;
+- the 79-byte link text is caught;
+- the file is hashed once per version in a process;
+- the config pins both values;
+- the trainer refuses a real backbone without `weights_sha256`.
+
 ## Milestone 3, PR C — trainer, checkpoints, notebooks 04 and 05 — 2026-11-15
 
 Modules: `train/checkpoint.py`, `train/trainer.py`, `scripts/train.py`; metrics added to

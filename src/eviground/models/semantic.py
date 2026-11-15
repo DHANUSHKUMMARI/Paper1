@@ -14,14 +14,66 @@ backward pass stops at the first LoRA layer.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
 
 DEFAULT_BACKBONE = "openai/clip-vit-large-patch14"
+WEIGHTS_FILE = "model.safetensors"
+_SHA_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+class WeightsMismatch(RuntimeError):
+    """The CLIP weights file on disk is not the pinned one: stop."""
+
+
+def weights_sha256(path: Path) -> str:
+    """SHA-256 of a weights file (the target, if ``path`` is a link); computed once per file
+    version in a process."""
+    real = os.path.realpath(path)
+    st = os.stat(real)
+    key = (real, st.st_size, st.st_mtime_ns)
+    if key not in _SHA_CACHE:
+        h = hashlib.sha256()
+        with open(real, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 22), b""):
+                h.update(block)
+        _SHA_CACHE[key] = h.hexdigest()
+    return _SHA_CACHE[key]
+
+
+def verified_snapshot(
+    backbone: str,
+    *,
+    revision: str | None,
+    sha256: str,
+    cache_dir: str | None = None,
+    local_files_only: bool = False,
+) -> Path:
+    """The cached snapshot folder of ``backbone`` at ``revision``, after checking that its
+    ``model.safetensors`` has the pinned SHA-256 (config key ``model.semantic.weights_sha256``).
+    The model is then loaded from this folder, so the file checked is the file loaded."""
+    from huggingface_hub import hf_hub_download
+
+    kw = {"revision": revision, "cache_dir": cache_dir, "local_files_only": local_files_only}
+    weights = Path(hf_hub_download(backbone, WEIGHTS_FILE, **kw))
+    config = Path(hf_hub_download(backbone, "config.json", **kw))
+    if config.parent != weights.parent:
+        raise WeightsMismatch(f"config.json and {WEIGHTS_FILE} are in different snapshots")
+    got = weights_sha256(weights)
+    if got != sha256.lower():
+        raise WeightsMismatch(
+            f"{weights} ({os.path.getsize(os.path.realpath(weights))} bytes) has sha256 "
+            f"{got}, not the pinned {sha256}: delete this cache folder and download again (a "
+            "Google Drive cache, for example, stores the cache's links as small text files)"
+        )
+    return weights.parent
 
 
 def _vision(model: nn.Module) -> nn.Module:
@@ -36,9 +88,13 @@ def load_clip(
     cache_dir: str | None = None,
     local_files_only: bool = False,
     revision: str | None = None,
+    weights_sha256: str | None = None,
 ) -> nn.Module:
     """``revision``: the pinned Hugging Face commit hash of ``backbone`` (config key
-    ``model.semantic.revision``); the trainer refuses a real backbone without one."""
+    ``model.semantic.revision``); ``weights_sha256``: the pinned SHA-256 of its
+    ``model.safetensors`` (``model.semantic.weights_sha256``). With a hash, the weights are
+    checked and then loaded from the checked snapshot folder. The trainer refuses a real
+    backbone without both."""
     from transformers import CLIPVisionConfig, CLIPVisionModel
 
     if tiny is not None:
@@ -47,6 +103,15 @@ def load_clip(
             return CLIPVisionModel._from_config(cfg, attn_implementation="sdpa")
         except (TypeError, ValueError):  # older transformers
             return CLIPVisionModel(cfg)
+    if weights_sha256:
+        snapshot = verified_snapshot(
+            backbone,
+            revision=revision,
+            sha256=weights_sha256,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        return CLIPVisionModel.from_pretrained(snapshot, attn_implementation="sdpa")
     return CLIPVisionModel.from_pretrained(
         backbone,
         attn_implementation="sdpa",
@@ -73,6 +138,7 @@ class SemanticBranch(nn.Module):
         cache_dir: str | None = None,
         local_files_only: bool = False,
         revision: str | None = None,
+        weights_sha256: str | None = None,
         clip: nn.Module | None = None,
     ) -> None:
         super().__init__()
@@ -84,6 +150,7 @@ class SemanticBranch(nn.Module):
             cache_dir=cache_dir,
             local_files_only=local_files_only,
             revision=revision,
+            weights_sha256=weights_sha256,
         )
         for p in model.parameters():
             p.requires_grad_(False)

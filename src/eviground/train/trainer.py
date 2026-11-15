@@ -122,6 +122,11 @@ class Trainer:
                 "model.semantic.revision is not set: pin the Hugging Face commit hash of "
                 f"{sem.get('backbone')} before training (fix 2 of 14 Nov 2026)"
             )
+        if not sem.get("tiny") and not sem.get("weights_sha256"):
+            raise ValueError(
+                "model.semantic.weights_sha256 is not set: pin the SHA-256 of "
+                f"{sem.get('backbone')}'s model.safetensors before training"
+            )
         self.model = build_model(self.cfg["model"]).to(self.device)
         self.clip_sha256 = ckpt.frozen_clip_sha256(self.model)  # once per run (fix 2)
         self.versions = data_versions(self.shard_dir)

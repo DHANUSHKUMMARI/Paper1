@@ -35,9 +35,9 @@ model:
   edit_threshold: 0.5         # fixed on validation data (test-time rule)
   semantic:
     backbone: openai/clip-vit-large-patch14   # transformers CLIPVisionModel, SDPA attention
-    revision: null            # pinned HF commit hash (fix of 14 Nov); required for training
+    revision: 32bd64288804d66eefd0ccbe215aa642df71cc41   # pinned HF commit (resolved in notebook 05, 15 Nov)
     tiny: null                # debug: a small random CLIP config instead (no download)
-    cache_dir: null           # Drive cache/hf on Colab (filled once, offline afterwards)
+    cache_dir: null           # set by notebook 05 to the local disk: Drive cannot hold HF's symlinks
     local_files_only: false
     lora: {rank: 8, alpha: 16, layers: [20, 21, 22, 23], targets: [q_proj, v_proj], dropout: 0.0}
   trace:

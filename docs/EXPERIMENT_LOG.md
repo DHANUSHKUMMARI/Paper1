@@ -25,10 +25,18 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-15 | Pack training shards (`04`, commit `7c7dcfb`), Cells 1–5 | none (CPU runtime) | 1.239 (74.3 min; about 44 min of it staging the four sources) | 0.10 (1.239 h × 0.08 CU/h, the rate shown in Colab's resource panel) | 88 (balance read in Colab after the run) | 116,759 images in 18 shards, 15.75 GB (estimate 16.30 GB); 11,779 edit masks; packed bytes equal a fresh harmonization for 800 / 800 sampled images (200 per source); index sha256 `1085a527…` |
 | 2026-11-15 | CP2 attempts (`05`, commits `7c7dcfb`–`911bf37`), stopped | L4 | not recorded (no run record: the notebook stopped before Cell 9) | not recorded (1.7 CU/h; read the balance in Colab) | not recorded | Stopped in Cell 4: (1) Drive-cached CLIP file was 79 bytes of link text; (2) Colab's torchao 0.10 refused by peft; (3) an old copy of the notebook's cells pointed at the Drive cache again, caught by the new weights hash check; (4) the epoch plan read ~9,000 edit masks through the Drive mount (>40 min, interrupted). Fixes: PRs #24 and the local shard copy |
 | 2026-11-15 | CP2 (`05`, commit `2673e8f`), Cells 1–9 | L4 | 0.246 (Cells 2–9) | 0.42 (1.7 CU/h) | not recorded (read the balance in Colab) | **CP2 PASS** (script verdict): overfit 100% at step 25; kill-resume max loss difference 0.024%; views 0.064 ms, trace 0.631 ms per image; peak 5.64 GB at batch 32 bf16; loader 253.9 images/s; shards staged in 404 s |
+| 2026-11-15 | CP3 unified, seed 42 (`06`, commit `f2d0e1c`): A1 + 20 epochs | L4 | 3.015 (session; 2.056 GPU training hours) | 5.85 (1.94 CU/h) | not recorded (read the balance in Colab) | **CP3 PASS** (script verdict): A1 accuracy 1.0 at step 25, mask F1 0.871 at step 50; best epoch 20: macro AUC 0.998221, mask F1 0.762032, real marks 0.0815 / area 0.008319, generated 0.0179 / 0.004010, binary mIoU 0.661394 |
+| 2026-11-16 | CP3 detection, seed 42 (`06`, commit `f2d0e1c`): 15 epochs | L4 | 1.547 (session; 1.023 GPU training hours) | 3.00 (1.94 CU/h) | not recorded (read the balance in Colab) | **CP3 PASS** (script verdict): best epoch 15: binary AUC 0.999717, SD v1.4 accuracy 0.991568 |
 
 ## Runs
 
-No training or evaluation run has been made yet.
+Training runs so far (seed 42, notebook 06, commit `f2d0e1c`); the numbers per criterion are in
+`docs/CHECKPOINTS.md` (CP3), the compute in the table above:
+
+- `Paper 1/runs/eviground_unified_seed42/` (A1 record in `eviground_unified_seed42_overfit/`);
+- `Paper 1/runs/eviground_detection_seed42/`.
+
+No evaluation run on a test set has been made yet.
 
 ### Training shards (Milestone 3), 15 Nov 2026
 

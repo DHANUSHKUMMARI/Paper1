@@ -56,10 +56,18 @@ class EviGround(nn.Module):
         self.d = d
         self.edit_threshold = edit_threshold
 
-    def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, images: torch.Tensor, probe: bool = False) -> dict[str, torch.Tensor]:
+        """With ``probe``, the output also holds the plain frozen CLIP's features for the CLIP
+        probe (``probe_cls``, ``probe_patches``) from the same pass (shared trunk)."""
         b, _, h, w = images.shape
         v = self.views(images)
-        s = self.semantic(v["rgb"])  # (B, 1 + g*g, d)
+        extra: dict[str, torch.Tensor] = {}
+        if probe:
+            tokens, cls, patches = self.semantic.joint_tokens(v["rgb"])
+            extra = {"probe_cls": cls, "probe_patches": patches}
+            s = self.semantic.proj(tokens)
+        else:
+            s = self.semantic(v["rgb"])  # (B, 1 + g*g, d)
         grid = int(round((s.shape[1] - 1) ** 0.5))
         tr = self.trace(v["trace"])
         t16 = tr["t16"]
@@ -77,6 +85,7 @@ class EviGround(nn.Module):
             "alpha": alpha,
             "gate": f["gate"],
             "z": f["z"],
+            **extra,
         }
 
     @torch.no_grad()

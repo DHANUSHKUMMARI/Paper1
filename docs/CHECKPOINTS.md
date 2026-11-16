@@ -9,7 +9,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
 | CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | DHANUSH|
 | CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) |DHANUSH |
-| CP3 | 5 | Training health | **PASS** (seed 42, both models; notebook 06 on an L4, 15–16 Nov 2026; script verdict, awaiting Dhanush) | |
+| CP3 | 5 | Training health | **PASS** (seed 42, both models; notebook 06 on an L4, 15–16 Nov 2026; script verdict, awaiting Dhanush) |DHANUSH |
 | CP4 | 6 | Generalization gate | pending | |
 | CP5 | 7 | Evidence faithfulness | pending | |
 | CP6 | 8 | Grounded explanations | pending | |
@@ -404,5 +404,5 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
     code change.
 - **Result:** **PASS** on every criterion for both models (script verdict). Seeds 123 and 2026 wait for CP3
   and CP4 to be accepted.
-- **Verified by Dhanush:** ☐
+- **Verified by Dhanush:** DHANUSH
 

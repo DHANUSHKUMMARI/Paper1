@@ -3,6 +3,40 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR C — validation-only threshold sweep in the localization diagnosis — 2026-11-16
+
+Requested by Dhanush before notebook 08 runs.
+- **Diagnostic only:** every headline number and the CP4 gate stay at 0.5. Validation images only (training editors); no test image is read.
+- Whether the gate ever uses a validation-chosen threshold is his decision after the diagnosis.
+
+Code:
+- **`eval/thresholds.py`:**
+  - `confusion_at` and `pixel_sweep` give pooled edited and background IoU, binary mIoU, pooled F1, mean per-image F1, and the FP and FN shares at 0.05–0.95, step 0.05.
+  - They are computed from the 1,000-bin score histograms `mask_record` already keeps, so the model is not run again.
+  - `boundary_grid` gives the boundary counts at 0.1–0.9, step 0.1, computed on the CPU while the image is evaluated.
+  - `image_sweep` sweeps the P(edited) threshold τ: the share of edited images called edited, and the false-"edited" rate on real images, overall and by tile count.
+  - `best` gives the arg-max threshold, with the value at 0.5 beside it. `diagnosis_sweeps` builds the result block.
+- **`eval/tiled.py`:** `boundary_counts` and `boundary_f1` are split out of `mask_record` and `per_image`. Their results are unchanged.
+- **`eval/runner.py`:** `diagnosis_pass` records `p_edited` per head, and the boundary grid when `sweep=True`. Notebook 09's P2 pass sets `sweep=False`, so no threshold is ever measured on test data.
+- **Notebook 08:** cell 6 adds the sweep and a plot (`diagnosis_threshold_sweep_seed42.png`). Cell 7 writes `threshold_sweep` into `localization_diagnosis_seed42.json`, and the dry run asserts it.
+
+### Results (sandbox: Python 3.13.18, torch 2.15.0, CPU)
+- `ruff check src tests`: clean.
+- `python -m pytest -p no:warnings`: **406 passed** (394 before, plus 12 in `tests/test_thresholds.py`).
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/08_localization_diagnosis.ipynb notebooks/09_cp4_gate.ipynb`: 2 passed.
+
+### What the new tests cover
+- The histogram sweep equals direct thresholding of the probability maps at 0.1, 0.25, 0.5, 0.75 and 0.9. At 0.5 it equals the recorded counts.
+- `confusion_at` on a hand-made histogram.
+- `boundary_counts` at 0.5 equals the boundary counts inside `mask_record`. Boundary F1 appears only at the thresholds on the boundary grid.
+- The image sweep: rates and tile-count bins worked out by hand.
+- `best`: the arg-max, the value at 0.5, and an empty sweep.
+- The shape of the `diagnosis_sweeps` block.
+
+### Not checked
+- The DiffSeg30k paper's definitions of binary mIoU and boundary F1 (arxiv.org is blocked from the sandbox).
+
 ## CP4 PR B — evaluator, CLIP probes, localization diagnosis, P1 gate — 2026-11-16
 
 From the CP4 plan approved on 16 Nov, with Dhanush's changes:

@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 from eviground.baselines.clip_probe import ProbeHead
 from eviground.data.datasets import ForensicDataset
 from eviground.data.transforms import Augment
-from eviground.eval import locdiag
+from eviground.eval import locdiag, thresholds
 from eviground.eval.tiled import Item, TiledEvaluator, mask_record
 from eviground.models.eviground import EviGround, build_model
 from eviground.train import checkpoint as ckpt
@@ -113,16 +113,24 @@ def diagnosis_pass(
     device: torch.device,
     *,
     ceilings: bool = True,
+    sweep: bool = True,
     progress: Callable[[int], None] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Edited images -> mask records (and resolution ceilings); real images -> labels and
-    marked shares. Other images are skipped."""
+    marked shares. Every record keeps P(edited) per head; with ``sweep`` edited records also
+    keep the boundary counts at :data:`thresholds.BOUNDARY_GRID` (validation threshold sweep).
+    Other images are skipped."""
     edited: list[dict[str, Any]] = []
     real: list[dict[str, Any]] = []
 
     def on_image(item: Item, res: Mapping[str, Mapping[str, Any]]) -> None:
         meta = item.meta
-        base = {"uid": item.uid, "source": meta.get("source"), "tiles": res["model"]["tiles"]}
+        base = {
+            "uid": item.uid,
+            "source": meta.get("source"),
+            "tiles": res["model"]["tiles"],
+            "p_edited": {h: float(r["probs"]["edited"]) for h, r in res.items()},
+        }
         if item.mask is not None and item.mask.any():
             edited.append(
                 {
@@ -136,6 +144,12 @@ def diagnosis_pass(
                     },
                     "labels": {h: r["label"] for h, r in res.items()},
                     "ceilings": locdiag.ceiling_records(item.mask) if ceilings else None,
+                    "boundary_grid": {
+                        h: thresholds.boundary_grid(r["prob_map"], item.mask)
+                        for h, r in res.items()
+                    }
+                    if sweep
+                    else None,
                 }
             )
         elif meta.get("label") == "real":

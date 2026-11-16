@@ -9,7 +9,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP0 | 1 | Environment | **PASS** (11 Nov 2026) | DHANUSH|
 | CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | DHANUSH|
 | CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) |DHANUSH |
-| CP3 | 5 | Training health | pending | |
+| CP3 | 5 | Training health | **PASS** (seed 42, both models; notebook 06 on an L4, 15–16 Nov 2026; script verdict, awaiting Dhanush) | |
 | CP4 | 6 | Generalization gate | pending | |
 | CP5 | 7 | Evidence faithfulness | pending | |
 | CP6 | 8 | Grounded explanations | pending | |
@@ -271,6 +271,85 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   COCO negatives at DiffSeg30k sizes: 204 unchanged, 490 cropped, 189 downscaled, 3,967 upscaled.
 - **Result:** **PASS** (criteria met; the base-disagreement stop accepted by Dhanush).
 - **Verified by Dhanush:** DHANUSH
+
+
+---
+
+### CP3 — Training health, seed 42 — 2026-11-16 — **PASS** (script verdict; awaiting Dhanush)
+
+- **Run / commit:** `notebooks/06_cp3_training.ipynb`, commit `f2d0e1c` (main after PR #28), branch `main`,
+  NVIDIA L4 (23.7 GB), torch 2.14.1+cu130, Python 3.13.16, `CU_PER_HOUR` 1.94.
+  - Unified: run folder Drive `Paper 1/runs/eviground_unified_seed42/`; A1 record
+    `Paper 1/runs/eviground_unified_seed42_overfit/overfit_a1.json`; result
+    `Paper 1/runs/checkpoints/cp3_training_health_unified_seed42.json` (2026-11-15 22:25 UTC).
+  - Detection: run folder `Paper 1/runs/eviground_detection_seed42/`; result
+    `Paper 1/runs/checkpoints/cp3_training_health_detection_seed42.json` (2026-11-16 07:09 UTC).
+- **Inputs (both runs):** CLIP `openai/clip-vit-large-patch14` at `32bd6428…` (frozen-weights SHA-256
+  `cdd5e4900ac8…`, as in CP2); shard index `1085a527…`, manifest `ef4f4f12…`, mask rule v1 of 14 Nov;
+  channels_last off; batch 32, bf16, seed 42.
+- **What was run:** Run all, once with `PROFILE = 'unified'` (A1, then 20 epochs × 750 steps) and once with
+  `PROFILE = 'detection'` (15 epochs × 500 steps). Neither run stopped early; both ran their full length.
+- **Criteria** (plan approved 15 Nov; masks are the raw decoder output at 0.5, no class-gating). Epochs are
+  counted from 1 here; the JSON files count from 0 (`best_epoch` 19 and 14).
+
+**Unified model** — best epoch 20 of 20 (selection 0.880127):
+
+| # | Criterion | Untrained (CP2) | Measured at the best epoch | Result |
+|---|-----------|-----------------|----------------------------|--------|
+| S1 | Every loss term and gradient norm finite; best-epoch training loss below epoch 1's | — | 15,000 steps, 0 non-finite values, no `nonfinite.json`; loss 1.704758 → 0.765366 | PASS |
+| S2a | Macro one-vs-rest AUC ≥ 0.90; stop if any class < 0.80 | 0.5234 | 0.998221 (real 0.998345, generated 0.999297, edited 0.997022) | PASS |
+| S2b | Early stop, or selection gain < 0.005 over the last 4 epochs | — | gain 0.000122 (no early stop) | PASS |
+| S3 | (judged on the detection model) GenImage accuracy, 3 classes | — | 0.9838 | REPORT |
+| A1 | 64-image overfit: accuracy ≥ 0.99 within 300 steps; per-image mask F1 on the 22 edited ≥ 0.80 within 1,000 steps | — | accuracy 1.0 at step 25; mask F1 0.6145 at step 25, 0.8710 at step 50; 1.91 min | PASS |
+| A2 | Real crops: share with any mark ≤ 0.20; mean marked area ≤ 0.01 | 1.0 / 0.1405 | 0.081515 / 0.008319 | PASS |
+| A3 | Generated crops: the same limits | — | 0.017868 / 0.004010 | PASS |
+| A4 | Validation per-image mask F1 ≥ 0.50 | 0.2162 | 0.762032 | PASS |
+| R1 | Called-edited gap, DiffSeg30k real − COCO real; stop if > 0.10 | — | 0.031315 − 0.012422 = 0.018893 | REPORT (no stop) |
+| R2 | Validation binary mIoU (guide; not comparable with CP4's P2) | — | 0.661394 | REPORT |
+
+- Other validation numbers at the best epoch: accuracy 0.9753, balanced 0.9657; mask F1 pooled 0.807117,
+  IoU pooled 0.676610; gate mean 0.62018 (untrained 0.452).
+  - Accuracy per source and class: GenImage real 0.9791 / generated 0.9880; SID-Set real 0.9442 / generated
+    0.9848; COCO real 0.9834; DiffSeg30k real 0.9687 / edited 0.9372.
+  - Marks on real crops per source (any / area): COCO 0.060041 / 0.006803; GenImage 0.057548 / 0.004727;
+    SID-Set 0.131846 / 0.021051; DiffSeg30k 0.179541 / 0.010606.
+- Training subset (2,000 images, fixed crops) at the same epoch: selection 0.884048 (validation 0.880127),
+  mask F1 0.769206 (0.762032), macro AUC 0.998889 (0.998221): no train–validation gap.
+
+**Detection model** — best epoch 15 of 15 (binary AUC 0.999717):
+
+| # | Criterion | Measured at the best epoch | Result |
+|---|-----------|----------------------------|--------|
+| S1 | Every loss term and gradient norm finite; best-epoch loss below epoch 1's | 7,500 steps, 0 non-finite values; loss 0.824854 → 0.206964 | PASS |
+| S2a | Binary AUC ≥ 0.90 | 0.999717 | PASS |
+| S2b | Early stop, or gain < 0.005 over the last 4 epochs | gain 0.000078 (no early stop) | PASS |
+| S3 | In-distribution SD v1.4 accuracy ≥ 0.95, by 1 − P(real) ≥ 0.5 | 0.991568 (real 0.9905, generated 0.9925); 0.971673 already at epoch 1 | PASS |
+
+- Gate mean 0.815278; training subset accuracy 0.9955.
+
+- **Compute:**
+  - unified session (A1 and training): 3.015 h wall time = **5.85 CU** at 1.94 CU/h
+    (`compute.json`: 2.0562 GPU training hours = 3.989 CU);
+  - detection session: 1.547 h = **3.00 CU** (`compute.json`: 1.023 h = 1.985 CU);
+  - seed 42 in all: **8.85 CU** (plan estimate about 8).
+- **Notes for Dhanush:**
+  - A2 passed with a small margin: real marked area 0.008319 against 0.01. It swung between epochs during
+    the run (0.0060 to 0.0493) and stayed between 0.0060 and 0.0099 from epoch 12, as the learning rate
+    decayed. On their own, DiffSeg30k real crops are at 0.010606 and SID-Set real crops at 0.021051.
+  - R1: the class decision shows no DiffSeg30k-style shortcut (gap 0.019), but the mask marks DiffSeg30k
+    real crops three times as often as COCO real crops (0.180 vs 0.060). Carried to CP4 and BR-Gen.
+  - R2 (binary mIoU 0.661 on crops of the training editors) is well below CP4's P2 bar (0.80 on whole images
+    of held-out editors). The two are not directly comparable, but localization is the CP4 risk.
+  - The gate leans on the semantic tokens more in the detection model (0.815) than in the unified model
+    (0.620), where the trace branch carries about 38% of the fused tokens.
+  - Both best epochs are the last epochs (the cosine schedule ends at learning rate 0); the plateau test
+    passed in both runs, so no extension is needed.
+  - The detection JSON's `vs_untrained_cp2` block compares a macro AUC the detection profile does not log
+    (`best: null`); CP2 has no untrained detection value. A cosmetic fix for `cp3.py`, carried to the next
+    code change.
+- **Result:** **PASS** on every criterion for both models (script verdict). Seeds 123 and 2026 wait for CP3
+  and CP4 to be accepted.
+- **Verified by Dhanush:** ☐
 
 ---
 

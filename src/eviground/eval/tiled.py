@@ -132,9 +132,15 @@ class TiledEvaluator:
 
 
 def _boundary(m: torch.Tensor) -> torch.Tensor:
-    """Pixels of a binary mask (1, 1, H, W) with a 4-neighbour outside the mask."""
-    eroded = -F.max_pool2d(-m.float(), 3, stride=1, padding=1)
-    return (m > 0) & (eroded < 1)
+    """Pixels of a binary mask (1, 1, H, W) with a 4-neighbour (up, down, left, right) outside
+    the mask. The image border is not a boundary: the frame is padded with the pixel's own value,
+    since an edit reaching the edge of the image ends there because the image does."""
+    x = F.pad(m.float(), (1, 1, 1, 1), mode="replicate")
+    c = x[..., 1:-1, 1:-1]
+    neighbours = torch.stack(
+        [x[..., :-2, 1:-1], x[..., 2:, 1:-1], x[..., 1:-1, :-2], x[..., 1:-1, 2:]]
+    )
+    return (c > 0) & (neighbours.amin(dim=0) < 1)
 
 
 def mask_record(

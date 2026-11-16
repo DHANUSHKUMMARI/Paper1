@@ -314,3 +314,19 @@ def test_average_precision_and_false_edited_bins():
     fe = cp4.false_edited(recs, "unified")
     assert fe["images"] == 3
     assert fe["by_tiles"]["10-16"]["rate"] == 0.5
+
+
+def test_boundary_uses_four_neighbours_and_not_the_image_frame():
+    from eviground.eval.tiled import _boundary
+
+    plus = torch.zeros(1, 1, 5, 5, dtype=torch.bool)
+    plus[..., 2, 1:4] = True
+    plus[..., 1:4, 2] = True
+    b = _boundary(plus)[0, 0]
+    assert not b[2, 2]  # its outside neighbours are diagonal only
+    assert int(b.sum()) == 4
+    full = torch.ones(1, 1, 4, 4, dtype=torch.bool)
+    assert not _boundary(full).any()
+    half = torch.zeros(1, 1, 4, 4, dtype=torch.bool)
+    half[..., :, :2] = True
+    assert _boundary(half)[0, 0].nonzero()[:, 1].unique().tolist() == [1]

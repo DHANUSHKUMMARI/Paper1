@@ -276,18 +276,21 @@ def test_loss_terms_and_lambdas():
 # --- tiles and tiled prediction -------------------------------------------------------------
 
 
-def test_tile_rule():
+def test_tile_rule_full_coverage():
     assert tiles.tile_positions(256) == [0]
     assert tiles.tile_positions(200) == [0]
     assert tiles.tile_positions(600) == [0, 256, 344]
-    assert tiles.tile_positions(1024) == [0, 384, 768]  # 3 evenly spaced, not covering
+    assert tiles.tile_positions(1024) == [0, 256, 512, 768]  # full coverage (16 Nov 2026)
+    assert tiles.tile_positions(1000) == [0, 256, 512, 744]  # last tile aligned to the border
+    assert tiles.tile_count(1024, 1024) == 16
+    assert tiles.tile_count(128, 128) == 1
     assert len(tiles.tile_boxes(700, 700)) == 9
     assert tiles.tile_boxes(180, 300) == [(0, 0, 256, 180), (44, 0, 300, 180)]
-    assert tiles.coverage(700) == 1.0
-    assert tiles.coverage(1024) == 0.75
-    for h, w in ((256, 256), (300, 700), (768, 512), (199, 640)):
+    for n in (128, 256, 300, 700, 1000, 1024, 2304):
+        assert tiles.coverage(n) == 1.0
+    for h, w in ((256, 256), (300, 700), (768, 512), (199, 640), (1024, 1024), (1003, 1003)):
         boxes = tiles.tile_boxes(h, w)
-        assert len(boxes) <= 9
+        assert len(boxes) == tiles.tile_count(h, w)
         assert all(r - le <= 256 and b - t <= 256 for le, t, r, b in boxes)  # never padded
         covered = torch.zeros(h, w, dtype=torch.bool)
         for le, t, r, b in boxes:
@@ -295,8 +298,29 @@ def test_tile_rule():
         assert bool(covered.all())
 
 
+def test_earlier_capped_rule_is_still_available():
+    assert tiles.tile_positions(1024, max_per_axis=3) == [0, 384, 768]  # not covering
+    assert tiles.coverage(1024, max_per_axis=3) == 0.75
+
+
+def test_stitch_takes_the_mean_where_tiles_overlap():
+    boxes = tiles.tile_boxes(256, 300)  # x = 0 and 44: columns 44-255 are covered twice
+    maps = torch.stack([torch.zeros(256, 256), torch.ones(256, 256)])
+    out = tiles.stitch(maps, boxes, 256, 300)
+    assert float(out[0, 10]) == 0.0
+    assert float(out[0, 100]) == 0.5
+    assert float(out[0, 290]) == 1.0
+
+
+def test_stitch_of_identity_tiles_gives_the_image_back():
+    img = torch.rand(1003, 1003)
+    boxes = tiles.tile_boxes(1003, 1003)
+    maps = torch.stack([img[t:b, le:r] for le, t, r, b in boxes])
+    assert torch.allclose(tiles.stitch(maps, boxes, 1003, 1003), img)
+
+
 def test_stitch_fills_uncovered_pixels_from_the_nearest_tile():
-    boxes = tiles.tile_boxes(1024, 256)
+    boxes = tiles.tile_boxes(1024, 256, max_per_axis=3)
     maps = torch.stack([torch.full((256, 256), float(i)) for i in range(len(boxes))])
     out = tiles.stitch(maps, boxes, 1024, 256)
     assert out.shape == (1024, 256)
@@ -326,3 +350,18 @@ def test_tiled_prediction_with_one_edited_tile(monkeypatch, model):
     assert res["tiles"] == 6
     assert float(res["mask"][0, 0]) > 0.99
     assert float(res["mask"][-1, -1]) < 0.01
+
+
+def test_tiled_prediction_runs_fixed_size_batches(monkeypatch, model):
+    image = torch.rand(3, 1024, 1024)
+    sizes = []
+
+    def fake_forward(x):
+        sizes.append(x.shape[0])
+        n, _, h, w = x.shape
+        return {"logits": torch.zeros(n, 3), "mask_logits": torch.zeros(n, 1, h, w)}
+
+    monkeypatch.setattr(model, "forward", fake_forward)
+    res = model.predict_tiled(image, batch_size=5)
+    assert res["tiles"] == 16 and res["coverage"] == 1.0
+    assert sizes == [5, 5, 5, 1]

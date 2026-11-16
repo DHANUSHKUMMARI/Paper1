@@ -363,5 +363,6 @@ def test_tiled_prediction_runs_fixed_size_batches(monkeypatch, model):
 
     monkeypatch.setattr(model, "forward", fake_forward)
     res = model.predict_tiled(image, batch_size=5)
-    assert res["tiles"] == 16 and res["coverage"] == 1.0
+    assert res["tiles"] == 16
+    assert res["coverage"] == pytest.approx(1.0)
     assert sizes == [5, 5, 5, 1]

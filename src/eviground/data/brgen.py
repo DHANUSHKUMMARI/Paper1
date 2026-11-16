@@ -24,7 +24,11 @@ from typing import Any
 from eviground.eval.devsplit import file_list_sha256
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
-MASK_WORDS = ("mask", "gt", "groundtruth", "ground_truth", "label")
+# BR-Gen's README: Au/ (authentic), Tp/ (tampered), Gt/ (masks named <tampered stem>_mask.png)
+MASK_DIRS = {"gt", "mask", "masks", "groundtruth", "ground_truth", "label", "labels"}
+IMAGE_DIRS = {"tp", "image", "images", "img", "imgs", "tampered", "fake"}
+AUTHENTIC_DIRS = {"au", "authentic", "real"}
+MASK_SUFFIX = re.compile(r"[_-](mask|gt|label)$", re.IGNORECASE)
 SEED = 42
 SALT = "brgen_subset_v1"
 
@@ -77,8 +81,31 @@ def is_image(path: str) -> bool:
 
 
 def is_mask(path: str) -> bool:
-    parts = [p.lower() for p in PurePosixPath(path).parts]
-    return any(w in p for p in parts for w in MASK_WORDS)
+    p = PurePosixPath(path)
+    dirs = {d.lower() for d in p.parent.parts}
+    return bool(dirs & MASK_DIRS) or bool(MASK_SUFFIX.search(p.stem))
+
+
+def kind(path: str) -> str:
+    """'mask', 'authentic', 'image' (tampered or unknown) or 'other'."""
+    if not is_image(path):
+        return "other"
+    if is_mask(path):
+        return "mask"
+    if {d.lower() for d in PurePosixPath(path).parent.parts} & AUTHENTIC_DIRS:
+        return "authentic"
+    return "image"
+
+
+def method_of(path: str) -> str:
+    """The generator prefix of a BR-Gen file name (``MAT_Stuff_COCO_...`` -> ``MAT``)."""
+    return PurePosixPath(path).name.split("_", 1)[0]
+
+
+def stratum_key(path: str, depth: int) -> str:
+    """The first ``depth`` folders and the file's generator prefix."""
+    parts = PurePosixPath(path).parts
+    return "/".join([*parts[: min(depth, len(parts) - 1)], method_of(path)])
 
 
 def summarize(entries: Sequence[Mapping[str, Any]], depth: int = 3, examples: int = 3) -> dict:
@@ -95,9 +122,7 @@ def summarize(entries: Sequence[Mapping[str, Any]], depth: int = 3, examples: in
         top = "/".join(parts[: min(depth, len(parts) - 1)])
         if len(sample[top]) < examples:
             sample[top].append(e["path"])
-    kinds = Counter(
-        "mask" if is_mask(e["path"]) else "image" if is_image(e["path"]) else "other" for e in files
-    )
+    kinds = Counter(kind(e["path"]) for e in files)
     return {
         "members": len(entries),
         "files": len(files),
@@ -109,19 +134,11 @@ def summarize(entries: Sequence[Mapping[str, Any]], depth: int = 3, examples: in
     }
 
 
-KIND_DIRS = {"image", "images", "img", "imgs"}
-
-
 def _pair_key(path: str) -> str:
-    """The path without its image / mask folder and without a mask suffix on the name."""
+    """The path without its image / mask folder (``Tp`` / ``Gt``) and without a mask suffix."""
     p = PurePosixPath(path)
-    folders = [
-        d.lower()
-        for d in p.parent.parts
-        if d.lower() not in KIND_DIRS and not any(w in d.lower() for w in MASK_WORDS)
-    ]
-    stem = re.sub(r"[_-]?(mask|gt|label)$", "", p.stem.lower())
-    return "/".join([*folders, stem])
+    folders = [d.lower() for d in p.parent.parts if d.lower() not in MASK_DIRS | IMAGE_DIRS]
+    return "/".join([*folders, MASK_SUFFIX.sub("", p.stem).lower()])
 
 
 def pair_masks(paths: Iterable[str]) -> dict[str, Any]:
@@ -129,9 +146,9 @@ def pair_masks(paths: Iterable[str]) -> dict[str, Any]:
     the same name under a mask folder); returns pairs and the unpaired counts."""
     images, masks = {}, {}
     for p in paths:
-        if not is_image(p):
-            continue
-        (masks if is_mask(p) else images).setdefault(_pair_key(p), []).append(p)
+        k = kind(p)
+        if k in ("image", "mask"):
+            (masks if k == "mask" else images).setdefault(_pair_key(p), []).append(p)
     pairs = {i[0]: masks[k][0] for k, i in images.items() if k in masks and len(i) == 1}
     return {
         "pairs": pairs,
@@ -201,16 +218,19 @@ def extract(
 
 
 def fake_listing(n_per_method: int = 6) -> str:
-    """``7z l -slt`` text of a small invented archive (tests and dry runs; not BR-Gen's layout)."""
+    """``7z l -slt`` text of a small archive laid out as BR-Gen's README shows (Au/, Tp/, Gt/;
+    masks named ``<tampered stem>_mask.png``); tests and dry runs only."""
     lines = ["7-Zip (z) fake", "", "----------"]
-    for method in ("methodA", "methodB"):
-        for region in ("object", "background"):
-            for i in range(n_per_method):
-                for kind, ext in (("image", ".png"), ("mask", ".png")):
-                    lines += [
-                        f"Path = BR-Gen/{method}/{region}/{kind}/{i:04d}{ext}",
-                        "Folder = -",
-                        f"Size = {1000 + i}",
-                        "",
-                    ]
+
+    def entry(path: str, size: int) -> None:
+        lines.extend([f"Path = {path}", "Folder = -", f"Size = {size}", ""])
+
+    for region in ("Stuff", "Background"):
+        root = f"BR-Gen/BRGen-{region}-Val"
+        for i in range(n_per_method):
+            src = f"COCO_{i:011d}"
+            entry(f"{root}/Au/{src}.png", 900 + i)
+            for method in ("MAT", "SDXL"):
+                entry(f"{root}/Tp/{method}_{region}_{src}.png", 1000 + i)
+                entry(f"{root}/Gt/{method}_{region}_{src}_mask.png", 100 + i)
     return "\n".join(lines)

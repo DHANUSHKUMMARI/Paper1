@@ -57,6 +57,18 @@ Sandbox runs:
   - Notebook 07 ran on the fake world, with a fake BR-Gen zip of 32 files. The subset was frozen and the sample check passed on 4 images, up to 12 tiles.
   - The fake world has only 2 images per GenImage folder, so its dev split is nearly empty; the real folders have 6,000–8,000.
 
+Review fixes (PR #31):
+- **Codex (P1):** BR-Gen's README lays its data out as `Au/` (authentic), `Tp/` (tampered) and `Gt/` (masks named `<tampered stem>_mask.png`).
+  - The pairing dropped `Gt` but kept `Tp`, so it would have paired nothing.
+  - Folders are now matched by exact name for images and masks, plus the `_mask` suffix. `gt` no longer matches inside other words.
+  - Authentic images are counted separately.
+  - Strata now combine folders with the file's method prefix (`MAT_Stuff_...` → `MAT`).
+  - The fake listing and the dry-run archive use this layout.
+- **SonarCloud:**
+  - a float equality check in notebook 07's sample check is replaced with a tolerance;
+  - `devsplit._groups` is split, with a small union-find;
+  - a combined test assertion is split.
+
 Not run here: the real manifest (Drive), the real BR-Gen archive (its listing is notebook 07's first job), Colab timings.
 
 ## CP3 — training health, seed 42 (Milestone 3) — 2026-11-15

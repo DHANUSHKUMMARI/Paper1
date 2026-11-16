@@ -51,30 +51,33 @@ def _rank(seed: int, salt: str, key: str) -> str:
     return hashlib.sha256(f"{seed}|{salt}|{key}".encode()).hexdigest()
 
 
+class _UnionFind:
+    def __init__(self, items: Iterable[str]) -> None:
+        self.parent = {u: u for u in items}
+
+    def find(self, u: str) -> str:
+        while self.parent[u] != u:
+            self.parent[u] = self.parent[self.parent[u]]
+            u = self.parent[u]
+        return u
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[max(ra, rb)] = min(ra, rb)  # the group key is its smallest uid
+
+
 def _groups(rows: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """uid -> group key: union of rows sharing ``sha256`` or ``pixel_sha256``; the key is the
     group's smallest uid."""
-    parent = {r["uid"]: r["uid"] for r in rows}
-
-    def find(u: str) -> str:
-        while parent[u] != u:
-            parent[u] = parent[parent[u]]
-            u = parent[u]
-        return u
-
+    uf = _UnionFind(r["uid"] for r in rows)
     for col in ("sha256", "pixel_sha256"):
         first: dict[str, str] = {}
         for r in rows:
             h = r.get(col)
-            if not h:
-                continue
-            if h in first:
-                a, b = find(first[h]), find(r["uid"])
-                if a != b:
-                    parent[max(a, b)] = min(a, b)
-            else:
-                first[h] = r["uid"]
-    return {u: find(u) for u in parent}
+            if h:
+                uf.union(first.setdefault(h, r["uid"]), r["uid"])
+    return {u: uf.find(u) for u in uf.parent}
 
 
 def build_dev_split(

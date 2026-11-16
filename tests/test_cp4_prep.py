@@ -111,26 +111,38 @@ def test_file_list_hash_ignores_order():
 
 
 def test_parse_summarize_pair_and_subset_a_listing():
+    """BR-Gen's README layout: Au/ (authentic), Tp/ (tampered), Gt/ (``<stem>_mask.png``)."""
     entries = brgen.parse_slt(brgen.fake_listing(4))
-    assert len(entries) == 2 * 2 * 4 * 2
+    assert len(entries) == 2 * (4 + 4 * 2 * 2)
     paths = [e["path"] for e in entries]
     summary = brgen.summarize(entries)
-    assert summary["kinds"] == {"image": 16, "mask": 16}
-    assert summary["directories"]["BR-Gen/methodA"]["files"] == 16
+    assert summary["kinds"] == {"authentic": 8, "image": 16, "mask": 16}
+    assert summary["directories"]["BR-Gen/BRGen-Stuff-Val"]["files"] == 20
     pairs = brgen.pair_masks(paths)
     assert len(pairs["pairs"]) == 16
     assert pairs["images_without_mask"] == 0
-    img = "BR-Gen/methodB/object/image/0002.png"
-    assert pairs["pairs"][img] == "BR-Gen/methodB/object/mask/0002.png"
+    img = "BR-Gen/BRGen-Stuff-Val/Tp/SDXL_Stuff_COCO_00000000002.png"
+    assert pairs["pairs"][img] == "BR-Gen/BRGen-Stuff-Val/Gt/SDXL_Stuff_COCO_00000000002_mask.png"
+    assert brgen.method_of(img) == "SDXL"
+    assert brgen.stratum_key(img, 2) == "BR-Gen/BRGen-Stuff-Val/SDXL"
 
     def stratum(p):
-        return "/".join(p.split("/")[1:3])
+        return brgen.stratum_key(p, 2)
 
     sub = brgen.subset(sorted(pairs["pairs"]), 2, stratum)
     assert len(sub["items"]) == 8
     assert all(c == {"available": 4, "chosen": 2} for c in sub["strata"].values())
     assert brgen.subset(list(reversed(sorted(pairs["pairs"]))), 2, stratum) == sub
     assert brgen.subset(sorted(pairs["pairs"]), 2, stratum, salt="x")["sha256"] != sub["sha256"]
+    assert len(brgen.sample(sub["items"], 3)) == 3
+
+
+def test_kinds_do_not_match_mask_words_inside_other_names():
+    assert brgen.kind("BR-Gen/BRGen-Stuff-Val/Tp/x.png") == "image"
+    assert brgen.kind("data/target_images/x.png") == "image"  # 'gt' only as a folder or suffix
+    assert brgen.kind("data/Gt/x_mask.png") == "mask"
+    assert brgen.kind("data/Au/x.png") == "authentic"
+    assert brgen.kind("notes.txt") == "other"
 
 
 def test_mask_suffix_pairs_in_the_same_folder():

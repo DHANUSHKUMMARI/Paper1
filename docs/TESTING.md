@@ -3,6 +3,74 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR A — full-coverage tiling, development split, BR-Gen tools — 2026-11-16
+
+From the CP4 plan approved on 16 Nov.
+
+Code:
+- `data/tiles.py`: full coverage by default.
+  - Stride 256, the last tile aligned to the border, no 3-per-axis cap: a 1024² image takes 16 tiles.
+  - The earlier capped rule stays available through `max_per_axis` for comparison.
+  - New `tile_count`.
+  - Overlapping tiles: mean of the probabilities (unchanged).
+- `models/eviground.py`:
+  - `predict_tiled` runs fixed-size batches (`TILE_BATCH` = 32) and reports the tile count and coverage.
+  - The image-level rule moved into `aggregate_tiles` and `decide`. The rule itself is unchanged: P(real) and P(generated) are means over tiles, P(edited) is the maximum.
+- `eval/devsplit.py`: the CP4 development hold-out.
+  - P1: 20% of each GenImage validation folder. P2: 20% per base type.
+  - Seed 42, salt `cp4_dev_v1`; half rounds up.
+  - Identical bytes or pixels form one group and land on one side.
+  - The split is frozen by the SHA-256 of its sorted uid list. `load` checks that hash, and `verify` rebuilds the split from the manifest.
+- `data/brgen.py`:
+  - a parser for `7z l -slt` output;
+  - listing of the split archive through its last volume;
+  - a summary per folder and kind;
+  - image–mask pairing;
+  - a seeded stratified subset frozen by its list SHA-256;
+  - extraction of named members only.
+- `notebooks/07_cp4_prep.ipynb` (CPU):
+  - freezes the dev split once, then reuses and verifies it;
+  - lists BR-Gen;
+  - behind flags, after the subset design is approved: freezes the subset and runs the sample check (untrained model, no scoring).
+
+Tests:
+- `tests/test_models.py` (tiling):
+  - full coverage on sizes 128–2304;
+  - 1024 → 16 tiles; 1000 → last tile at 744;
+  - the mean where tiles overlap;
+  - stitching identity tiles gives the image back;
+  - the capped rule still available;
+  - fixed batch sizes (16 tiles at batch 5 → 5, 5, 5, 1).
+- `tests/test_cp4_prep.py` (7):
+  - the dev split takes 20% per stratum, is deterministic and independent of row order, and depends on the salt;
+  - duplicates stay together across strata;
+  - save, load and verify, including a tampered list;
+  - the BR-Gen listing: parse, summary and pairing (folder and suffix forms);
+  - a deterministic subset;
+  - a real split zip made with `zip -s` (3 volumes), listed and partly extracted with 7z (skipped where 7z or zip is missing).
+
+Sandbox runs:
+- `ruff check` and `ruff format --check`: clean.
+- `python -m pytest -p no:warnings`: 377 passed.
+- `python -m eviground.utils.repo_audit`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 05 and 07: passed.
+  - Notebook 07 ran on the fake world, with a fake BR-Gen zip of 32 files. The subset was frozen and the sample check passed on 4 images, up to 12 tiles.
+  - The fake world has only 2 images per GenImage folder, so its dev split is nearly empty; the real folders have 6,000–8,000.
+
+Review fixes (PR #31):
+- **Codex (P1):** BR-Gen's README lays its data out as `Au/` (authentic), `Tp/` (tampered) and `Gt/` (masks named `<tampered stem>_mask.png`).
+  - The pairing dropped `Gt` but kept `Tp`, so it would have paired nothing.
+  - Folders are now matched by exact name for images and masks, plus the `_mask` suffix. `gt` no longer matches inside other words.
+  - Authentic images are counted separately.
+  - Strata now combine folders with the file's method prefix (`MAT_Stuff_...` → `MAT`).
+  - The fake listing and the dry-run archive use this layout.
+- **SonarCloud:**
+  - a float equality check in notebook 07's sample check is replaced with a tolerance;
+  - `devsplit._groups` is split, with a small union-find;
+  - a combined test assertion is split.
+
+Not run here: the real manifest (Drive), the real BR-Gen archive (its listing is notebook 07's first job), Colab timings.
+
 ## CP3 — training health, seed 42 (Milestone 3) — 2026-11-15
 
 Built from the CP3 plan Dhanush approved on 15 Nov (criteria S1–S3, A1–A4, R1, R2).

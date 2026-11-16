@@ -80,30 +80,26 @@ class EviGround(nn.Module):
         }
 
     @torch.no_grad()
-    def predict_tiled(self, image: torch.Tensor, batch_size: int = 9) -> dict[str, Any]:
-        """``image``: (3, H, W) in [0, 1]. Tiles, aggregated probabilities, stitched mask."""
+    def predict_tiled(
+        self, image: torch.Tensor, batch_size: int = tiling.TILE_BATCH
+    ) -> dict[str, Any]:
+        """``image``: (3, H, W) in [0, 1]. Every tile (full coverage), run in batches of
+        ``batch_size``; aggregated probabilities and the stitched mask (mean where tiles
+        overlap)."""
         _, h, w = image.shape
         boxes = tiling.tile_boxes(h, w)
-        crops = torch.stack([image[:, t:b, le:r] for le, t, r, b in boxes])
         probs, masks = [], []
-        for i in range(0, len(crops), batch_size):
-            out = self(crops[i : i + batch_size])
+        for i in range(0, len(boxes), batch_size):
+            crops = torch.stack([image[:, t:b, le:r] for le, t, r, b in boxes[i : i + batch_size]])
+            out = self(crops)
             probs.append(torch.softmax(out["logits"].float(), dim=-1))
             masks.append(torch.sigmoid(out["mask_logits"].float())[:, 0])
         p = torch.cat(probs)
-        agg = {
-            "real": float(p[:, REAL].mean()),
-            "generated": float(p[:, CLASSES.index("generated")].mean()),
-            "edited": float(p[:, EDITED].max()),
-        }
-        if agg["edited"] >= self.edit_threshold:
-            label = "edited"
-        else:
-            label = "real" if agg["real"] >= agg["generated"] else "generated"
+        agg = aggregate_tiles(p)
         mask = tiling.stitch(torch.cat(masks), boxes, h, w)
         return {
             "probs": agg,
-            "label": label,
+            "label": decide(agg, self.edit_threshold),
             "mask": mask,
             "tiles": len(boxes),
             "coverage": tiling.coverage(h) * tiling.coverage(w),
@@ -121,6 +117,23 @@ class EviGround(nn.Module):
             },
             {"params": rest, "lr": lr, "weight_decay": weight_decay},
         ]
+
+
+def aggregate_tiles(p: torch.Tensor) -> dict[str, float]:
+    """Image-level probabilities from tile probabilities (n, 3): P(real) and P(generated) the
+    mean over tiles, P(edited) the maximum (spec section 8, test-time rule; unchanged 16 Nov)."""
+    return {
+        "real": float(p[:, REAL].mean()),
+        "generated": float(p[:, CLASSES.index("generated")].mean()),
+        "edited": float(p[:, EDITED].max()),
+    }
+
+
+def decide(agg: Mapping[str, float], edit_threshold: float) -> str:
+    """Edited if P(edited) >= the threshold, otherwise the larger of real and generated."""
+    if agg["edited"] >= edit_threshold:
+        return "edited"
+    return "real" if agg["real"] >= agg["generated"] else "generated"
 
 
 def disable_dropout(model: nn.Module) -> None:

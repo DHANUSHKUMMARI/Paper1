@@ -57,3 +57,10 @@ jobs:
         run: |
           EVIGROUND_PROFILE=unified pytest -q --nbmake notebooks/06_cp3_training.ipynb
           EVIGROUND_PROFILE=detection pytest -q --nbmake notebooks/06_cp3_training.ipynb
+
+      - name: Notebook 07 dry run (CP4 preparation; 7z for the BR-Gen listing)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: |
+          command -v 7z || (sudo apt-get update -q && sudo apt-get install -y -q p7zip-full)
+          pytest -q --nbmake notebooks/07_cp4_prep.ipynb

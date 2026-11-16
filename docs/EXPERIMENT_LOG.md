@@ -30,7 +30,13 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 
 ## Runs
 
-No training or evaluation run has been made yet.
+Training runs so far (seed 42, notebook 06, commit `f2d0e1c`); the numbers per criterion are in
+`docs/CHECKPOINTS.md` (CP3), the compute in the table above:
+
+- `Paper 1/runs/eviground_unified_seed42/` (A1 record in `eviground_unified_seed42_overfit/`);
+- `Paper 1/runs/eviground_detection_seed42/`.
+
+No evaluation run on a test set has been made yet.
 
 ### Training shards (Milestone 3), 15 Nov 2026
 

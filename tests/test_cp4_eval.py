@@ -44,13 +44,15 @@ def test_tiled_evaluator_batches_across_images_and_stitches():
         img = (rng.random((h, w, 3)) > 0.5).astype(np.uint8) * 255
         ev.add(tiled.Item(f"u{i}", img, meta={"k": i}))
     ev.close()
-    assert ev.images == 5 and ev.max_tiles == 16
+    assert ev.images == 5
+    assert ev.max_tiles == 16
     assert ev.tiles == 16 + 1 + 6 + 1 + 2
     assert all(s[0] <= 4 for s in sizes)
     assert {s[2:] for s in sizes} == {(256, 256), (128, 128), (100, 256)}  # one queue per shape
     for it, res in got.values():
         assert res["a"]["tiles"] == len(tiled.tiling.tile_boxes(*it.image.shape[:2]))
-        assert res["a"]["label"] == "real" and res["b"]["label"] == "edited"
+        assert res["a"]["label"] == "real"
+        assert res["b"]["label"] == "edited"
         assert np.array_equal(res["a"]["prob_map"] >= 0.5, it.image[..., 0] > 0)
 
 
@@ -79,7 +81,8 @@ def test_boundary_f1_and_histogram_auc():
     gt = np.zeros((32, 32), bool)
     gt[8:24, 8:24] = True
     same = tiled.per_image(tiled.mask_record(gt.astype(float), gt))
-    assert same["boundary_f1"] == 1.0 and same["iou"] == 1.0
+    assert same["boundary_f1"] == 1.0
+    assert same["iou"] == 1.0
     shifted = np.roll(gt, 4, axis=1).astype(float)
     far = tiled.per_image(tiled.mask_record(shifted, gt, tolerance=1))
     near = tiled.per_image(tiled.mask_record(shifted, gt, tolerance=4))
@@ -122,7 +125,8 @@ def test_bins_and_summaries():
     ]
     s = locdiag.summarize_edited(edited, ["m"])
     assert s["m"]["all"]["miou_binary"] == 1.0
-    assert set(s["m"]["by_editor"]) == {"1", "3"} and s["m"]["by_editor"]["3"]["images"] == 2
+    assert set(s["m"]["by_editor"]) == {"1", "3"}
+    assert s["m"]["by_editor"]["3"]["images"] == 2
     real = [
         {"tiles": 1, "source": "coco", "heads": {"m": {"label": "edited", "marked_share": 0.1}}},
         {"tiles": 16, "source": "coco", "heads": {"m": {"label": "real", "marked_share": 0.0}}},
@@ -146,7 +150,8 @@ def test_logistic_probe_separates_and_picks_l2_on_validation():
     assert {t["l2"] for t in fit["tried"]} == {1e-3, 10.0}
     head = clip_probe.ProbeHead(fit["w"], fit["b"], [0, 1])
     out = head(xv, torch.zeros(200, 256, 16), (64, 64))
-    assert out["logits"].shape == (200, 3) and float(out["logits"][:, 2].max()) == clip_probe.NEG
+    assert out["logits"].shape == (200, 3)
+    assert float(out["logits"][:, 2].max()) == clip_probe.NEG
     assert torch.all(out["mask_logits"] == clip_probe.NEG)
     again = clip_probe.ProbeHead.from_state(head.state())
     assert torch.equal(
@@ -160,7 +165,9 @@ def test_patch_probes_learn_and_targets_follow_the_half_rule():
     m[..., :8, :16] = 1  # half of the first cell -> positive
     m[..., 16:23, 16:32] = 1  # 7/16 of a cell -> negative
     t = clip_probe.patch_targets(m)
-    assert t.shape == (1, 256) and t[0, 0] == 1 and t[0, 17] == 0
+    assert t.shape == (1, 256)
+    assert t[0, 0] == 1
+    assert t[0, 17] == 0
     torch.manual_seed(0)
     probes = clip_probe.PatchProbes(8, l2s=(0.0, 1.0))
     opt = torch.optim.AdamW(probes.parameters(), lr=0.05, weight_decay=0)
@@ -280,7 +287,8 @@ def _table(model_acc, probe_acc, model_harm=None):
 
 def test_gate_pass_fail_and_red_flag():
     ok = cp4.evaluate(_table(0.85, 0.75))
-    assert ok["checks"]["G1"]["status"] == "PASS" and ok["verdict"] == "PENDING_P2"
+    assert ok["checks"]["G1"]["status"] == "PASS"
+    assert ok["verdict"] == "PENDING_P2"
     assert ok["checks"]["G2"]["status"] == "NOT_RUN"
     assert cp4.evaluate(_table(0.85, 0.75), p2={"miou_binary": 0.81})["verdict"] == "PASS"
     assert cp4.evaluate(_table(0.85, 0.75), p2={"miou_binary": 0.66})["verdict"] == "FAIL"
@@ -288,7 +296,8 @@ def test_gate_pass_fail_and_red_flag():
     harm = cp4.evaluate(_table(0.85, 0.75, model_harm=0.70))  # loses to the probe on harmonized
     assert harm["checks"]["G1"]["status"] == "FAIL"
     rf = cp4.evaluate(_table(1.0, 0.75))
-    assert rf["checks"]["RF"]["raised"] and rf["verdict"] == "STOP_AND_ASK"
+    assert rf["checks"]["RF"]["raised"]
+    assert rf["verdict"] == "STOP_AND_ASK"
     assert "stable_diffusion_v_1_4" not in rf["checks"]["RF"]["unseen_acc"]
 
 
@@ -303,4 +312,5 @@ def test_average_precision_and_false_edited_bins():
         {"head": "unified", "label": "generated", "label_pred": "edited", "tiles": 1},
     ]
     fe = cp4.false_edited(recs, "unified")
-    assert fe["images"] == 3 and fe["by_tiles"]["10-16"]["rate"] == 0.5
+    assert fe["images"] == 3
+    assert fe["by_tiles"]["10-16"]["rate"] == 0.5

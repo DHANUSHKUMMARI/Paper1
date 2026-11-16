@@ -78,7 +78,7 @@ class TiledEvaluator:
                 self._flush((b - t, r - le))
 
     def close(self) -> None:
-        for shape in list(self.queues):
+        for shape in self.queues:  # flushing changes values only, never the keys
             while self.queues[shape]:
                 self._flush(shape)
 
@@ -211,7 +211,9 @@ def per_image(r: Mapping[str, Any]) -> dict[str, float | None]:
     tp, fp, fn = r["tp"], r["fp"], r["fn"]
     bp = r["b_pred_hit"] / r["b_pred"] if r["b_pred"] else None
     br = r["b_gt_hit"] / r["b_gt"] if r["b_gt"] else None
-    bf1 = None if bp is None or br is None else (2 * bp * br / (bp + br) if bp + br else 0.0)
+    bf1 = None
+    if bp is not None and br is not None:
+        bf1 = 2 * bp * br / (bp + br) if bp + br else 0.0
     return {
         "iou": tp / (tp + fp + fn) if tp + fp + fn else None,
         "f1": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,

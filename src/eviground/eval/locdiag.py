@@ -40,8 +40,11 @@ def size_bin(share: float) -> str:
 
 def tile_bin(n: int) -> str:
     for lo, hi in TILE_BINS:
-        if lo <= n <= hi:
-            return f"{lo}" if lo == hi else f"{lo}-{hi}" if hi < 10**6 else f"{lo}+"
+        if not lo <= n <= hi:
+            continue
+        if lo == hi:
+            return f"{lo}"
+        return f"{lo}-{hi}" if hi < 10**6 else f"{lo}+"
     return "?"
 
 

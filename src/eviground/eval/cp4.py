@@ -29,11 +29,12 @@ RF_BAR = 0.98
 G2_BAR = 0.80
 SD14 = {"stable_diffusion_v_1_4", "sd14", "sd_v1_4"}  # the in-distribution generator
 PASS, FAIL, STOP, NOT_RUN, REPORT = "PASS", "FAIL", "STOP_AND_ASK", "NOT_RUN", "REPORT"
+ARXIV_T7 = "arXiv 2511.01293, Table 7"
 PUBLISHED = [  # context only; mean accuracy over the 8 GenImage subsets, SD v1.4 training
     {"method": "ResNet-50", "mean_acc": 0.721, "source": "GenImage repository, Table 3"},
-    {"method": "NPR", "mean_acc": 0.886, "source": "arXiv 2511.01293, Table 7"},
-    {"method": "FatFormer", "mean_acc": 0.889, "source": "arXiv 2511.01293, Table 7"},
-    {"method": "Ojha et al. (UnivFD)", "mean_acc": 0.733, "source": "arXiv 2511.01293, Table 7"},
+    {"method": "NPR", "mean_acc": 0.886, "source": ARXIV_T7},
+    {"method": "FatFormer", "mean_acc": 0.889, "source": ARXIV_T7},
+    {"method": "Ojha et al. (UnivFD)", "mean_acc": 0.733, "source": ARXIV_T7},
 ]
 
 
@@ -93,6 +94,47 @@ def false_edited(records: Sequence[Mapping[str, Any]], head: str) -> dict[str, A
     }
 
 
+def _g1(m: Mapping[str, Any], p: Mapping[str, Any]) -> dict[str, Any]:
+    rows = {
+        v: {"model": m[v]["mean_acc"], "probe": p[v]["mean_acc"]}
+        for v in ("raw", "harmonized")
+        if v in m and v in p
+    }
+    ok = (
+        set(rows) == {"raw", "harmonized"}
+        and rows["raw"]["model"] > G1_BAR
+        and all(r["model"] > r["probe"] for r in rows.values())
+    )
+    return {"status": PASS if ok else FAIL, "bar": G1_BAR, "mean_acc": rows}
+
+
+def _rf(m: Mapping[str, Any]) -> dict[str, Any]:
+    unseen = {g: v["acc"] for g, v in m["raw"]["per_generator"].items() if g not in SD14}
+    raised = bool(unseen) and all(a >= RF_BAR for a in unseen.values())
+    return {
+        "status": STOP if raised else PASS,
+        "bar": RF_BAR,
+        "unseen_acc": unseen,
+        "raised": raised,
+    }
+
+
+def _g2(p2: Mapping[str, Any] | None) -> dict[str, Any]:
+    if p2 is None:
+        return {"status": NOT_RUN, "bar": G2_BAR, "note": "held until Dhanush decides"}
+    miou = p2.get("miou_binary")
+    ok = miou is not None and miou >= G2_BAR
+    return {"status": PASS if ok else FAIL, "bar": G2_BAR, "miou_binary": miou}
+
+
+def _verdict(checks: Mapping[str, Mapping[str, Any]]) -> str:
+    if checks["RF"]["raised"]:
+        return STOP
+    if FAIL in (checks["G1"]["status"], checks["G2"]["status"]):
+        return FAIL
+    return "PENDING_P2" if checks["G2"]["status"] == NOT_RUN else PASS
+
+
 def evaluate(
     table: Mapping[str, Any],
     *,
@@ -102,45 +144,9 @@ def evaluate(
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The gate from the P1 table (and the P2 summary, once P2 is scored)."""
-    m, p = table[model], table[probe]
-    g1_rows = {
-        v: {"model": m[v]["mean_acc"], "probe": p[v]["mean_acc"]}
-        for v in ("raw", "harmonized")
-        if v in m and v in p
-    }
-    g1_ok = (
-        "raw" in g1_rows
-        and "harmonized" in g1_rows
-        and g1_rows["raw"]["model"] > G1_BAR
-        and all(r["model"] > r["probe"] for r in g1_rows.values())
-    )
-    unseen = {g: v["acc"] for g, v in m["raw"]["per_generator"].items() if g not in SD14}
-    rf = bool(unseen) and all(a >= RF_BAR for a in unseen.values())
-    checks: dict[str, Any] = {
-        "G1": {"status": PASS if g1_ok else FAIL, "bar": G1_BAR, "mean_acc": g1_rows},
-        "RF": {
-            "status": STOP if rf else PASS,
-            "bar": RF_BAR,
-            "unseen_acc": unseen,
-            "raised": rf,
-        },
-    }
-    if p2 is None:
-        checks["G2"] = {"status": NOT_RUN, "bar": G2_BAR, "note": "held until Dhanush decides"}
-    else:
-        miou = p2.get("miou_binary")
-        ok = miou is not None and miou >= G2_BAR
-        checks["G2"] = {"status": PASS if ok else FAIL, "bar": G2_BAR, "miou_binary": miou}
-    if rf:
-        verdict = STOP
-    elif checks["G1"]["status"] == FAIL or checks["G2"]["status"] == FAIL:
-        verdict = FAIL
-    elif checks["G2"]["status"] == NOT_RUN:
-        verdict = "PENDING_P2"
-    else:
-        verdict = PASS
+    checks = {"G1": _g1(table[model], table[probe]), "RF": _rf(table[model]), "G2": _g2(p2)}
     return {
-        "verdict": verdict,
+        "verdict": _verdict(checks),
         "checks": checks,
         "p1": table,
         "published_context": PUBLISHED,

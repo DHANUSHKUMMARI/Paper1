@@ -69,7 +69,7 @@ Tests:
 
 Sandbox runs:
 - `ruff check` and `ruff format --check`: clean.
-- `python -m pytest -p no:warnings`: 392 passed.
+- `python -m pytest -p no:warnings`: 393 passed (after rebasing on main with PR #31).
 - `python -m eviground.utils.repo_audit`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 05, 06 (both profiles), 07, 08 and 09: passed.
   - In 08 and 09, a tiny trained model is scored on the fake world.

@@ -345,7 +345,8 @@ def paired_subset(
     for g, by_id in sorted(groups.items()):
         complete = [i for i, files in by_id.items() if len(files) == len(methods)]
         eligible = [i for i in complete if i not in skip]
-        take = sorted(eligible, key=lambda i: _rank(seed, salt, f"{g}/{i}"))[:per_group]
+        ranks = {i: _rank(seed, salt, f"{g}/{i}") for i in eligible}
+        take = sorted(eligible, key=ranks.__getitem__)[:per_group]
         chosen += [f for i in take for f in by_id[i]]
         counts[g] = {
             "source_images": len(by_id),

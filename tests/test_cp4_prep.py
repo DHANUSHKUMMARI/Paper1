@@ -177,3 +177,99 @@ def test_list_and_extract_members_of_a_split_zip(tmp_path):
     )
     assert [p.stat().st_size for p in out] == [300_000, 1_000]
     assert sorted(p.name for p in Path(tmp_path / "out").rglob("*.png")) == ["1.png", "1.png"]
+
+
+# -- completing the split archive (17 Nov 2026) -------------------------------------------
+
+
+def _remote(tmp_path, sizes=(300, 300, 300, 120)):
+    names = ["BR-Gen_split.z01", "BR-Gen_split.z02", "BR-Gen_split.z03", "BR-Gen_split.zip"]
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    files = {}
+    for i, (name, n) in enumerate(zip(names, sizes, strict=True)):
+        (remote / name).write_bytes(bytes([i + 1]) * n)
+        files[name] = remote / name
+    (remote / "README.md").write_text("card")
+    files["README.md"] = remote / "README.md"
+    return files
+
+
+def _ctx(tmp_path, files):
+    from eviground.data import download
+    from eviground.data.fake_sources import FakeSources
+    from eviground.env import Paths
+
+    paths = Paths(root=tmp_path / "drive", local_data=tmp_path / "local")
+    fake = FakeSources(hf={brgen.REPO: files})
+    ctx = download.make_context(paths, fake, reserve_gb=0, drive_free=None, cache_wait_s=0)
+    folder = paths.datasets / "04_BR-Gen"
+    folder.mkdir(parents=True)
+    return ctx, fake, folder
+
+
+def test_complete_split_downloads_only_the_missing_volumes(tmp_path):
+    files = _remote(tmp_path)
+    ctx, fake, folder = _ctx(tmp_path, files)
+    (folder / "BR-Gen_split.z01").write_bytes(files["BR-Gen_split.z01"].read_bytes())
+    (folder / "BR-Gen_split.z02").write_bytes(b"\x00" * 100)  # truncated copy
+    (folder / "BR-Gen_split.z99").write_bytes(b"x")  # not published: reported, kept
+    out = brgen.complete_split(ctx, folder)
+    assert out["kept"] == ["BR-Gen_split.z01"]
+    assert out["size_only"] == ["BR-Gen_split.z01"]
+    assert out["downloaded"] == ["BR-Gen_split.z02", "BR-Gen_split.z03", "BR-Gen_split.zip"]
+    assert out["replaced"] == [{"name": "BR-Gen_split.z02", "bytes": 100}]
+    assert out["extra"] == ["BR-Gen_split.z99"]
+    assert "README.md" not in out["expected"]
+    assert out["bytes_downloaded"] == 720
+    assert not any(c.endswith("z01") for c in fake.calls if c.startswith("hf_download"))
+    for name, src in files.items():
+        if name.startswith(brgen.PART_PREFIX):
+            assert (folder / name).read_bytes() == src.read_bytes(), name
+    assert (folder / "BR-Gen_split.z99").exists()
+    # a second run downloads nothing; the downloaded volumes are now stamped
+    again = brgen.complete_split(ctx, folder)
+    assert again["downloaded"] == []
+    assert again["size_only"] == ["BR-Gen_split.z01"]
+
+
+def test_complete_split_removes_a_volume_whose_hash_does_not_match(tmp_path, monkeypatch):
+    from eviground.data.storage import VerificationError
+
+    files = _remote(tmp_path)
+    ctx, fake, folder = _ctx(tmp_path, files)
+    real_info = fake.hf_file_info
+
+    def bad_info(repo, names):
+        info = real_info(repo, names)
+        info["BR-Gen_split.z01"]["sha256"] = "0" * 64
+        return info
+
+    monkeypatch.setattr(fake, "hf_file_info", bad_info)
+    with pytest.raises(VerificationError, match="z01"):
+        brgen.complete_split(ctx, folder)
+    assert not (folder / "BR-Gen_split.z01").exists()
+
+
+def test_complete_split_refuses_before_writing_without_space(tmp_path):
+    from eviground.data import download
+    from eviground.data.storage import InsufficientSpaceError
+
+    files = _remote(tmp_path)
+    ctx, fake, folder = _ctx(tmp_path, files)
+    ctx.drive_free = lambda: 10  # bytes free in the Drive quota
+    ctx.reserve_gb = 0
+    assert isinstance(ctx, download.Context)
+    with pytest.raises(InsufficientSpaceError):
+        brgen.complete_split(ctx, folder)
+    assert not any(c.startswith("hf_download") for c in fake.calls)
+    assert not list(folder.glob("BR-Gen_split.*"))
+
+
+def test_complete_split_needs_published_volumes(tmp_path):
+    from eviground.data.storage import VerificationError
+
+    files = _remote(tmp_path)
+    ctx, _fake, folder = _ctx(tmp_path, {"README.md": files["README.md"]})
+    with pytest.raises(VerificationError, match="publishes no file"):
+        brgen.complete_split(ctx, folder)

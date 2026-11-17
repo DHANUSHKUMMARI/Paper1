@@ -3,6 +3,46 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR E — notebook 07 completes the BR-Gen split archive before listing it — 2026-11-17
+
+**What went wrong:** notebook 07 stopped at the BR-Gen listing because the last volume, `BR-Gen_split.zip`, was missing.
+- Drive's `04_BR-Gen` held only `BR-Gen_split.z01`–`z08`.
+- The Hugging Face repo `clpbc/BR-Gen` (public) publishes `z01`–`z12` at 5,368,709,120 bytes each, plus `BR-Gen_split.zip` at 4,081,350,779 bytes. That `.zip` volume holds the archive's central directory.
+- So about 25.5 GB was missing.
+- The development split had already been frozen in cell 4: `cp4_dev_split.json` was on Drive at 06:31 UTC.
+
+**Decision (Dhanush, 17 Nov):** fetch only the missing volumes.
+
+Code:
+- `download.make_context`: the download context from `ensure_data`, moved into its own function (Drive-quota check, upload-cache wait, network sources created only when needed). `ensure_data` behaves as before.
+- `brgen.complete_split(ctx, folder)`:
+  - **Which volumes:** takes the published list from the repo and keeps the `BR-Gen_split.*` files.
+  - **Kept volumes:** a volume already on Drive at exactly the published size is kept. Its size is checked, but it is not re-hashed (too slow through the Drive mount); the report marks it `size_only`.
+  - **Downloaded volumes:** a missing volume, or one of the wrong size, is downloaded after the Drive-quota and upload-cache checks. Its size and SHA-256 are then checked against Hugging Face, and a stamp file is written.
+    - A hash mismatch removes the file and raises an error.
+    - A wrong-size local copy is replaced, and the report lists it under `replaced`.
+  - **Extra files:** files with the same prefix that the repo does not publish are reported and never removed.
+- **Notebook 07:**
+  - A new cell 5 completes the archive before the listing.
+  - The listing cell (now 6) asserts that every published volume is present.
+  - In the dry run, the fake BR-Gen zip is served through `FakeSources`, so CI exercises the download path.
+
+### Results (sandbox: Python 3.13.18, CPU)
+- `ruff check src tests`: clean.
+- `python -m pytest -p no:warnings`: **411 passed** (407 before, plus 4 new in `tests/test_cp4_prep.py`).
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake`: notebook 07 passed; notebooks 00c, 08 and 09 also passed.
+
+### What the new tests cover
+- **Missing volumes:** only those are downloaded. A truncated copy is replaced, an unpublished file is reported and kept, and a second run downloads nothing.
+- **Hash mismatch:** the file is removed and an error is raised.
+- **Too little Drive space:** refused before any download or write.
+- **No published volumes:** an error is raised.
+
+### Not run here
+- The real download, about 25.5 GB from Hugging Face to Drive on a CPU runtime.
+- The real 7z listing.
+
 ## CP4 PR D — metric definitions checked against the DiffSeg30k paper — 2026-11-17
 
 Checked against DiffSeg30k, arXiv 2511.19111v2, sections 4.1–4.2 (read 17 Nov). The paper says: "The background class is excluded from mIoU and bF1 calculations." So its binary mIoU, including SegFormer's 0.951 on the unseen Glide + Kolors pair (Table 4), is the IoU of the edited class alone.

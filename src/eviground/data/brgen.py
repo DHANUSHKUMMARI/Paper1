@@ -31,6 +31,8 @@ AUTHENTIC_DIRS = {"au", "authentic", "real"}
 MASK_SUFFIX = re.compile(r"[_-](mask|gt|label)$", re.IGNORECASE)
 SEED = 42
 SALT = "brgen_subset_v1"
+REPO = "clpbc/BR-Gen"  # Hugging Face dataset repository (public; 17 Nov 2026: z01-z12 + .zip)
+PART_PREFIX = "BR-Gen_split."
 
 
 def seven_zip() -> str | None:
@@ -234,3 +236,93 @@ def fake_listing(n_per_method: int = 6) -> str:
                 entry(f"{root}/Tp/{method}_{region}_{src}.png", 1000 + i)
                 entry(f"{root}/Gt/{method}_{region}_{src}_mask.png", 100 + i)
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------------------
+# Completing the split archive on Drive (17 Nov 2026: Drive held z01-z08 only)
+# --------------------------------------------------------------------------------------
+
+
+def complete_split(
+    ctx: Any,
+    folder: Path,
+    repo: str = REPO,
+    prefix: str = PART_PREFIX,
+) -> dict[str, Any]:
+    """Makes ``folder`` hold every volume of the split archive published in ``repo``.
+
+    ``ctx`` is a :class:`eviground.data.download.Context` (Drive-quota check before each write,
+    the wait for Colab's upload cache, lazily created sources). A volume already there with
+    exactly the published size is kept and only size-checked (hashing 5 GiB volumes through
+    the Drive mount is too slow); a missing or wrong-size volume is downloaded, then checked
+    against the published size and SHA-256 and stamped (``<name>.verified.json``); a mismatch
+    removes the file and raises. A wrong-size local copy is removed (after the space check)
+    and downloaded again; it is listed under ``replaced``. Local files with the prefix that the
+    repo does not publish are reported, never removed."""
+    import time
+
+    from eviground.data.storage import (
+        VerificationError,
+        read_json,
+        sha256_file,
+        write_json_atomic,
+    )
+
+    t0 = time.monotonic()
+    folder = Path(folder)
+    expected = {
+        name: size
+        for name, size in ctx.sources.hf_list_files(repo).items()
+        if name.startswith(prefix) and "/" not in name
+    }
+    if not expected:
+        raise VerificationError(f"{repo} publishes no file starting with {prefix!r}")
+    kept, size_only, downloaded, replaced = [], [], [], []
+    shas: dict[str, str | None] = {}
+    for name in sorted(expected):
+        size, target = expected[name], folder / name
+        if target.is_file() and target.stat().st_size == size:
+            kept.append(name)
+            stamp = read_json(folder / f"{name}.verified.json")
+            if not (isinstance(stamp, dict) and stamp.get("bytes") == size):
+                size_only.append(name)
+            continue
+        if not shas:
+            info = ctx.sources.hf_file_info(repo, sorted(expected))
+            shas = {k: v["sha256"] for k, v in info.items()}
+        have = target.stat().st_size if target.is_file() else 0
+        ctx.drive_space(size - have, f"{repo} {name}")
+        ctx.wait_for_cache(size, f"{repo} {name}")  # the volume passes Colab's local cache
+        if have:  # a wrong-size copy of a published volume: replaced by the download
+            replaced.append({"name": name, "bytes": have})
+            target.unlink()
+        got = Path(ctx.sources.hf_download(repo, name, folder))
+        if got != target:
+            raise VerificationError(f"{name} downloaded to {got}, expected {target}")
+        actual = target.stat().st_size
+        sha = shas.get(name)
+        digest = sha256_file(target)
+        if actual != size or (sha and digest != sha):
+            target.unlink(missing_ok=True)
+            raise VerificationError(
+                f"{name}: {actual} bytes / sha256 {digest[:12]}..., expected {size} / "
+                f"{str(sha)[:12]}...; the file was removed, run the cell again"
+            )
+        write_json_atomic(folder / f"{name}.verified.json", {"bytes": size, "sha256": digest})
+        downloaded.append(name)
+    extra = sorted(
+        p.name
+        for p in folder.glob(f"{prefix}*")
+        if p.is_file() and p.name not in expected and not p.name.endswith(".verified.json")
+    )
+    return {
+        "repo": repo,
+        "expected": dict(sorted(expected.items())),
+        "kept": kept,
+        "size_only": size_only,
+        "downloaded": downloaded,
+        "replaced": replaced,
+        "extra": extra,
+        "bytes_downloaded": sum(expected[n] for n in downloaded),
+        "seconds": round(time.monotonic() - t0, 1),
+    }

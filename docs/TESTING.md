@@ -53,7 +53,7 @@ Code:
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 06, 08, 09 and 10: all passed. In the fake world, notebook 10 found no change between the samplers apart from the context crops. Its stop fires on the fake world's own metadata score (0.84), as intended for real data above 0.60.
 
 ### Review fixes (second push)
-- **SonarCloud, 2 critical (S3776):** `sampler_check.compare` was split into `_q75_changes` and `_material`, and the trainer reads the share through `_context_share`. The other 6 findings were minor: one `endswith` with a tuple, and 5 composite test assertions split.
+- **SonarCloud, 2 critical (S3776):** `sampler_check.compare` was split into `_q75_changes` and `_material`, `_diffs` into `_number` and `_mapping` (third push), and the trainer reads the share through `_context_share`. The other 6 findings were minor: one `endswith` with a tuple, and 5 composite test assertions split.
 - **Codex P2, resume:** a run resumed with a different `data.context_crop_share` would rebuild a different epoch plan and skip the wrong draws. `Trainer._check_run_settings` now compares profile, seed and the share with the checkpoint's config (a CP3 checkpoint without the setting counts as 0) and stops with `CheckpointMismatch`. New test.
 - **Codex P2, quality 75 by source:** the comparison also covers `per_class_source`, for pools present on both sides. New test: the sources move while the class total stays the same, and the change is flagged.
 - **Materiality of the source mix:** the fix moves DiffSeg30k into the generated class by design, which also dilutes the other generated sources.

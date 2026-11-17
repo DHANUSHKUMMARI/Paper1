@@ -102,8 +102,13 @@ def check(records: Sequence[Mapping[str, Any]], seed: int = 42) -> dict[str, Any
     }
 
 
-def _number(v: Any) -> bool:
-    return isinstance(v, int | float) and not isinstance(v, bool)
+def _number(v: Any) -> float | None:
+    """``v`` as a float, or None when it is not a number."""
+    return float(v) if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+
+def _mapping(v: Any) -> Mapping[str, Any]:
+    return v if isinstance(v, Mapping) else {}
 
 
 def _diffs(a: Mapping[str, Any], b: Mapping[str, Any]) -> dict[str, float]:
@@ -113,10 +118,12 @@ def _diffs(a: Mapping[str, Any], b: Mapping[str, Any]) -> dict[str, float]:
     for k in sorted(set(a) | set(b)):
         x, y = a.get(k), b.get(k)
         if isinstance(x, Mapping) or isinstance(y, Mapping):
-            sub = _diffs(x if isinstance(x, Mapping) else {}, y if isinstance(y, Mapping) else {})
+            sub = _diffs(_mapping(x), _mapping(y))
             out.update({f"{k}.{kk}": v for kk, v in sub.items()})
-        elif _number(x) or _number(y):
-            out[k] = round(abs(float(y if _number(y) else 0) - float(x if _number(x) else 0)), 4)
+            continue
+        nx, ny = _number(x), _number(y)
+        if nx is not None or ny is not None:
+            out[k] = round(abs((ny or 0.0) - (nx or 0.0)), 4)
     return out
 
 

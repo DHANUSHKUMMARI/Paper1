@@ -341,7 +341,8 @@ def test_diffseg30k_area_rule_in_the_summaries():
     """DiffSeg30k image rule: edited when more than 1% of the image is predicted edited."""
     from eviground.eval import locdiag, runner
 
-    assert not tiled.area_rule(0.01) and tiled.area_rule(0.0101)
+    assert not tiled.area_rule(0.01)
+    assert tiled.area_rule(0.0101)
     gt = np.zeros((10, 10), bool)
     gt[:5, :5] = True
     small = np.zeros((10, 10), np.float32)

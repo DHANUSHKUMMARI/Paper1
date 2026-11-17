@@ -33,6 +33,7 @@ SEED = 42
 SALT = "brgen_subset_v1"
 REPO = "clpbc/BR-Gen"  # Hugging Face dataset repository (public; 17 Nov 2026: z01-z12 + .zip)
 PART_PREFIX = "BR-Gen_split."
+LAST_VOLUME = PART_PREFIX + "zip"  # holds the central directory: 7z lists and extracts through it
 
 
 def seven_zip() -> str | None:
@@ -243,6 +244,51 @@ def fake_listing(n_per_method: int = 6) -> str:
 # --------------------------------------------------------------------------------------
 
 
+def _published_parts(ctx: Any, repo: str, prefix: str) -> dict[str, int]:
+    from eviground.data.storage import VerificationError
+
+    expected = {
+        name: size
+        for name, size in ctx.sources.hf_list_files(repo).items()
+        if name.startswith(prefix) and "/" not in name
+    }
+    if not expected:
+        raise VerificationError(f"{repo} publishes no file starting with {prefix!r}")
+    return expected
+
+
+def _stamped(folder: Path, name: str, size: int) -> bool:
+    from eviground.data.storage import read_json
+
+    stamp = read_json(folder / f"{name}.verified.json")
+    return isinstance(stamp, dict) and stamp.get("bytes") == size
+
+
+def _fetch_part(ctx: Any, repo: str, folder: Path, name: str, size: int, sha: str | None) -> int:
+    """Downloads one volume after the space checks, verifies and stamps it. Returns the size of
+    the wrong-size local copy it replaced (0 if there was none)."""
+    from eviground.data.storage import VerificationError, sha256_file, write_json_atomic
+
+    target = folder / name
+    have = target.stat().st_size if target.is_file() else 0
+    ctx.drive_space(size - have, f"{repo} {name}")
+    ctx.wait_for_cache(size, f"{repo} {name}")  # the volume passes Colab's local cache
+    if have:  # a wrong-size copy of a published volume: replaced by the download
+        target.unlink()
+    got = Path(ctx.sources.hf_download(repo, name, folder))
+    if got != target:
+        raise VerificationError(f"{name} downloaded to {got}, expected {target}")
+    actual, digest = target.stat().st_size, sha256_file(target)
+    if actual != size or (sha and digest != sha):
+        target.unlink(missing_ok=True)
+        raise VerificationError(
+            f"{name}: {actual} bytes / sha256 {digest[:12]}..., expected {size} / "
+            f"{str(sha)[:12]}...; the file was removed, run the cell again"
+        )
+    write_json_atomic(folder / f"{name}.verified.json", {"bytes": size, "sha256": digest})
+    return have
+
+
 def complete_split(
     ctx: Any,
     folder: Path,
@@ -261,55 +307,23 @@ def complete_split(
     repo does not publish are reported, never removed."""
     import time
 
-    from eviground.data.storage import (
-        VerificationError,
-        read_json,
-        sha256_file,
-        write_json_atomic,
-    )
-
     t0 = time.monotonic()
     folder = Path(folder)
-    expected = {
-        name: size
-        for name, size in ctx.sources.hf_list_files(repo).items()
-        if name.startswith(prefix) and "/" not in name
+    expected = _published_parts(ctx, repo, prefix)
+    present = {
+        n
+        for n, size in expected.items()
+        if (folder / n).is_file() and (folder / n).stat().st_size == size
     }
-    if not expected:
-        raise VerificationError(f"{repo} publishes no file starting with {prefix!r}")
-    kept, size_only, downloaded, replaced = [], [], [], []
+    missing = sorted(set(expected) - present)
     shas: dict[str, str | None] = {}
-    for name in sorted(expected):
-        size, target = expected[name], folder / name
-        if target.is_file() and target.stat().st_size == size:
-            kept.append(name)
-            stamp = read_json(folder / f"{name}.verified.json")
-            if not (isinstance(stamp, dict) and stamp.get("bytes") == size):
-                size_only.append(name)
-            continue
-        if not shas:
-            info = ctx.sources.hf_file_info(repo, sorted(expected))
-            shas = {k: v["sha256"] for k, v in info.items()}
-        have = target.stat().st_size if target.is_file() else 0
-        ctx.drive_space(size - have, f"{repo} {name}")
-        ctx.wait_for_cache(size, f"{repo} {name}")  # the volume passes Colab's local cache
-        if have:  # a wrong-size copy of a published volume: replaced by the download
-            replaced.append({"name": name, "bytes": have})
-            target.unlink()
-        got = Path(ctx.sources.hf_download(repo, name, folder))
-        if got != target:
-            raise VerificationError(f"{name} downloaded to {got}, expected {target}")
-        actual = target.stat().st_size
-        sha = shas.get(name)
-        digest = sha256_file(target)
-        if actual != size or (sha and digest != sha):
-            target.unlink(missing_ok=True)
-            raise VerificationError(
-                f"{name}: {actual} bytes / sha256 {digest[:12]}..., expected {size} / "
-                f"{str(sha)[:12]}...; the file was removed, run the cell again"
-            )
-        write_json_atomic(folder / f"{name}.verified.json", {"bytes": size, "sha256": digest})
-        downloaded.append(name)
+    if missing:
+        shas = {k: v["sha256"] for k, v in ctx.sources.hf_file_info(repo, missing).items()}
+    replaced = []
+    for name in missing:
+        had = _fetch_part(ctx, repo, folder, name, expected[name], shas.get(name))
+        if had:
+            replaced.append({"name": name, "bytes": had})
     extra = sorted(
         p.name
         for p in folder.glob(f"{prefix}*")
@@ -318,11 +332,11 @@ def complete_split(
     return {
         "repo": repo,
         "expected": dict(sorted(expected.items())),
-        "kept": kept,
-        "size_only": size_only,
-        "downloaded": downloaded,
+        "kept": sorted(present),
+        "size_only": sorted(n for n in present if not _stamped(folder, n, expected[n])),
+        "downloaded": missing,
         "replaced": replaced,
         "extra": extra,
-        "bytes_downloaded": sum(expected[n] for n in downloaded),
+        "bytes_downloaded": sum(expected[n] for n in missing),
         "seconds": round(time.monotonic() - t0, 1),
     }

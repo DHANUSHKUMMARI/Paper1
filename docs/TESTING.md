@@ -3,6 +3,36 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR J — the retrain notebook and the evaluation of the fixed model — 2026-11-17
+
+Prepared while PR I waits. **The L4 retrain runs only after Dhanush's go-ahead,** and after notebook 10 found no material change.
+
+- **New notebook 11 `11_cp4_fix_unified.ipynb` (L4),** built from notebook 06's generator:
+  - trains unified seed 42 with `data.context_crop_share = 0.3333` into `runs/eviground_ctx_unified_seed42/`; CP3's model is not touched, and CP3's A1 record is reused;
+  - runs the CP3 checks on the run;
+  - writes `cp4_fix_training_health_unified_seed42.json`;
+  - **compares with CP3's `best.pt` on validation crops** (`fixcompare.compare_runs`, each run at its best epoch): macro AUC, pooled edited IoU, mask F1, SID-Set and GenImage generated crops called edited or with any mark, and real crops with any mark.
+- **Notebooks 08 and 09:** `RUN_EXPERIMENT = 'eviground_ctx'` selects the fixed unified model (detection stays CP3's), and every result file then gets the suffix `_ctx`, so the CP3 results are kept.
+  - Notebook 08 with the fixed model also compares its whole-image numbers with the CP3 diagnosis (`fixcompare.compare_diagnoses`): edited IoU, over-marking and misses, overall, on AI bases and on real bases.
+- **Interior tiles** (Dhanush's prompt; measured on the fixed model only):
+  - the tiled evaluator keeps each tile's class probabilities and box;
+  - `locdiag.interior_record` takes the tiles at least 90% edited, counts how often the tile's class head calls them fully generated and their mean P(generated), and splits the missed edited pixels into those inside such tiles and the rest;
+  - `interior_summary` pools them, overall and by edit-size bin, for the model and the probe.
+
+### Results (sandbox: Python 3.13.18, CPU)
+- `ruff check src tests`: clean. `ruff format --check src tests`: 88 files already formatted.
+- `python -m pytest -p no:warnings`: **435 passed**, 4 of them new, in `tests/test_fix_eval.py`:
+  - `interior_record` on a hand-made map (1 interior tile called generated; 16 of 32 interior pixels missed; 0 of 16 others);
+  - pooling;
+  - `compare_runs` at each run's best epoch;
+  - `compare_diagnoses` by base.
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 06, 07, 08, 09, 10 and 11: all passed. The 08 dry run asserts the interior block for both heads.
+
+### Not run here
+- Notebook 11 (L4, ≈ 4.5–5.5 CU estimated): after Dhanush's go-ahead.
+- Then notebook 08 and notebook 09 with `RUN_EXPERIMENT = 'eviground_ctx'`.
+
 ## CP4 PR I — the one CP4 fix: context crops on AI-generated bases, and its shortcut check — 2026-11-17
 
 **Why:** the localization diagnosis (notebook 08 on validation data of the training editors, CP3 unified seed 42) found:

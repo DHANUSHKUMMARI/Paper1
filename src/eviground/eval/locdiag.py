@@ -62,6 +62,63 @@ def grid_ceiling_map(gt: np.ndarray, grid: int) -> np.ndarray:
     return tiling.stitch(torch.stack(maps), boxes, h, w).numpy()
 
 
+INTERIOR = 0.9  # a tile at least this share edited lies inside an edit (Dhanush, 17 Nov 2026)
+GENERATED = 1  # class index of "fully generated" in (real, generated, edited)
+
+
+def interior_record(
+    prob_map: np.ndarray,
+    gt: np.ndarray,
+    boxes: Sequence[Sequence[int]],
+    tile_probs: np.ndarray,
+    threshold: float = 0.5,
+    interior: float = INTERIOR,
+) -> dict[str, Any]:
+    """Tiles inside an edit (true edited share >= ``interior``): how many, how many the tile's
+    class head calls fully generated, and their summed P(generated); and the missed edited pixels
+    split into interior ones (covered by such a tile) and the rest."""
+    gt = np.asarray(gt, bool)
+    inside = np.zeros(gt.shape, bool)
+    n = called = 0
+    p_gen = 0.0
+    for (left, top, right, bottom), probs in zip(boxes, np.asarray(tile_probs), strict=True):
+        if gt[top:bottom, left:right].mean() >= interior:
+            inside[top:bottom, left:right] = True
+            n += 1
+            called += int(int(np.argmax(probs)) == GENERATED)
+            p_gen += float(probs[GENERATED])
+    missed = gt & (np.asarray(prob_map) < threshold)
+    return {
+        "interior_tiles": n,
+        "interior_called_generated": called,
+        "interior_p_generated_sum": p_gen,
+        "edited_interior": int((gt & inside).sum()),
+        "edited_rest": int((gt & ~inside).sum()),
+        "missed_interior": int((missed & inside).sum()),
+        "missed_rest": int((missed & ~inside).sum()),
+    }
+
+
+def interior_summary(records: Sequence[Mapping[str, Any]], head: str) -> dict[str, Any]:
+    """Pooled :func:`interior_record` counts of ``head`` over edited-image records."""
+    rs = [r["interior"][head] for r in records if (r.get("interior") or {}).get(head)]
+    tot = {k: sum(r[k] for r in rs) for k in rs[0]} if rs else {}
+    share = lambda a, b: tot[a] / tot[b] if tot.get(b) else None  # noqa: E731
+    return {
+        "images": len(rs),
+        "interior_tiles": tot.get("interior_tiles", 0),
+        "interior_called_generated": share("interior_called_generated", "interior_tiles"),
+        "interior_mean_p_generated": share("interior_p_generated_sum", "interior_tiles"),
+        "miss_share_interior": share("missed_interior", "edited_interior"),
+        "miss_share_rest": share("missed_rest", "edited_rest"),
+        "edited_pixels_interior_share": (
+            tot["edited_interior"] / (tot["edited_interior"] + tot["edited_rest"])
+            if tot and tot["edited_interior"] + tot["edited_rest"]
+            else None
+        ),
+    }
+
+
 def ceiling_records(gt: np.ndarray, grids: Sequence[int] = GRIDS) -> dict[int, dict[str, Any]]:
     return {g: mask_record(grid_ceiling_map(gt, g), gt) for g in grids}
 
@@ -105,6 +162,11 @@ def summarize_edited(records: Sequence[Mapping[str, Any]], heads: Sequence[str])
             "all": _summary(records, head),
             **{g: {k: _summary(v, head) for k, v in grp.items()} for g, grp in groups.items()},
         }
+        if any(r.get("interior") for r in records):
+            out[head]["interior"] = {
+                "all": interior_summary(records, head),
+                "by_size": {k: interior_summary(v, head) for k, v in groups["by_size"].items()},
+            }
     if records and records[0].get("ceilings"):
         out["ceilings"] = {}
         for grid in records[0]["ceilings"]:

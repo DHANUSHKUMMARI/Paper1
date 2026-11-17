@@ -273,3 +273,15 @@ def test_complete_split_needs_published_volumes(tmp_path):
     ctx, _fake, folder = _ctx(tmp_path, {"README.md": files["README.md"]})
     with pytest.raises(VerificationError, match="publishes no file"):
         brgen.complete_split(ctx, folder)
+
+
+def test_complete_split_checks_the_total_space_before_the_first_download(tmp_path):
+    from eviground.data.storage import InsufficientSpaceError
+
+    files = _remote(tmp_path)  # missing: 300 + 300 + 300 + 120 bytes
+    ctx, fake, folder = _ctx(tmp_path, files)
+    ctx.drive_free = lambda: 500  # room for one volume, not for all four
+    with pytest.raises(InsufficientSpaceError, match="4 missing volumes"):
+        brgen.complete_split(ctx, folder)
+    assert not any(c.startswith("hf_download") for c in fake.calls)
+    assert not list(folder.glob("BR-Gen_split.*"))

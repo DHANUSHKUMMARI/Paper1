@@ -29,14 +29,14 @@ Code:
 
 ### Results (sandbox: Python 3.13.18, CPU)
 - `ruff check src tests`: clean.
-- `python -m pytest -p no:warnings`: **411 passed** (407 before, plus 4 new in `tests/test_cp4_prep.py`).
+- `python -m pytest -p no:warnings`: **412 passed** (407 before, plus 5 new in `tests/test_cp4_prep.py`).
 - `python -m eviground.utils.repo_audit --history`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake`: notebook 07 passed; notebooks 00c, 08 and 09 also passed.
 
 ### What the new tests cover
 - **Missing volumes:** only those are downloaded. A truncated copy is replaced, an unpublished file is reported and kept, and a second run downloads nothing.
 - **Hash mismatch:** the file is removed and an error is raised.
-- **Too little Drive space:** refused before any download or write.
+- **Too little Drive space:** refused before any download or write, including when there is room for one volume but not for all the missing ones (the total is checked first; Codex P2 on PR #35).
 - **No published volumes:** an error is raised.
 
 ### Not run here

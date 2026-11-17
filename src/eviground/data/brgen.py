@@ -317,7 +317,12 @@ def complete_split(
     }
     missing = sorted(set(expected) - present)
     shas: dict[str, str | None] = {}
-    if missing:
+    if missing:  # refuse up front if all the missing volumes do not fit, before any download
+        need = sum(
+            expected[n] - ((folder / n).stat().st_size if (folder / n).is_file() else 0)
+            for n in missing
+        )
+        ctx.drive_space(need, f"{repo}: {len(missing)} missing volumes")
         shas = {k: v["sha256"] for k, v in ctx.sources.hf_file_info(repo, missing).items()}
     replaced = []
     for name in missing:

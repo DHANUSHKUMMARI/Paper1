@@ -3,6 +3,45 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR H — seaborn figures, drawn from the saved result files — 2026-11-17
+
+Dhanush asked for seaborn in the notebooks' plots, for a clearer view.
+
+New `src/eviground/viz.py`:
+- **Drawn only from saved files.** Figures come from what a notebook already wrote to Drive (its result JSON and per-image CSV), never from objects in memory. A figure can therefore be redrawn or restyled on a CPU runtime without running a model again.
+- **Theme:** seaborn `whitegrid` with the colour-blind palette. Legends sit below the axes, and every figure is saved as PNG (150 dpi) and PDF.
+- **Tidy rows:** `curve_rows`, `sweep_rows`, `per_image_rows` (a multi-turn image gives one row per editor) and `p1_rows` need only the standard library.
+- **Notebook 08 figures** (`diagnosis_figures`):
+  - the CP3 training curves (mask metrics, with the G2 bar; marks on real crops, symlog);
+  - the validation threshold sweep (pixel metrics; image calls; dotted line at 0.5);
+  - per-image IoU by edit size, beside the 16 × 16 and 64 × 64 resolution ceilings, with n per bin;
+  - per-image IoU by editor and by base type, EviGround against the CLIP patch probe.
+- **Notebook 09 figure** (`p1_figure`): P1 accuracy per generator, raw and harmonized side by side, all four heads, with the 0.721 bar.
+
+Notebooks (via their generators):
+- **Notebook 08:** the two matplotlib blocks in cell 6 are removed. A new cell 8 draws the figures from `localization_diagnosis_seed42.json` and `diagnosis_edited_seed42.csv` into `runs/cp4/figures/`. To redraw: cells 1, 2 and 8 on a CPU runtime.
+- **Notebook 09:** a new cell 9 draws the P1 figure from `cp4_generalization_gate_seed42.json`.
+- **Notebook 07:** the sample check copies the decoded image (`np.array`), which silences PyTorch's "array is not writable" warning. The frozen BR-Gen subset is unaffected.
+
+Dependencies: `seaborn>=0.13` in `train` (already preinstalled on Colab) and in `dev` (CI draws the figures in the tests and in the notebook dry runs).
+
+Carried over: the split composite assertion in `tests/test_shared_trunk.py` (SonarCloud S9073 on PR #37).
+
+### Results (sandbox: Python 3.13.18, CPU, seaborn 0.13.2, matplotlib 3.11.2, pandas 3.0.5)
+- `ruff check src tests`: clean. `ruff format --check src tests`: 85 files already formatted.
+- `python -m pytest -p no:warnings`: **422 passed**, 5 of them new, in `tests/test_viz.py`:
+  - curve rows skip missing epochs;
+  - sweep rows name the heads and keep boundary F1 only where it was measured;
+  - per-image rows explode editors and skip missing values;
+  - P1 rows;
+  - all five figures are drawn from a saved and re-read JSON, as PNG + PDF.
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 07, 08 and 09: all passed. 08 wrote 4 figures and 09 wrote 1, each as PNG + PDF.
+- I checked the figures by eye on synthetic data: no legend covers data, epochs are whole numbers, and the real-crop panel has no negative ticks.
+
+### Not run here
+- The figures on real results: they come with notebook 08's run, and with notebook 09's.
+
 ## CP4 fix — the CLIP probe training kept every batch's tokens on the GPU — 2026-11-17
 
 **What went wrong:** notebook 08, cell 4, stopped with `CUDA out of memory`: 21.48 GiB was allocated on the 22 GiB L4 before the trained model was even moved to it. No probe was saved (`runs/cp4/probes/` is empty).

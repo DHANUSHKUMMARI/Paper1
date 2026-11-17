@@ -164,11 +164,13 @@ def _rgb(model: nn.Module, images: torch.Tensor) -> torch.Tensor:
 
 def _features(model: nn.Module, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """The probe's features in fp32 (bf16 autocast for the CLIP pass on a GPU only; the fits
-    themselves always run in fp32)."""
+    themselves always run in fp32). The class token is copied out: it is a view of the whole
+    (B, 1 + patches, D) token tensor, and a view kept across batches would keep every token of
+    every batch (notebook 08 ran out of GPU memory, 17 Nov 2026)."""
     amp = images.device.type == "cuda"
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
         cls, patches = model.semantic.probe_features(_rgb(model, images))
-    return cls.float(), patches.float()
+    return cls.float().clone(), patches.float()
 
 
 @torch.no_grad()

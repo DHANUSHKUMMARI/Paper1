@@ -3,6 +3,25 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 fix — the CLIP probe training kept every batch's tokens on the GPU — 2026-11-17
+
+**What went wrong:** notebook 08, cell 4, stopped with `CUDA out of memory`: 21.48 GiB was allocated on the 22 GiB L4 before the trained model was even moved to it. No probe was saved (`runs/cp4/probes/` is empty).
+
+**Cause:**
+- `SemanticBranch.joint_tokens` returns the class token as `post[:, 0]`, a view of the whole `(B, 257, D)` token tensor.
+- Under bf16 autocast, LayerNorm outputs fp32, so `cls.float()` in `clip_probe._features` returned that same view.
+- `train_probes` keeps every batch's class token in `xs`. Each one therefore held all the batch's tokens: about 67 MB per batch of 64 with the real CLIP (D = 1,024) instead of 0.26 MB.
+- 3 epochs × 24,000 crops is 1,125 batches, about 76 GB in all. The L4 fills after about 320 batches.
+
+**Fix:** `_features` copies the class token out (`cls.float().clone()`). `train_probes` then keeps about 0.3 GB of class tokens in all. `collect_cls` and notebook 09 use the same function.
+
+### Results (sandbox: Python 3.13.18, CPU)
+- New test `test_probe_features_do_not_keep_the_whole_token_tensor` in `tests/test_shared_trunk.py`. On the tiny CLIP it failed before the fix (a 1,024-byte class token held 263,168 bytes of storage) and passes after it.
+- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: **417 passed**. `repo_audit --history`: ok. `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 08 and 09: passed.
+
+### Not run here
+- The L4 run: restart the Colab session (to free the 21.5 GB), then run notebook 08 from the top.
+
 ## CP4 PR G — the paired BR-Gen subset, without the training overlap — 2026-11-17
 
 Notebook 07, rerun after PR F, listed BR-Gen correctly: **150,000 pairs**, 5,000 in each of the 30 method × region × source groups, 0 images without a mask, 0 masks without an image, 0 ambiguous (18.8 s, 0.001 CU, commit `0025262`). The dev split was reused unchanged (`1e0792a8…`).

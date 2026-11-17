@@ -82,3 +82,21 @@ def test_model_forward_with_probe_keeps_the_model_outputs():
         assert torch.equal(plain[k], joint[k]), k
     assert joint["probe_cls"].shape == (2, 64)
     assert joint["probe_patches"].shape == (2, 256, 64)
+
+
+def test_probe_features_do_not_keep_the_whole_token_tensor():
+    """Notebook 08, 17 Nov 2026: the class token was a view of the (B, 257, D) token tensor, so
+    every batch kept in ``train_probes`` held all its tokens: about 67 MB per batch of 64 on the
+    real CLIP, an out-of-memory error on the L4 after about 320 batches."""
+    from eviground.baselines import clip_probe
+
+    torch.manual_seed(0)
+    m = build_model(load_config("debug").model).eval()
+    x = torch.rand(4, 3, 128, 128)
+    cls, patches = clip_probe._features(m, x)
+    assert cls.untyped_storage().nbytes() == cls.numel() * cls.element_size()
+    xs, _ys = clip_probe.collect_cls(
+        m, [{"image": x, "label": torch.zeros(4)}], torch.device("cpu")
+    )
+    assert xs.untyped_storage().nbytes() == xs.numel() * xs.element_size()
+    assert cls.shape == (4, m.semantic.width) and patches.shape[0] == 4

@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 
 from eviground.data import tiles as tiling
-from eviground.eval.tiled import mask_record, per_image, pooled
+from eviground.eval.tiled import area_rule, mask_record, per_image, pooled
 
 SIZE_BINS = ((0.0, 0.01), (0.01, 0.05), (0.05, 0.15), (0.15, 0.40), (0.40, 1.0001))
 TILE_BINS = ((1, 1), (2, 4), (5, 9), (10, 16), (17, 10**6))
@@ -85,6 +85,9 @@ def _summary(recs: Sequence[Mapping[str, Any]], head: str) -> dict[str, Any]:
         "mean_iou_per_image": float(np.mean(vals("iou"))) if vals("iou") else None,
         "mean_f1_per_image": float(np.mean(vals("f1"))) if vals("f1") else None,
         "mean_boundary_f1": float(np.mean(vals("boundary_f1"))) if vals("boundary_f1") else None,
+        "called_edited_area_rule": float(np.mean([area_rule(i["pred_share"]) for i in imgs]))
+        if imgs
+        else None,
     }
 
 
@@ -137,5 +140,6 @@ def _real_rates(rs: Sequence[Mapping[str, Any]], head: str) -> dict[str, Any]:
         "images": n,
         "called_edited": sum(r["heads"][head]["label"] == "edited" for r in rs) / n,
         "any_marked": sum(s > 0 for s in shares) / n,
+        "called_edited_area_rule": sum(area_rule(s) for s in shares) / n,
         "marked_area": float(np.mean(shares)),
     }

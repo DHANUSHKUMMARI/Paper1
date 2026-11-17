@@ -70,7 +70,8 @@ def test_mask_record_counts_and_pooled_metrics_by_hand():
     p = tiled.pooled([r])
     assert p["iou_edited"] == pytest.approx(1 / 3)
     assert p["iou_background"] == pytest.approx(13 / 15)
-    assert p["miou_binary"] == pytest.approx((1 / 3 + 13 / 15) / 2)
+    assert p["miou_two_class"] == pytest.approx((1 / 3 + 13 / 15) / 2)
+    assert p["miou_diffseg30k"] == pytest.approx(1 / 3)  # background excluded
     assert p["fn_share_of_edited"] == 0.5
     # held-out-editor pixels: only (0, 0) counts as edited; (0, 1) is ignored
     assert (r["ho_tp"], r["ho_fn"], r["ho_fp"], r["ho_tn"]) == (1, 0, 1, 13)
@@ -98,7 +99,7 @@ def test_grid_ceilings():
     aligned = np.zeros((256, 256), bool)
     aligned[32:96, 64:128] = True  # on the 16-pixel cell grid
     for g, r in locdiag.ceiling_records(aligned).items():
-        assert tiled.pooled([r])["miou_binary"] == 1.0, g
+        assert tiled.pooled([r])["miou_two_class"] == 1.0, g
     small = np.zeros((1024, 1024), bool)
     small[100:107, 200:207] = True  # 7 x 7 pixels: below half a 16-pixel cell
     c = locdiag.ceiling_records(small)
@@ -124,7 +125,7 @@ def test_bins_and_summaries():
         {"share": 0.5, "editors": ["3"], "base_type": "ai", "heads": {"m": rec}, "ceilings": None},
     ]
     s = locdiag.summarize_edited(edited, ["m"])
-    assert s["m"]["all"]["miou_binary"] == 1.0
+    assert s["m"]["all"]["miou_two_class"] == 1.0
     assert set(s["m"]["by_editor"]) == {"1", "3"}
     assert s["m"]["by_editor"]["3"]["images"] == 2
     real = [
@@ -290,8 +291,12 @@ def test_gate_pass_fail_and_red_flag():
     assert ok["checks"]["G1"]["status"] == "PASS"
     assert ok["verdict"] == "PENDING_P2"
     assert ok["checks"]["G2"]["status"] == "NOT_RUN"
-    assert cp4.evaluate(_table(0.85, 0.75), p2={"miou_binary": 0.81})["verdict"] == "PASS"
-    assert cp4.evaluate(_table(0.85, 0.75), p2={"miou_binary": 0.66})["verdict"] == "FAIL"
+    assert cp4.evaluate(_table(0.85, 0.75), p2={"miou_diffseg30k": 0.81})["verdict"] == "PASS"
+    assert cp4.evaluate(_table(0.85, 0.75), p2={"miou_diffseg30k": 0.66})["verdict"] == "FAIL"
+    # G2 reads the DiffSeg30k mIoU (edited class only), not the two-class mean
+    two_class_only = {"miou_two_class": 0.9, "miou_diffseg30k": 0.7}
+    g2 = cp4.evaluate(_table(0.85, 0.75), p2=two_class_only)
+    assert g2["verdict"] == "FAIL"
     assert cp4.evaluate(_table(0.70, 0.60))["checks"]["G1"]["status"] == "FAIL"  # under 0.721
     harm = cp4.evaluate(_table(0.85, 0.75, model_harm=0.70))  # loses to the probe on harmonized
     assert harm["checks"]["G1"]["status"] == "FAIL"
@@ -330,3 +335,31 @@ def test_boundary_uses_four_neighbours_and_not_the_image_frame():
     half = torch.zeros(1, 1, 4, 4, dtype=torch.bool)
     half[..., :, :2] = True
     assert _boundary(half)[0, 0].nonzero()[:, 1].unique().tolist() == [1]
+
+
+def test_diffseg30k_area_rule_in_the_summaries():
+    """DiffSeg30k image rule: edited when more than 1% of the image is predicted edited."""
+    from eviground.eval import locdiag, runner
+
+    assert not tiled.area_rule(0.01) and tiled.area_rule(0.0101)
+    gt = np.zeros((10, 10), bool)
+    gt[:5, :5] = True
+    small = np.zeros((10, 10), np.float32)
+    small[0, 0] = 0.9  # 1 pixel of 100 predicted: exactly 1%, not more
+    big = np.zeros((10, 10), np.float32)
+    big[:2, :2] = 0.9  # 4%
+    recs = [
+        {"heads": {"m": tiled.mask_record(p, gt)}, "labels": {"m": "edited"}, "share": 0.25}
+        for p in (small, big)
+    ]
+    assert tiled.per_image(recs[1]["heads"]["m"])["pred_share"] == pytest.approx(0.04)
+    assert runner.p2_summary(recs, "m")["all"]["image_acc_edited_area_rule"] == 0.5
+    edited = locdiag.summarize_edited(
+        [{**r, "editors": ["x"], "base_type": "real"} for r in recs], ["m"]
+    )
+    assert edited["m"]["all"]["called_edited_area_rule"] == 0.5
+    real = [
+        {"tiles": 1, "source": "coco", "heads": {"m": {"label": "real", "marked_share": s}}}
+        for s in (0.0, 0.005, 0.02, 0.5)
+    ]
+    assert locdiag.summarize_real(real, ["m"])["m"]["all"]["called_edited_area_rule"] == 0.5

@@ -4,11 +4,14 @@
   GenImage ResNet-50 average, the go/no-go bar) and above the detection CLIP probe, on raw and
   on harmonized files. Score 1 - P(real) (mean over tiles), generated at >= 0.5.
 - RF: accuracy >= 0.98 on every unseen generator (all but SD v1.4) on raw files: stop and ask.
-- G2: P2 binary mIoU >= 0.80 (unified model). P2 is scored only once Dhanush has seen the
-  localization diagnosis; until then G2 is ``NOT_RUN`` and the verdict ``PENDING_P2``.
+- G2: P2 mIoU >= 0.80 (unified model), with the DiffSeg30k paper's definition (Dhanush, 17 Nov):
+  the edited-class IoU, background excluded, pooled over all P2 dev pixels; the mean of the
+  edited and background IoU is reported beside it as ``miou_two_class``. P2 is scored only once
+  Dhanush has seen the localization diagnosis; until then G2 is ``NOT_RUN`` and the verdict
+  ``PENDING_P2``.
 - Reported: the unified model's P1 row, AP, the probes on both versions, the false "edited" rate
   on real images by tile count, and published GenImage results for context (full-set numbers,
-  each to be checked against its source before the record is written).
+  checked against arXiv 2511.01293 Table 7 on 17 Nov 2026).
 - One fix only; no second fix: a second failure is recorded and Dhanush decides how to report it.
 """
 
@@ -30,11 +33,12 @@ G2_BAR = 0.80
 SD14 = {"stable_diffusion_v_1_4", "sd14", "sd_v1_4"}  # the in-distribution generator
 PASS, FAIL, STOP, NOT_RUN, REPORT = "PASS", "FAIL", "STOP_AND_ASK", "NOT_RUN", "REPORT"
 ARXIV_T7 = "arXiv 2511.01293, Table 7"
+CHECKED = "2026-11-17: Table 7 'Average' column, SD v1.4 training (the paper's appendix)"
 PUBLISHED = [  # context only; mean accuracy over the 8 GenImage subsets, SD v1.4 training
-    {"method": "ResNet-50", "mean_acc": 0.721, "source": "GenImage repository, Table 3"},
-    {"method": "NPR", "mean_acc": 0.886, "source": ARXIV_T7},
-    {"method": "FatFormer", "mean_acc": 0.889, "source": ARXIV_T7},
-    {"method": "Ojha et al. (UnivFD)", "mean_acc": 0.733, "source": ARXIV_T7},
+    {"method": "ResNet-50", "mean_acc": 0.721, "source": ARXIV_T7, "checked": CHECKED},
+    {"method": "NPR", "mean_acc": 0.886, "source": ARXIV_T7, "checked": CHECKED},
+    {"method": "FatFormer", "mean_acc": 0.889, "source": ARXIV_T7, "checked": CHECKED},
+    {"method": "Ojha et al. (UnivFD)", "mean_acc": 0.733, "source": ARXIV_T7, "checked": CHECKED},
 ]
 
 
@@ -122,9 +126,15 @@ def _rf(m: Mapping[str, Any]) -> dict[str, Any]:
 def _g2(p2: Mapping[str, Any] | None) -> dict[str, Any]:
     if p2 is None:
         return {"status": NOT_RUN, "bar": G2_BAR, "note": "held until Dhanush decides"}
-    miou = p2.get("miou_binary")
+    miou = p2.get("miou_diffseg30k")
     ok = miou is not None and miou >= G2_BAR
-    return {"status": PASS if ok else FAIL, "bar": G2_BAR, "miou_binary": miou}
+    return {
+        "status": PASS if ok else FAIL,
+        "bar": G2_BAR,
+        "metric": "miou_diffseg30k (edited-class IoU, background excluded, pooled; 17 Nov)",
+        "miou_diffseg30k": miou,
+        "miou_two_class": p2.get("miou_two_class"),
+    }
 
 
 def _verdict(checks: Mapping[str, Mapping[str, Any]]) -> str:

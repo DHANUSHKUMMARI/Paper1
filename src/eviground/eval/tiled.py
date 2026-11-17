@@ -143,6 +143,33 @@ def _boundary(m: torch.Tensor) -> torch.Tensor:
     return (c > 0) & (neighbours.amin(dim=0) < 1)
 
 
+def boundary_counts(
+    pred: np.ndarray, gt: np.ndarray, tolerance: int = BOUNDARY_TOLERANCE
+) -> dict[str, int]:
+    """Boundary pixels of the binary prediction and of the truth, and how many of each lie within
+    ``tolerance`` pixels of the other's boundary (boundary F1)."""
+    bp = _boundary(torch.from_numpy(np.asarray(pred, bool))[None, None])
+    bg = _boundary(torch.from_numpy(np.asarray(gt, bool))[None, None])
+    k = 2 * tolerance + 1
+    near_g = F.max_pool2d(bg.float(), k, stride=1, padding=tolerance) > 0
+    near_p = F.max_pool2d(bp.float(), k, stride=1, padding=tolerance) > 0
+    return {
+        "b_pred": int(bp.sum()),
+        "b_gt": int(bg.sum()),
+        "b_pred_hit": int((bp & near_g).sum()),
+        "b_gt_hit": int((bg & near_p).sum()),
+    }
+
+
+def boundary_f1(c: Mapping[str, int]) -> float | None:
+    """Boundary F1 of one image's :func:`boundary_counts` (None when either boundary is empty)."""
+    bp = c["b_pred_hit"] / c["b_pred"] if c["b_pred"] else None
+    br = c["b_gt_hit"] / c["b_gt"] if c["b_gt"] else None
+    if bp is None or br is None:
+        return None
+    return 2 * bp * br / (bp + br) if bp + br else 0.0
+
+
 def mask_record(
     prob: np.ndarray,
     gt: np.ndarray,
@@ -168,18 +195,7 @@ def mask_record(
     idx = np.minimum((prob * bins).astype(np.int64), bins - 1)
     rec["hist_pos"] = np.bincount(idx[g], minlength=bins)
     rec["hist_neg"] = np.bincount(idx[~g], minlength=bins)
-    pt = torch.from_numpy(pred)[None, None]
-    gtt = torch.from_numpy(g)[None, None]
-    bp, bg = _boundary(pt), _boundary(gtt)
-    k = 2 * tolerance + 1
-    near_g = F.max_pool2d(bg.float(), k, stride=1, padding=tolerance) > 0
-    near_p = F.max_pool2d(bp.float(), k, stride=1, padding=tolerance) > 0
-    rec.update(
-        b_pred=int(bp.sum()),
-        b_gt=int(bg.sum()),
-        b_pred_hit=int((bp & near_g).sum()),
-        b_gt_hit=int((bg & near_p).sum()),
-    )
+    rec.update(boundary_counts(pred, g, tolerance))
     if editors is not None:
         held = np.isin(editors, HELDOUT_VALUES) & g
         keep = held | ~g
@@ -215,15 +231,10 @@ def pooled(records: list[Mapping[str, Any]], prefix: str = "") -> dict[str, floa
 
 def per_image(r: Mapping[str, Any]) -> dict[str, float | None]:
     tp, fp, fn = r["tp"], r["fp"], r["fn"]
-    bp = r["b_pred_hit"] / r["b_pred"] if r["b_pred"] else None
-    br = r["b_gt_hit"] / r["b_gt"] if r["b_gt"] else None
-    bf1 = None
-    if bp is not None and br is not None:
-        bf1 = 2 * bp * br / (bp + br) if bp + br else 0.0
     return {
         "iou": tp / (tp + fp + fn) if tp + fp + fn else None,
         "f1": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,
-        "boundary_f1": bf1,
+        "boundary_f1": boundary_f1(r),
         "share": r["gt_pixels"] / r["pixels"],
     }
 

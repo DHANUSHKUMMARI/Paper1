@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -327,3 +328,64 @@ def test_released_layout_parse_pair_strata_and_subset():
     sub = brgen.subset(sorted(pairs["pairs"]), 1, lambda p: brgen.stratum_key(p, 0))
     assert len(sub["items"]) == 30
     assert all(c == {"available": 2, "chosen": 1} for c in sub["strata"].values())
+
+
+def test_paired_subset_uses_the_same_source_images_for_every_method():
+    """Dhanush, 17 Nov 2026: N source images per region/source group, all 5 methods on each."""
+    paths = brgen.released_paths(6)
+    pairs = brgen.pair_masks(paths)["pairs"]
+    sub = brgen.paired_subset(pairs, 2)
+    assert sub["methods"] == sorted(brgen.METHODS)
+    assert len(sub["strata"]) == 6  # 2 regions x 3 sources
+    assert all(c["chosen"] == 2 and c["forged_images"] == 10 for c in sub["strata"].values())
+    assert len(sub["items"]) == 6 * 2 * 5
+    by_group: dict[str, Counter] = {}
+    for item in sub["items"]:
+        m = brgen.parse_member(item)
+        by_group.setdefault(f"{m['region']}/{m['source']}", Counter())[brgen.source_id(item)] += 1
+    assert all(set(c.values()) == {5} for c in by_group.values())  # each chosen image: all methods
+    assert sub["masks"] == {i: pairs[i] for i in sub["items"]}
+    assert sub == brgen.paired_subset(pairs, 2)  # seeded, order-free
+    assert brgen.paired_subset(dict(reversed(list(pairs.items()))), 2)["sha256"] == sub["sha256"]
+    assert brgen.paired_subset(pairs, 2, seed=7)["sha256"] != sub["sha256"]
+
+
+def test_paired_subset_skips_images_missing_a_method():
+    paths = [p for p in brgen.released_paths(3) if "/MAT/Stuff/COCO/coco_000000" not in p]
+    sub = brgen.paired_subset(brgen.pair_masks(paths)["pairs"], 5)
+    assert sub["strata"]["Stuff/COCO"]["not_all_methods"] == 1
+    assert sub["strata"]["Stuff/COCO"]["chosen"] == 2
+    assert not any("coco_000000_stuff" in i for i in sub["items"])
+
+
+def test_training_overlap_is_found_by_id_and_excluded():
+    ids = {"COCO": ["000000000139", "000000232161"], "ImageNet": ["n01440764_10043"]}
+    paths = brgen.released_paths(3, ids=ids)
+    pairs = brgen.pair_masks(paths)["pairs"]
+    assert brgen.source_id("BR-Gen/Mask/Stuff/COCO/000000232161_stuff.png") == "000000232161"
+    assert brgen.source_id("BR-Gen/RealImage/COCO/COCO_image_list.txt") is None
+    rows = [
+        {"uid": "coco/val2017/000000000139.jpg", "source": "coco", "role": "train_pool"},
+        {
+            "uid": "genimage_sd14/train/nature/n01440764_10043.JPEG",
+            "source": "genimage",
+            "role": "train_pool",
+        },
+        # reserved for Claims-Edit, never trained on: not an overlap
+        {"uid": "coco/val2017/000000232161.jpg", "source": "coco", "role": "test_P7"},
+        {"uid": "diffseg30k/train/abc.image.png", "source": "diffseg30k", "role": "train_pool"},
+    ]
+    train = brgen.training_ids(rows)
+    assert train["coverage"] == {
+        "coco": {"rows": 1, "with_coco_or_imagenet_id": 1},
+        "diffseg30k": {"rows": 1, "with_coco_or_imagenet_id": 0},
+        "genimage": {"rows": 1, "with_coco_or_imagenet_id": 1},
+    }
+    ov = brgen.overlap(pairs, train["ids"])
+    assert ov["in_training"] == {"COCO": 1, "ImageNet": 1, "Places": 0}
+    assert ov["ids"] == {"000000000139", "n01440764_10043"}
+    sub = brgen.paired_subset(pairs, 3, exclude=ov["ids"])
+    assert sub["strata"]["Background/COCO"]["excluded_training_overlap"] == 1
+    assert sub["strata"]["Background/COCO"]["chosen"] == 2
+    assert sub["strata"]["Stuff/Places"]["chosen"] == 3
+    assert not any(brgen.source_id(i) in ov["ids"] for i in sub["items"])

@@ -263,6 +263,112 @@ def subset(
     }
 
 
+# --------------------------------------------------------------------------------------
+# Paired subset with the training overlap left out (Dhanush, 17 Nov 2026)
+# --------------------------------------------------------------------------------------
+
+REGION_SUFFIX = re.compile(r"_(background|stuff)$", re.IGNORECASE)
+# ids that file names carry: COCO image ids (12 digits), ImageNet training ids (synset_number)
+ID_PATTERNS = (re.compile(r"(?<!\d)\d{12}(?!\d)"), re.compile(r"n\d{8}_\d+"))
+
+
+def source_id(path: str) -> str | None:
+    """The source image's id of a forged file or mask: its name without the region suffix
+    (``000000232161_background.png`` -> ``000000232161``); None for other paths."""
+    member = parse_member(path)
+    if not member or member["kind"] not in ("forged", "mask"):
+        return None
+    return REGION_SUFFIX.sub("", PurePosixPath(member["name"]).stem).lower()
+
+
+def training_ids(
+    rows: Iterable[Mapping[str, Any]], roles: Sequence[str] = ("train_pool",)
+) -> dict[str, Any]:
+    """Ids of the images the models trained or were validated on (CP1 manifest rows with a role
+    in ``roles``): each uid's file stem, plus every COCO or ImageNet id inside the uid.
+    ``coverage`` counts, per source, the rows whose uid carries such an id: a source with none
+    cannot be checked by id."""
+    ids: set[str] = set()
+    rows_n: Counter = Counter()
+    with_id: Counter = Counter()
+    for r in rows:
+        if r.get("role") not in roles:
+            continue
+        uid = str(r["uid"])
+        found = [m.lower() for pat in ID_PATTERNS for m in pat.findall(uid)]
+        ids.add(PurePosixPath(uid).stem.lower())
+        ids.update(found)
+        rows_n[r.get("source", "")] += 1
+        with_id[r.get("source", "")] += bool(found)
+    coverage = {s: {"rows": n, "with_coco_or_imagenet_id": with_id[s]} for s, n in rows_n.items()}
+    return {"roles": list(roles), "ids": ids, "coverage": dict(sorted(coverage.items()))}
+
+
+def overlap(pairs: Mapping[str, str], ids: set[str]) -> dict[str, Any]:
+    """BR-Gen source images (per source) whose id is among the training ``ids``."""
+    stems: dict[str, set[str]] = defaultdict(set)
+    for img in pairs:
+        sid = source_id(img)
+        if sid:
+            stems[parse_member(img)["source"]].add(sid)
+    hit = {s: sorted(v & ids) for s, v in sorted(stems.items())}
+    return {
+        "source_images": {s: len(v) for s, v in sorted(stems.items())},
+        "in_training": {s: len(v) for s, v in hit.items()},
+        "examples": {s: v[:5] for s, v in hit.items() if v},
+        "ids": {i for v in hit.values() for i in v},
+    }
+
+
+def paired_subset(
+    pairs: Mapping[str, str],
+    per_group: int,
+    *,
+    exclude: Iterable[str] = (),
+    seed: int = SEED,
+    salt: str = SALT,
+) -> dict[str, Any]:
+    """The paired P3 subset: in each region/source group, the first ``per_group`` source images
+    (ranked by a hash of seed, salt, group and id) that every method edited and that are not in
+    ``exclude``; all methods' forged files of those images. Methods are thus compared on the same
+    images. Frozen by the SHA-256 of the sorted forged files."""
+    methods = sorted({parse_member(p)["method"] for p in pairs if source_id(p)})
+    groups: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for img in pairs:
+        sid = source_id(img)
+        if sid:
+            m = parse_member(img)
+            groups[f"{m['region']}/{m['source']}"][sid].append(img)
+    skip = {e.lower() for e in exclude}
+    chosen: list[str] = []
+    counts = {}
+    for g, by_id in sorted(groups.items()):
+        complete = [i for i, files in by_id.items() if len(files) == len(methods)]
+        eligible = [i for i in complete if i not in skip]
+        ranks = {i: _rank(seed, salt, f"{g}/{i}") for i in eligible}
+        take = sorted(eligible, key=ranks.__getitem__)[:per_group]
+        chosen += [f for i in take for f in by_id[i]]
+        counts[g] = {
+            "source_images": len(by_id),
+            "not_all_methods": len(by_id) - len(complete),
+            "excluded_training_overlap": len(complete) - len(eligible),
+            "chosen": len(take),
+            "forged_images": len(take) * len(methods),
+        }
+    chosen.sort()
+    return {
+        "design": "paired: the same source images for every method",
+        "seed": seed,
+        "salt": salt,
+        "per_group": per_group,
+        "methods": methods,
+        "strata": counts,
+        "items": chosen,
+        "masks": {i: pairs[i] for i in chosen},
+        "sha256": file_list_sha256(chosen),
+    }
+
+
 def sample(items: Sequence[str], n: int, *, seed: int = SEED, salt: str = SALT) -> list[str]:
     """The first ``n`` items ranked by a hash of (seed, salt, item): a seeded, order-free pick."""
     return sorted(items, key=lambda x: _rank(seed, f"{salt}/sample", x))[:n]
@@ -293,12 +399,17 @@ REGIONS = ("Background", "Stuff")
 SOURCES = ("COCO", "ImageNet", "Places")
 
 
-def released_paths(n_per_source: int = 2) -> list[str]:
-    """Paths of a small archive in the released layout (tests and dry runs only)."""
+def released_paths(
+    n_per_source: int = 2, ids: Mapping[str, Sequence[str]] | None = None
+) -> list[str]:
+    """Paths of a small archive in the released layout (tests and dry runs only). ``ids`` gives
+    the source-image ids of a source (e.g. COCO ids, to test the training-overlap exclusion);
+    other sources get ``<source>_<i>``."""
     paths = []
     for source in SOURCES:
-        for i in range(n_per_source):
-            stem = f"{source.lower()}_{i:06d}"
+        stems = list((ids or {}).get(source, ()))
+        stems += [f"{source.lower()}_{i:06d}" for i in range(len(stems), n_per_source)]
+        for stem in stems:
             for region in REGIONS:
                 name = f"{stem}_{region.lower()}.png"
                 paths.append(f"BR-Gen/Mask/{region}/{source}/{name}")

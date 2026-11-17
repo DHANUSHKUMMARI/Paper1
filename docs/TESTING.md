@@ -8,7 +8,9 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 **Why:** on main, `ff36b71` "Created using Colab" (17:55 UTC) saved notebook 09 with its outputs.
 That copy was opened before PR #41, so it removed PR #41's `RUN_EXPERIMENT` / `RUN_TAG` cells. Notebook 09
 is now generated again from its generator script, with no outputs. Its cell sources are identical to
-`d41bba6`, the version PR #41 merged. Notebooks 08 and 11 were not touched by the save. Please do not use
+`d41bba6`, the version PR #41 merged. Notebook 11 was not touched by the save. A second Colab save, `722b31d` (22:02 UTC), did the
+same to notebook 08: it added outputs and the cell-2 edit `RUN_EXPERIMENT = 'eviground_ctx'`. Notebook 08
+is generated again too, so both notebooks equal `d41bba6` (`RUN_EXPERIMENT = None` by default). Please do not use
 "Save a copy in GitHub" in Colab: the results go to Drive.
 
 ### Real runs (Colab; numbers from the result files on Drive; validation data and the P1 development split only)
@@ -67,7 +69,7 @@ is now generated again from its generator script, with no outputs. Its cell sour
 - `python -m pytest -p no:warnings`: 435 passed.
 - `python -m eviground.utils.repo_audit --history`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 08 and 09: 2 passed.
-- `git diff d41bba6 -- notebooks/`: empty, so notebook 09 is back to the version PR #41 merged.
+- `git diff d41bba6 -- notebooks/`: empty, so notebooks 08 and 09 are back to the version PR #41 merged.
 
 ## CP4 PR J — the retrain notebook and the evaluation of the fixed model — 2026-11-17
 

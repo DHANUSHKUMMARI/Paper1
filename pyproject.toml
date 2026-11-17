@@ -25,12 +25,14 @@ train = [
     "timm>=1.0",
     "peft>=0.11",
     "transformers>=4.44",
+    "seaborn>=0.13",        # figures (eviground.viz); pulls matplotlib and pandas. Preinstalled on Colab
 ]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
     "nbmake>=1.5",
     "ipykernel>=6.0",
+    "seaborn>=0.13",        # the figure tests and the notebook dry runs draw them
 ]
 
 [tool.setuptools.packages.find]

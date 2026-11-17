@@ -134,6 +134,11 @@ def _edited_record(
         "labels": {h: r["label"] for h, r in res.items()},
         "ceilings": locdiag.ceiling_records(mask) if ceilings else None,
         "boundary_grid": grid,
+        "interior": {
+            h: locdiag.interior_record(r["prob_map"], mask, r["boxes"], r["tile_probs"])
+            for h, r in res.items()
+            if "boxes" in r
+        },
     }
 
 

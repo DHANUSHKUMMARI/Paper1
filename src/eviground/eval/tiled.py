@@ -133,6 +133,8 @@ class TiledEvaluator:
             if self.want_maps:
                 maps = torch.stack([acc["maps"][i] for i in range(len(boxes))])
                 res["prob_map"] = tiling.stitch(maps, boxes, h, w).numpy()
+                res["tile_probs"] = probs.numpy()  # per tile (real, generated, edited)
+                res["boxes"] = list(boxes)
             results[head] = res
         self.images += 1
         self.on_image(item, results)

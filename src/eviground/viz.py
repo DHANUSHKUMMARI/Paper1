@@ -208,7 +208,7 @@ def diagnosis_figures(
     out_dir: Path,
     *,
     heads: Sequence[str] = ("model", "probe"),
-    seed: int = 42,
+    seed: int | str = 42,
     show: bool = True,
 ) -> list[Path]:
     """The localization diagnosis' figures from ``localization_diagnosis_seed<seed>.json``
@@ -338,7 +338,7 @@ def p1_figure(
     out_dir: Path,
     *,
     bar: float = 0.721,
-    seed: int = 42,
+    seed: int | str = 42,
     show: bool = True,
 ) -> Path | None:
     """P1 accuracy per generator, one panel per version (raw / harmonized), one bar colour per

@@ -29,6 +29,10 @@ Prepared while PR I waits. **The L4 retrain runs only after Dhanush's go-ahead,*
 - `python -m eviground.utils.repo_audit --history`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 06, 07, 08, 09, 10 and 11: all passed. The 08 dry run asserts the interior block for both heads.
 
+### Review fix (PR #41)
+- SonarCloud S1192 (critical; the quality gate passed): notebook 11 repeated the literal `'metrics.csv'` 3 times. It is now a constant, `METRICS`, set through the generator.
+- Rerun: ruff clean; 435 passed; audit ok; the notebook 11 dry run passed.
+
 ### Not run here
 - Notebook 11 (L4, ≈ 4.5–5.5 CU estimated): after Dhanush's go-ahead.
 - Then notebook 08 and notebook 09 with `RUN_EXPERIMENT = 'eviground_ctx'`.

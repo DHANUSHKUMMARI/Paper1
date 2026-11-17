@@ -3,6 +3,41 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR G — the paired BR-Gen subset, without the training overlap — 2026-11-17
+
+Notebook 07, rerun after PR F, listed BR-Gen correctly: **150,000 pairs**, 5,000 in each of the 30 method × region × source groups, 0 images without a mask, 0 masks without an image, 0 ambiguous (18.8 s, 0.001 CU, commit `0025262`). The dev split was reused unchanged (`1e0792a8…`).
+
+Dhanush's decisions (17 Nov 2026):
+- **Paired subset, 200 per group:** in each of the 6 region × source groups, 200 source images, each with all 5 methods' forged files. That is 1,200 source images and 6,000 forged images; the methods are compared on the same images.
+- **P3 reports pixel metrics only:** BR-Gen ships no real images, so there is no image-level accuracy or AUC.
+- **Training overlap checked and left out:** a source image whose id appears in the CP1 `train_pool` is not chosen.
+- **Kept COCO, reported by source:** DiffSeg30k's real bases are COCO photos (its paper, Sec. 3.1), but its file names are sequential numbers (e.g. `diffseg30k/train_copy/00034156.image.png`), so a COCO overlap with them cannot be checked by id. P3 is therefore reported per source, and also on ImageNet + Places alone.
+
+Code (`data/brgen.py`):
+- `source_id` reads the source image's id from a forged or mask path (`000000232161_background.png` → `000000232161`).
+- `training_ids` collects ids from the manifest rows with role `train_pool`: each uid's file stem, plus every COCO id (12 digits) or ImageNet training id (`n########_#`) in the uid. `coverage` counts, per source, the rows whose uid carries such an id, so a source that cannot be checked by id shows 0.
+- `overlap` counts BR-Gen source images per source whose id is in training.
+- `paired_subset` ranks the source images of each region/source group by a hash of (seed, salt, group, id). It skips images that miss a method or are in `exclude`, takes the first `per_group`, and returns all methods' files of those images, their masks and the SHA-256 of the sorted list.
+- `released_paths(..., ids=...)` lets tests and the dry run choose source-image ids.
+
+Notebook 07:
+- Cell 2: `FREEZE_BRGEN = True`, `SAMPLE_CHECK = True`, `PER_GROUP = 200`, plus `P3_METRICS` and `P3_REPORTING`, which are stored in the subset file.
+- Cell 7 freezes the paired subset once, into `brgen_subset.json`. It extracts the three source-image lists (text only) and records their entry count, 3 examples and how many match training ids. It records the id coverage per training source and the overlap per BR-Gen source. It stops if a group falls short of 200.
+- The dry-run archive holds one COCO and one ImageNet id that the fake training pool also holds. The dry run asserts that both are found and left out.
+
+### Results (sandbox: Python 3.13.18, CPU)
+- `ruff check src tests`: clean; `ruff format --check src tests`: 83 files already formatted.
+- `python -m pytest -p no:warnings`: **416 passed**, 3 of them new, in `tests/test_cp4_prep.py`:
+  - every chosen source image has all 5 methods, the subset is seeded and independent of input order, and the masks follow;
+  - an image missing a method is skipped;
+  - overlap by COCO and ImageNet id is found and excluded, a `test_P7` COCO image does not count as training, and a source whose names carry no id shows 0 coverage.
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 07, 08 and 09: all passed. In 07, the overlap was found as 1 COCO and 1 ImageNet image, and each COCO and ImageNet group excluded 1; the sample check passed.
+
+### Not run here
+- The real freeze: notebook 07 must be rerun on a CPU runtime. It extracts 3 text lists and about 20 sample images, a few minutes and under 0.05 CU.
+- How many training rows of each real source carry ids, and how many BR-Gen source images overlap: known only after that run.
+
 ## CP4 PR F — BR-Gen's released layout is parsed and paired — 2026-11-17
 
 Notebook 07 listed the complete archive: 13 volumes, 180,003 files, 68,555,453,840 bytes, read in 21.5 s for 0.015 CU. It paired **0** images with masks, because the code expected the README layout (`Au/`, `Tp/`, `Gt/`, `<stem>_mask.png`). The released archive, read from `brgen_listing.json` and `brgen_members.txt.gz` (file names only), is laid out like this:

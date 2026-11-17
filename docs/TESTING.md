@@ -3,6 +3,68 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR I — the one CP4 fix: context crops on AI-generated bases, and its shortcut check — 2026-11-17
+
+**Why:** the localization diagnosis (notebook 08 on validation data of the training editors, CP3 unified seed 42) found:
+- whole-image edited IoU 0.395 (crops: 0.677);
+- **over-marking** on 28.9% of all pixels; misses on 19.1% of edited pixels;
+- by base: AI-generated bases IoU **0.330** with 35.9% of pixels over-marked, real-photo bases **0.721** with 4.9%.
+
+Every edited training crop held part of the edit (`crops.edited_crop`), so the model never saw an AI-generated base far from an edit.
+
+**Dhanush's decision (17 Nov 2026):**
+- For edited images with an AI-generated base, **1/3 of the training draws take a crop anywhere** in the image.
+- A draw is kept only if its edited share is **exactly 0** (labelled `generated`, with an all-zero mask) or **1–90%** (`edited`, with the true mask). A share in (0, 1%) or above 90% is redrawn, up to 10 tries, and the CP3 rule is the fallback.
+- Every other edited crop keeps the 1–90% rule. Real-base edits are unchanged.
+- The interior-tile hypothesis (crops inside an edit) is not part of the fix: notebook 08 found misses of 19.1%, and 21.1% in the 40–100% bin.
+- The gate stays at threshold 0.5.
+
+Code:
+- **`crops.context_crop`:** a uniform window, accepted at share 0 or within (1%, 90%).
+- **`datasets.ForensicDataset(context_share=…)`:**
+  - **Only AI-base edited rows** take context crops; the generator draws nothing extra when the share is 0, so CP3's plans are identical.
+  - A crop spec carries the tag `context` or `context_generated`. `__getitem__` relabels `context_generated` as `generated`, with `has_mask` False and a zero mask.
+  - **The loader re-checks the edit mask** and raises `ContextCropError` if a crop labelled generated holds any edited pixel.
+  - `context_counts()` counts both kinds.
+- **`configs/base.yaml`:** `data.context_crop_share: 0.0`, so CP3 is unchanged. The trainer passes the share through and logs the counts per epoch.
+- **New `data/sampler_check.py`** reruns the CP1 shortcut checks on the trainer's own draws:
+  - the metadata lookup table on CP1's criterion features (format, JPEG quality, crop size), real vs not real (≤ 0.60) and 3-class;
+  - the stored image size, as a diagnostic;
+  - the quality-75 share per class and per class/source;
+  - the source mix per class.
+  - `compare` flags a material change: real vs not real above 0.60; a balanced-accuracy change above 0.02; a quality-75 or class/source share change above 0.03.
+- **New notebook 10 `10_cp4_fix_sampler_check.ipynb`** (CPU, before any GPU time):
+  - builds epochs 0–2 of the CP3 sampler and of the fixed one (72,000 draws each);
+  - runs and compares the checks, showing CP1 run 5's numbers for reference;
+  - writes `cp4_fix_sampler_check.json`;
+  - **stops** on a material change.
+
+### Results (sandbox: Python 3.13.18, CPU)
+- `ruff check src tests`: clean. `ruff format --check src tests`: 86 files already formatted.
+- `python -m pytest -p no:warnings`: **429 passed**, 7 of them new, in `tests/test_data_pipeline.py`:
+  - `context_crop` keeps edit-free windows and 1–90% windows, and refuses fully edited ones;
+  - share 0 gives the CP3 plan, unchanged;
+  - context crops only on AI-base edits, edit-free ones labelled generated with a zero mask, seeded;
+  - the share is near the one requested;
+  - a crop wrongly tagged edit-free is refused (`ContextCropError`);
+  - per-class counts: edited loses exactly the edit-free draws and generated gains them;
+  - the sampler check and its comparison (DiffSeg30k appears in the generated class only with the fix).
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 06, 08, 09 and 10: all passed. In the fake world, notebook 10 found no change between the samplers apart from the context crops. Its stop fires on the fake world's own metadata score (0.84), as intended for real data above 0.60.
+
+### Review fixes (second push)
+- **SonarCloud, 2 critical (S3776):** `sampler_check.compare` was split into `_q75_changes` and `_material`, `_diffs` into `_number` and `_mapping` (third push), and the trainer reads the share through `_context_share`. The other 6 findings were minor: one `endswith` with a tuple, and 5 composite test assertions split.
+- **Codex P2, resume:** a run resumed with a different `data.context_crop_share` would rebuild a different epoch plan and skip the wrong draws. `Trainer._check_run_settings` now compares profile, seed and the share with the checkpoint's config (a CP3 checkpoint without the setting counts as 0) and stops with `CheckpointMismatch`. New test.
+- **Codex P2, quality 75 by source:** the comparison also covers `per_class_source`, for pools present on both sides. New test: the sources move while the class total stays the same, and the change is flagged.
+- **Materiality of the source mix:** the fix moves DiffSeg30k into the generated class by design, which also dilutes the other generated sources.
+  - Materiality is now judged on the mix without the edit-free context crops (`source_mix_without_context_generated`).
+  - The designed change is reported apart (`source_share_change_designed`).
+- After the fixes: **431 passed**; ruff clean; the audit ok; the notebook 06 and 10 dry runs passed.
+
+### Not run here
+- Notebook 10 on the real shards: a CPU runtime, a shard copy, then 2 × 72,000 draws.
+- The retrain (notebook 11, PR J): after Dhanush's go-ahead.
+
 ## CP4 — the BR-Gen subset is frozen (notebook 07 on Colab, CPU) — 2026-11-17
 
 Run on main at `c8ed936`, 09:59–10:00 UTC, 0.003 CU. Results are read from Drive: `cp4_prep.json`, `brgen_subset.json` and `brgen_sample_check.json` in `runs/checkpoints/`.

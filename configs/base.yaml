@@ -15,6 +15,8 @@ data:
   crop: 256                   # no padding, no resizing; test images are tiled (brief v1.2, D0)
   clip_size: 224
   balance: [1, 1, 1]          # real : fully generated : locally edited
+  context_crop_share: 0.0     # CP4 fix (17 Nov 2026): share of edited AI-base draws taking a crop
+                              # anywhere (edit-free ones labelled generated); 0 = CP3 rule
   num_workers: 4
 
 checkpoint:

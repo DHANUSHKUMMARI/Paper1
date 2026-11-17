@@ -50,6 +50,11 @@ LOSS_TERMS = ("total", "ce", "bce", "dice", "att")
 LAST = "last.pt"  # the newest checkpoint of a run
 
 
+def _context_share(cfg: Mapping[str, Any]) -> float:
+    """``data.context_crop_share`` (the CP4 fix; 0 = the CP3 crop rule)."""
+    return float((cfg.get("data") or {}).get("context_crop_share") or 0.0)
+
+
 class NonFiniteLoss(RuntimeError):
     """A loss term or the gradient norm is NaN or infinite: the run stops (CP3 criterion S1)."""
 
@@ -150,6 +155,7 @@ class Trainer:
             augment=Augment.from_config(self.cfg.get("data", {}).get("augment")),
             seed=self.seed,
             n_per_class=int(tc.get("crops_per_epoch", 24000)) // n_classes,
+            context_share=_context_share(self.cfg),
         )
         self.val_ds = ForensicDataset(
             self.shard_dir, "val", profile=self.profile, crop=crop, seed=self.seed
@@ -223,6 +229,21 @@ class Trainer:
         ckpt.copy(path, self.run_dir / LAST)
         ckpt.rotate(self.run_dir, int(self.cfg.get("checkpoint", {}).get("keep_last", 2)))
 
+    def _check_run_settings(self, state: Mapping[str, Any]) -> None:
+        """Profile, seed and the sampler's context-crop share (CP4 fix) must match the
+        checkpoint's: a different share would rebuild a different epoch plan and resume at the
+        wrong draw. A checkpoint without the setting (CP3) counts as 0."""
+        saved_share = _context_share(state.get("config") or {})
+        for key, saved, now in (
+            ("profile", state.get("profile"), self.profile),
+            ("seed", state.get("seed"), self.seed),
+            ("data.context_crop_share", saved_share, _context_share(self.cfg)),
+        ):
+            if saved != now:
+                raise ckpt.CheckpointMismatch(
+                    f"the checkpoint was trained with {key} {saved!r}, this run uses {now!r}: stop"
+                )
+
     def resume(self, which: str | Path) -> bool:
         path = self.run_dir / LAST if str(which) == "auto" else Path(which)
         if not path.is_file():
@@ -230,12 +251,7 @@ class Trainer:
                 raise FileNotFoundError(path)
             return False
         state = ckpt.load(path)
-        for key, now in (("profile", self.profile), ("seed", self.seed)):
-            if state.get(key) != now:
-                raise ckpt.CheckpointMismatch(
-                    f"the checkpoint was trained with {key} {state.get(key)!r}, this run uses "
-                    f"{now!r}: stop"
-                )
+        self._check_run_settings(state)
         ckpt.restore_model(
             self.model, state, clip_revision=self.clip_revision, clip_sha256=self.clip_sha256
         )
@@ -306,6 +322,8 @@ class Trainer:
         whether ``max_steps`` was reached."""
         workers = int(self.cfg.get("data", {}).get("num_workers", 0))
         self.train_ds.set_epoch(ep)
+        if self.train_ds.context_share > 0:
+            self.say(f"epoch {ep} context crops (CP4 fix): {self.train_ds.context_counts()}")
         self.model.train()
         sums = self.state["epoch_loss_sums"]
         self._t0 = time.time()

@@ -11,6 +11,11 @@ Two rules for edited images:
 - :func:`edited_crop` (training loader, decision of 14 Nov 2026): a random edited pixel, then a
   window drawn uniformly among all in-image windows that contain it. The edited pixel lands
   anywhere in the crop, never preferentially at its centre (test tiles have no centre prior).
+- :func:`context_crop` (CP4 fix, decision of 17 Nov 2026): a uniform window anywhere in the
+  image, kept when it holds no edit at all or an edited share within the usual bounds. Used for a
+  share of the edited images with an AI-generated base, so the model also sees their generated
+  areas far from any edit (the localization diagnosis: whole-image IoU 0.330 on AI bases, with
+  35.9% of pixels over-marked, against 0.721 on real bases).
 """
 
 from __future__ import annotations
@@ -150,3 +155,31 @@ def has_valid_window(
     hi = share[1] * size * size
     lo = min_pixels if min_pixels is not None else share[0] * size * size
     return bool(np.any((counts >= lo) & (counts <= hi)))
+
+
+def context_crop(
+    mask: np.ndarray,
+    rng: np.random.Generator,
+    size: int = CROP,
+    share: tuple[float, float] = EDITED_SHARE,
+    tries: int = TRIES,
+) -> tuple[tuple[int, int, int, int] | None, float | None, int]:
+    """A uniform random window anywhere in the image (CP4 fix, 17 Nov 2026), kept when its edited
+    share is exactly 0 (an edit-free crop) or lies in ``share``; a window with a share between 0
+    and ``share[0]`` (or above ``share[1]``) is redrawn, so the crop's label is never ambiguous.
+    Returns ``(box, edited_share, tries_used)``; ``box`` is None after ``tries`` failures or for an
+    image smaller than ``size``."""
+    edited = np.asarray(mask) > 0
+    h, w = edited.shape[:2]
+    if w < size or h < size:
+        return None, None, 0
+    integral = _integral(edited)
+    lo, hi = share
+    last = None
+    for k in range(1, tries + 1):
+        left, top, right, bottom = random_box(w, h, rng, size)  # type: ignore[misc]
+        n = _box_sum(integral, left, top, size)
+        last = n / (size * size)
+        if n == 0 or lo <= last <= hi:
+            return (left, top, right, bottom), last, k
+    return None, last, tries

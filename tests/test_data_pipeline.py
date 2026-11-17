@@ -452,3 +452,165 @@ def test_an_interrupted_staging_resumes_for_the_same_pack(packed, tmp_path, monk
     res = pack.stage_shards(packed["out"], local, progress=None)
     assert res["skipped"] == 2 and res["copied"] == res["shards"] - 2
     assert json.loads((local / pack.STAGED_FILE).read_text())["complete"] is True
+
+
+# ------------------------------------------------------------------ CP4 fix: context crops
+
+
+def test_context_crop_keeps_only_edit_free_or_valid_windows():
+    mask = np.zeros((600, 600), bool)
+    mask[:300, :300] = True  # a quarter edited
+    rng = np.random.default_rng(0)
+    seen = Counter()
+    for _ in range(300):
+        box, share, _tries = crops.context_crop(mask, rng)
+        if box is None:
+            continue
+        assert share == 0 or crops.EDITED_SHARE[0] <= share <= crops.EDITED_SHARE[1]
+        seen["free" if share == 0 else "edited"] += 1
+    assert seen["free"] > 0
+    assert seen["edited"] > 0
+    assert crops.context_crop(np.zeros((100, 100), bool), rng)[0] is None  # smaller than a crop
+    full = np.ones((300, 300), bool)  # every window is all edited: never accepted
+    assert crops.context_crop(full, rng, tries=5)[0] is None
+
+
+def test_context_share_zero_leaves_the_epoch_plan_unchanged(packed):
+    """CP3 reproducibility: the CP4 fix is off by default and draws nothing extra."""
+    a = ForensicDataset(packed["out"], "train", n_per_class=40, seed=42)
+    b = ForensicDataset(packed["out"], "train", n_per_class=40, seed=42, context_share=0.0)
+    assert a.items == b.items
+    assert all(len(spec) == 5 for _i, spec in a.items)
+    assert a.context_counts() == {"context_edited": 0, "context_generated": 0}
+
+
+def test_context_crops_only_on_ai_base_edits_and_edit_free_ones_are_generated(packed):
+    ds = ForensicDataset(packed["out"], "train", n_per_class=300, seed=7, context_share=1.0)
+    ai = [
+        k
+        for k, (i, _s) in enumerate(ds.items)
+        if ds.rows[i]["label"] == "edited" and ds.rows[i].get("base_type") == "ai"
+    ]
+    assert ai, "the fake world has AI-base edited images"
+    tagged = Counter()
+    for k, (i, spec) in enumerate(ds.items):
+        if len(spec) > 5:
+            assert ds.rows[i]["label"] == "edited"
+            assert ds.rows[i]["base_type"] == "ai"
+            tagged[spec[5]] += 1
+            it = ds[k]
+            share = float(it["mask"].mean())
+            if spec[5] == "context_generated":
+                assert it["label"] == 1  # generated
+                assert not it["has_mask"]
+                assert share == 0
+            else:
+                assert it["label"] == 2
+                assert it["has_mask"]
+                assert crops.EDITED_SHARE[0] <= share <= crops.EDITED_SHARE[1]
+    assert sum(tagged.values()) == sum(ds.context_counts().values()) > 0
+    real_base = [
+        spec
+        for i, spec in ds.items
+        if ds.rows[i]["label"] == "edited" and ds.rows[i].get("base_type") != "ai"
+    ]
+    assert all(len(spec) == 5 for spec in real_base)  # real-base edits keep the CP3 rule
+    again = ForensicDataset(packed["out"], "train", n_per_class=300, seed=7, context_share=1.0)
+    assert again.items == ds.items  # seeded
+
+
+def test_context_share_is_about_the_requested_share(packed):
+    ds = ForensicDataset(packed["out"], "train", n_per_class=1000, seed=11, context_share=1 / 3)
+    ai = sum(
+        1
+        for i, _s in ds.items
+        if ds.rows[i]["label"] == "edited" and ds.rows[i].get("base_type") == "ai"
+    )
+    n = sum(ds.context_counts().values())
+    assert ai > 50
+    assert abs(n / ai - 1 / 3) < 0.12  # some context draws fall back to the edited-crop rule
+
+
+def test_edit_free_context_crop_with_edited_pixels_is_refused(packed):
+    """The loader re-checks every crop labelled generated against the edit mask."""
+    from eviground.data import datasets
+
+    ds = ForensicDataset(packed["out"], "train", n_per_class=300, seed=7, context_share=1.0)
+    k, (i, spec) = next(
+        (k, item) for k, item in enumerate(ds.items) if len(item[1]) > 5 and item[1][5] == "context"
+    )  # a context crop that holds part of the edit...
+    ds.items[k] = (i, (*spec[:5], datasets.CONTEXT_GENERATED))  # ...wrongly tagged edit-free
+    with pytest.raises(datasets.ContextCropError):
+        ds[k]
+
+
+def test_context_crops_move_edit_free_draws_from_edited_to_generated(packed):
+    base = ForensicDataset(packed["out"], "train", n_per_class=500, seed=3)
+    fix = ForensicDataset(packed["out"], "train", n_per_class=500, seed=3, context_share=1 / 3)
+    b = Counter(LABEL for LABEL in (ds_label(base, k) for k in range(len(base))))
+    f = Counter(LABEL for LABEL in (ds_label(fix, k) for k in range(len(fix))))
+    moved = fix.context_counts()["context_generated"]
+    assert b == {"real": 500, "generated": 500, "edited": 500}
+    assert f == {"real": 500, "generated": 500 + moved, "edited": 500 - moved}
+
+
+def ds_label(ds, k):
+    i, spec = ds.items[k]
+    if len(spec) > 5 and spec[5] == "context_generated":
+        return "generated"
+    return ds.rows[i]["label"]
+
+
+def test_sampler_check_compares_the_cp3_and_fixed_samplers(packed):
+    from eviground.data import sampler_check
+
+    cp3 = ForensicDataset(packed["out"], "train", n_per_class=200, seed=5)
+    fix = ForensicDataset(packed["out"], "train", n_per_class=200, seed=5, context_share=1.0)
+    rec_cp3 = sampler_check.plan_records(cp3, range(2))
+    rec_fix = sampler_check.plan_records(fix, range(2))
+    assert len(rec_cp3) == len(rec_fix) == 2 * 600
+    a, b = sampler_check.check(rec_cp3), sampler_check.check(rec_fix)
+    assert set(a["metadata_real_vs_not_real"]["features"]) == set(sampler_check.FEATURES)
+    assert a["context"] == {}
+    assert sum(b["context"].values()) > 0
+    gen_ds = b["source_mix"]["generated"].get("diffseg30k", 0.0)
+    assert gen_ds > 0  # edit-free DiffSeg30k AI-base crops now count as generated
+    assert a["source_mix"]["generated"].get("diffseg30k", 0.0) == 0.0
+    assert gen_ds == pytest.approx(
+        b["context"].get("context_generated", 0) / b["class_counts"]["generated"], abs=1e-3
+    )
+    same = sampler_check.compare(a, a)
+    assert same["material"] == ([] if a["criterion_pass"] else same["material"])
+    assert all(v == 0 for v in same["source_share_change"].values())
+    diff = sampler_check.compare(a, b)
+    assert diff["source_share_change_designed"]["generated.diffseg30k"] == pytest.approx(
+        gen_ds, abs=1e-4
+    )
+    # judged without the edit-free context crops: the designed move is not "material"
+    assert "generated.diffseg30k" not in diff["source_share_change"]
+    assert not [m for m in diff["material"] if "source share" in m]
+
+
+def test_sampler_check_flags_a_source_level_quality_75_shift():
+    """Codex review: a source's quality-75 share can move while its class total does not."""
+    from eviground.data import sampler_check
+
+    def summary(q_src):
+        per_class = {"real": {"n": 10, "q75_any": 0.3, "q75_420": 0.3}}
+        per_src = {f"real/{s}": {"n": 5, "q75_any": v, "q75_420": v} for s, v in q_src.items()}
+        return {
+            "criterion_score": 0.55,
+            "criterion_pass": True,
+            "metadata_three_class": {"balanced_accuracy": 0.5},
+            "quality_75": {"per_class": per_class, "per_class_source": per_src},
+            "source_mix": {"real": {"coco": 0.5, "genimage": 0.5}},
+            "source_mix_without_context_generated": {"real": {"coco": 0.5, "genimage": 0.5}},
+        }
+
+    base = summary({"coco": 0.5, "genimage": 0.1})
+    shifted = summary({"coco": 0.3, "genimage": 0.3})  # same class total, sources moved
+    out = sampler_check.compare(base, shifted)
+    assert out["quality_75_change"]["per_class.real.q75_any"] == 0
+    assert out["quality_75_change"]["per_class_source.real/coco.q75_any"] == 0.2
+    assert any("real/coco" in m for m in out["material"])
+    assert sampler_check.compare(base, base)["material"] == []

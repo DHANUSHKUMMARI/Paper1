@@ -17,7 +17,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import os
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,25 @@ def load_clip(
     )
 
 
+@contextmanager
+def adapters_off(model: nn.Module) -> Iterator[None]:
+    """Run ``model`` as plain frozen CLIP: every LoRA layer forwards through its base layer only.
+
+    peft's ``enable_adapters(False)`` would also switch off ``requires_grad`` on the adapter
+    weights; this sets the layers' disable flag alone and restores it afterwards."""
+    from peft.tuners.tuners_utils import BaseTunerLayer
+
+    layers = [m for m in model.modules() if isinstance(m, BaseTunerLayer)]
+    before = [m._disable_adapters for m in layers]
+    for m in layers:
+        m._disable_adapters = True
+    try:
+        yield
+    finally:
+        for m, b in zip(layers, before, strict=True):
+            m._disable_adapters = b
+
+
 class SemanticBranch(nn.Module):
     """Frozen CLIP + LoRA on q/v of ``lora_layers``; returns tokens (B, 257, d)."""
 
@@ -192,6 +212,40 @@ class SemanticBranch(nn.Module):
 
     def forward(self, rgb: torch.Tensor) -> torch.Tensor:
         return self.proj(self.clip_tokens(rgb))
+
+    def joint_tokens(
+        self, rgb: torch.Tensor, need_model: bool = True
+    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor]:
+        """One pass for the model and the CLIP probe (CP4 shared trunk, 16 Nov 2026).
+
+        Layers before the first LoRA layer (``first_trainable``) run once; the layers from there
+        run twice: with LoRA for the model's tokens (as :meth:`clip_tokens`), and with the
+        adapters off for the probe, whose features are then those of the plain frozen CLIP: the
+        class token and the patch tokens of the last layer after ``post_layernorm``. Returns
+        (model tokens or None, probe class token (B, width), probe patch tokens (B, N, width)).
+        """
+        vt = _vision(self.clip)
+        layers = vt.encoder.layers
+        with torch.no_grad():
+            h = vt.pre_layrnorm(vt.embeddings(rgb))
+            for layer in layers[: self.first_trainable]:
+                h = self._layer(layer, h)
+        model_h = None
+        if need_model:
+            model_h = h
+            for layer in layers[self.first_trainable :]:
+                model_h = self._layer(layer, model_h)
+        with torch.no_grad(), adapters_off(self.clip):
+            p = h
+            for layer in layers[self.first_trainable :]:
+                p = self._layer(layer, p)
+            post = vt.post_layernorm(p)
+        return model_h, post[:, 0], post[:, 1:]
+
+    def probe_features(self, rgb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The plain frozen CLIP's features for the probe: (class token, patch tokens)."""
+        _m, cls, patches = self.joint_tokens(rgb, need_model=False)
+        return cls, patches
 
     def lora_parameters(self) -> list[nn.Parameter]:
         return [p for n, p in self.clip.named_parameters() if "lora_" in n and p.requires_grad]

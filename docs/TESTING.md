@@ -3,6 +3,86 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR B — evaluator, CLIP probes, localization diagnosis, P1 gate — 2026-11-16
+
+From the CP4 plan approved on 16 Nov, with Dhanush's changes:
+- P2 is not scored until he has seen the localization diagnosis;
+- G1 must also beat the probe on harmonized files;
+- the published results are shown for context;
+- the false "edited" rate is reported on large real images;
+- there is no second fix;
+- the shared-trunk features are tested against a plain CLIP.
+
+Code:
+- **Shared trunk:** `models/semantic.py` `joint_tokens` / `probe_features`, and `EviGround.forward(probe=True)`.
+  - CLIP layers before the first LoRA layer (`first_trainable`, read from the config) run once.
+  - The later layers run twice: with LoRA for the model, and with the adapters off for the probe.
+  - `adapters_off` sets peft's disable flag only and restores it afterwards; it leaves `requires_grad` untouched.
+- `baselines/clip_probe.py`:
+  - the class-token logistic regression (L-BFGS, L2 chosen by validation AUC);
+  - online patch probes, 6 L2 strengths side by side, chosen by validation mask F1; a patch is positive at ≥ 50% edited, and real and generated crops are all-zero;
+  - `ProbeHead`, which gives the model's output contract. The features are computed in bf16 on a GPU; the fits always run in fp32.
+- `eval/tiled.py`:
+  - tiles of many images are batched by shape; image scores follow the unchanged rule, and masks are stitched;
+  - `mask_record` keeps the pixel counts of each image: confusion matrix, AUC histograms, boundary matches at 2 px, and held-out-editor pixels;
+  - from those counts: pooled metrics, per-image metrics, histogram AUC.
+- `eval/locdiag.py`:
+  - grid ceilings (16 × 16 and 64 × 64 per tile, majority per cell, stitched);
+  - summaries by edit size, editor and base type;
+  - real-image rates by tile count and source.
+- `eval/testsets.py`:
+  - whole validation images from the shards;
+  - P1 and P2 from files, raw or harmonized (GenImage rule, `min_side=None`);
+  - P2 masks with the AI base read as 0, plus per-pixel editor values;
+  - parallel staging of files.
+- `eval/runner.py`:
+  - `load_trained` seeds as the trainer does, then checks the frozen-CLIP hash;
+  - probe data from the models' epoch plans;
+  - the joint predictor;
+  - the diagnosis, P1 and P2 passes.
+- `eval/cp4.py`:
+  - G1, the red flag RF, and G2 (`NOT_RUN` until P2 is enabled; the verdict is then `PENDING_P2`);
+  - the P1 table with accuracy and AP;
+  - the false "edited" rate by tile count;
+  - the published results for context.
+- `notebooks/08_localization_diagnosis.ipynb` (L4, validation only) and `notebooks/09_cp4_gate.ipynb` (L4, P1 dev; P2 behind `P2_ENABLED = False`).
+- **CI:** dry runs of notebooks 08 and 09.
+
+Tests:
+- `tests/test_shared_trunk.py` (4):
+  - the probe's class token and patch tokens equal a plain `CLIPVisionModel` with the same weights, exactly (`torch.equal`), with LoRA made active;
+  - this holds at LoRA layers 2–3 and 1–3 (the boundary moves with the fix);
+  - the model's tokens are unchanged by the joint pass;
+  - the adapters and `requires_grad` are restored afterwards;
+  - `forward(probe=True)` keeps the model outputs.
+- `tests/test_cp4_eval.py` (11):
+  - cross-image batching by tile shape, with the stitched map reproducing the input;
+  - pixel counts and pooled metrics checked against hand-worked values, including the held-out-editor split;
+  - boundary F1 and histogram AUC;
+  - aligned masks reach a ceiling of 1.0, and a 7 px edit vanishes on the 16-grid;
+  - edit-size and tile-count bins, and the summaries;
+  - the probes separate synthetic features, the L2 is chosen on validation, and the patch-label half rule holds;
+  - harmonized P1 compresses a 128² generated PNG and leaves real JPEGs untouched;
+  - P2 masks and editor values, and staging is idempotent;
+  - gate PASS, FAIL (below 0.721, or losing on harmonized files), red flag and `PENDING_P2`;
+  - AP and false-edited bins.
+
+Sandbox runs:
+- `ruff check` and `ruff format --check`: clean.
+- `python -m pytest -p no:warnings`: 393 passed (after rebasing on main with PR #31).
+- `python -m eviground.utils.repo_audit`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 05, 06 (both profiles), 07, 08 and 09: passed.
+  - In 08 and 09, a tiny trained model is scored on the fake world.
+  - The fake world has no edited validation image, so in 08's dry run only, training images stand in for them.
+- **Real-CLIP CPU smoke run** (pinned commit `32bd6428…`, weights hash checked; not in CI):
+  - with LoRA made active, the shared pass's probe features equal a plain `CLIPVisionModel` forward exactly (maximum difference 0.0, class token and patches);
+  - the model's tokens differ from the plain CLIP's;
+  - the tiled path with the real CLIP and a probe head ran on a 300 × 520 image (6 tiles).
+
+Not run here:
+- the L4 throughput, the real probe fits and the real metrics (notebooks 08 and 09);
+- the DiffSeg30k paper's definitions of binary mIoU, image accuracy and boundary F1. arxiv.org is blocked from this sandbox, so ours are used until they can be checked.
+
 ## CP4 PR A — full-coverage tiling, development split, BR-Gen tools — 2026-11-16
 
 From the CP4 plan approved on 16 Nov.

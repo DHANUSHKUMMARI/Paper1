@@ -1114,18 +1114,9 @@ def ensure_data(
     folder is on Colab's Drive mount (the mount's own free space is the machine's disk).
     """
     paths = paths or get_paths()
-    if sources is None:
-        factory: Callable[[], Sources] = NetworkSources
-    elif callable(sources) and not hasattr(sources, "kaggle_download"):
-        factory = sources  # type: ignore[assignment]
-    else:
-        factory = lambda: sources  # noqa: E731
-    if drive_free == "auto":
-        on_drive = DRIVE_MOUNT in Path(paths.root).parents or Path(paths.root) == DRIVE_MOUNT
-        drive_free = drive_free_bytes if on_drive else None
-    ctx = Context(
-        paths=paths,
-        sources_factory=factory,
+    ctx = make_context(
+        paths,
+        sources,
         reserve_gb=reserve_gb,
         drive_free=drive_free,
         cache_wait_s=cache_wait_s,
@@ -1162,6 +1153,36 @@ def ensure_data(
     if failed and raise_errors:
         raise DataStepError(f"{len(failed)} dataset(s) not ensured: {failed}", report)
     return report
+
+
+def make_context(
+    paths: Paths | None = None,
+    sources: Sources | Callable[[], Sources] | None = None,
+    *,
+    reserve_gb: float = DEFAULT_RESERVE_GB,
+    drive_free: Callable[[], int | None] | None | str = "auto",
+    cache_wait_s: float = 1800.0,
+) -> Context:
+    """The download context of :func:`ensure_data`: network sources created only when needed,
+    the Google Drive quota checked before each write (``drive_free="auto"`` on Colab's Drive
+    mount) and the wait for Colab's Drive upload cache."""
+    paths = paths or get_paths()
+    if sources is None:
+        factory: Callable[[], Sources] = NetworkSources
+    elif callable(sources) and not hasattr(sources, "kaggle_download"):
+        factory = sources  # type: ignore[assignment]
+    else:
+        factory = lambda: sources  # noqa: E731
+    if drive_free == "auto":
+        on_drive = DRIVE_MOUNT in Path(paths.root).parents or Path(paths.root) == DRIVE_MOUNT
+        drive_free = drive_free_bytes if on_drive else None
+    return Context(
+        paths=paths,
+        sources_factory=factory,
+        reserve_gb=reserve_gb,
+        drive_free=drive_free,
+        cache_wait_s=cache_wait_s,
+    )
 
 
 def stage(

@@ -31,6 +31,9 @@ AUTHENTIC_DIRS = {"au", "authentic", "real"}
 MASK_SUFFIX = re.compile(r"[_-](mask|gt|label)$", re.IGNORECASE)
 SEED = 42
 SALT = "brgen_subset_v1"
+REPO = "clpbc/BR-Gen"  # Hugging Face dataset repository (public; 17 Nov 2026: z01-z12 + .zip)
+PART_PREFIX = "BR-Gen_split."
+LAST_VOLUME = PART_PREFIX + "zip"  # holds the central directory: 7z lists and extracts through it
 
 
 def seven_zip() -> str | None:
@@ -234,3 +237,111 @@ def fake_listing(n_per_method: int = 6) -> str:
                 entry(f"{root}/Tp/{method}_{region}_{src}.png", 1000 + i)
                 entry(f"{root}/Gt/{method}_{region}_{src}_mask.png", 100 + i)
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------------------
+# Completing the split archive on Drive (17 Nov 2026: Drive held z01-z08 only)
+# --------------------------------------------------------------------------------------
+
+
+def _published_parts(ctx: Any, repo: str, prefix: str) -> dict[str, int]:
+    from eviground.data.storage import VerificationError
+
+    expected = {
+        name: size
+        for name, size in ctx.sources.hf_list_files(repo).items()
+        if name.startswith(prefix) and "/" not in name
+    }
+    if not expected:
+        raise VerificationError(f"{repo} publishes no file starting with {prefix!r}")
+    return expected
+
+
+def _stamped(folder: Path, name: str, size: int) -> bool:
+    from eviground.data.storage import read_json
+
+    stamp = read_json(folder / f"{name}.verified.json")
+    return isinstance(stamp, dict) and stamp.get("bytes") == size
+
+
+def _fetch_part(ctx: Any, repo: str, folder: Path, name: str, size: int, sha: str | None) -> int:
+    """Downloads one volume after the space checks, verifies and stamps it. Returns the size of
+    the wrong-size local copy it replaced (0 if there was none)."""
+    from eviground.data.storage import VerificationError, sha256_file, write_json_atomic
+
+    target = folder / name
+    have = target.stat().st_size if target.is_file() else 0
+    ctx.drive_space(size - have, f"{repo} {name}")
+    ctx.wait_for_cache(size, f"{repo} {name}")  # the volume passes Colab's local cache
+    if have:  # a wrong-size copy of a published volume: replaced by the download
+        target.unlink()
+    got = Path(ctx.sources.hf_download(repo, name, folder))
+    if got != target:
+        raise VerificationError(f"{name} downloaded to {got}, expected {target}")
+    actual, digest = target.stat().st_size, sha256_file(target)
+    if actual != size or (sha and digest != sha):
+        target.unlink(missing_ok=True)
+        raise VerificationError(
+            f"{name}: {actual} bytes / sha256 {digest[:12]}..., expected {size} / "
+            f"{str(sha)[:12]}...; the file was removed, run the cell again"
+        )
+    write_json_atomic(folder / f"{name}.verified.json", {"bytes": size, "sha256": digest})
+    return have
+
+
+def complete_split(
+    ctx: Any,
+    folder: Path,
+    repo: str = REPO,
+    prefix: str = PART_PREFIX,
+) -> dict[str, Any]:
+    """Makes ``folder`` hold every volume of the split archive published in ``repo``.
+
+    ``ctx`` is a :class:`eviground.data.download.Context` (Drive-quota check before each write,
+    the wait for Colab's upload cache, lazily created sources). A volume already there with
+    exactly the published size is kept and only size-checked (hashing 5 GiB volumes through
+    the Drive mount is too slow); a missing or wrong-size volume is downloaded, then checked
+    against the published size and SHA-256 and stamped (``<name>.verified.json``); a mismatch
+    removes the file and raises. A wrong-size local copy is removed (after the space check)
+    and downloaded again; it is listed under ``replaced``. Local files with the prefix that the
+    repo does not publish are reported, never removed."""
+    import time
+
+    t0 = time.monotonic()
+    folder = Path(folder)
+    expected = _published_parts(ctx, repo, prefix)
+    present = {
+        n
+        for n, size in expected.items()
+        if (folder / n).is_file() and (folder / n).stat().st_size == size
+    }
+    missing = sorted(set(expected) - present)
+    shas: dict[str, str | None] = {}
+    if missing:  # refuse up front if all the missing volumes do not fit, before any download
+        need = sum(
+            expected[n] - ((folder / n).stat().st_size if (folder / n).is_file() else 0)
+            for n in missing
+        )
+        ctx.drive_space(need, f"{repo}: {len(missing)} missing volumes")
+        shas = {k: v["sha256"] for k, v in ctx.sources.hf_file_info(repo, missing).items()}
+    replaced = []
+    for name in missing:
+        had = _fetch_part(ctx, repo, folder, name, expected[name], shas.get(name))
+        if had:
+            replaced.append({"name": name, "bytes": had})
+    extra = sorted(
+        p.name
+        for p in folder.glob(f"{prefix}*")
+        if p.is_file() and p.name not in expected and not p.name.endswith(".verified.json")
+    )
+    return {
+        "repo": repo,
+        "expected": dict(sorted(expected.items())),
+        "kept": sorted(present),
+        "size_only": sorted(n for n in present if not _stamped(folder, n, expected[n])),
+        "downloaded": missing,
+        "replaced": replaced,
+        "extra": extra,
+        "bytes_downloaded": sum(expected[n] for n in missing),
+        "seconds": round(time.monotonic() - t0, 1),
+    }

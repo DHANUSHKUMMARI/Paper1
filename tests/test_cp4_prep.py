@@ -285,3 +285,45 @@ def test_complete_split_checks_the_total_space_before_the_first_download(tmp_pat
         brgen.complete_split(ctx, folder)
     assert not any(c.startswith("hf_download") for c in fake.calls)
     assert not list(folder.glob("BR-Gen_split.*"))
+
+
+def test_released_layout_parse_pair_strata_and_subset():
+    """The archive as released (17 Nov 2026): Forged/<Method>/<Region>/<Source>/, one mask per
+    source image and region under Mask/, and only image lists under RealImage/."""
+    entries = brgen.parse_slt(brgen.fake_listing(2, layout="released"))
+    paths = [e["path"] for e in entries]
+    forged = [p for p in paths if "/Forged/" in p]
+    assert len(forged) == 5 * 2 * 3 * 2
+    f = "BR-Gen/Forged/SDXL/Stuff/ImageNet/imagenet_000001_stuff.png"
+    assert brgen.parse_member(f) == {
+        "kind": "forged",
+        "method": "SDXL",
+        "region": "Stuff",
+        "source": "ImageNet",
+        "name": "imagenet_000001_stuff.png",
+    }
+    assert brgen.kind(f) == "image"
+    assert brgen.kind("BR-Gen/Mask/Stuff/ImageNet/imagenet_000001_stuff.png") == "mask"
+    assert brgen.kind("BR-Gen/RealImage/COCO/COCO_image_list.txt") == "other"
+    assert brgen.method_of(f) == "SDXL"
+    assert brgen.stratum_key(f, 0) == "SDXL/Stuff/ImageNet"
+
+    pairs = brgen.pair_masks(paths)
+    assert len(pairs["pairs"]) == len(forged)  # every forged file pairs; masks are shared
+    assert pairs["images_without_mask"] == 0
+    assert pairs["masks_without_image"] == 0
+    assert pairs["ambiguous"] == 0
+    assert pairs["pairs"][f] == "BR-Gen/Mask/Stuff/ImageNet/imagenet_000001_stuff.png"
+
+    summary = brgen.summarize(entries)
+    assert summary["layout"].startswith("released")
+    assert summary["kinds"] == {"image": 60, "mask": 12, "other": 3}
+    assert len(summary["strata"]) == 30
+    assert set(summary["strata"].values()) == {2}
+    assert summary["mask_strata"]["Background/COCO"] == 2
+    assert summary["source_images"] == {"COCO": 2, "ImageNet": 2, "Places": 2}
+    assert len(summary["real_lists"]) == 3
+
+    sub = brgen.subset(sorted(pairs["pairs"]), 1, lambda p: brgen.stratum_key(p, 0))
+    assert len(sub["items"]) == 30
+    assert all(c == {"available": 2, "chosen": 1} for c in sub["strata"].values())

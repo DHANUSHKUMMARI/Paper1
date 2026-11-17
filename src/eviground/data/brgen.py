@@ -1,5 +1,14 @@
 """BR-Gen (P3, cross-dataset localization): list, subset and extract without unpacking it all.
 
+Layout of the released archive (listed 17 Nov 2026; not the README's ``Au/Tp/Gt``)::
+
+    BR-Gen/Forged/<Method>/<Region>/<Source>/<stem>_<region>.png   150,000 (5 x 2 x 3 x 5,000)
+    BR-Gen/Mask/<Region>/<Source>/<stem>_<region>.png              30,000, shared by the methods
+    BR-Gen/RealImage/<Source>/<Source>_image_list.txt              lists only; no real image
+
+with methods BrushNet, LaMa, MAT, PowerPaint, SDXL; regions Background, Stuff; sources COCO,
+ImageNet, Places. The README layout is still recognised as a fallback.
+
 BR-Gen sits on Drive as a split zip (``04_BR-Gen/BR-Gen_split.z01`` ... plus the final ``.zip``),
 too large to unpack on Colab's disk. ``7z`` reads a split zip's central directory from its last
 volume, so the archive can be listed and single members extracted without unpacking the rest.
@@ -79,6 +88,29 @@ def list_archive(archive: Path, exe: str | None = None) -> list[dict[str, Any]]:
     return parse_slt("\n----------\n" + out.stdout)
 
 
+def parse_member(path: str) -> dict[str, str] | None:
+    """The released layout's fields of ``path``: ``kind`` (forged, mask or real_list),
+    ``method`` (forged only), ``region``, ``source`` and ``name``; None for other paths."""
+    parts = PurePosixPath(path).parts
+    for i, part in enumerate(parts):
+        rest = parts[i + 1 :]
+        if part == "Forged" and len(rest) == 4:
+            method, region, source, name = rest
+            return {
+                "kind": "forged",
+                "method": method,
+                "region": region,
+                "source": source,
+                "name": name,
+            }
+        if part == "Mask" and len(rest) == 3:
+            region, source, name = rest
+            return {"kind": "mask", "region": region, "source": source, "name": name}
+        if part == "RealImage" and len(rest) == 2:
+            return {"kind": "real_list", "source": rest[0], "name": rest[1]}
+    return None
+
+
 def is_image(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in IMAGE_EXT
 
@@ -93,6 +125,9 @@ def kind(path: str) -> str:
     """'mask', 'authentic', 'image' (tampered or unknown) or 'other'."""
     if not is_image(path):
         return "other"
+    member = parse_member(path)
+    if member:
+        return {"forged": "image", "mask": "mask"}.get(member["kind"], "other")
     if is_mask(path):
         return "mask"
     if {d.lower() for d in PurePosixPath(path).parent.parts} & AUTHENTIC_DIRS:
@@ -101,12 +136,20 @@ def kind(path: str) -> str:
 
 
 def method_of(path: str) -> str:
-    """The generator prefix of a BR-Gen file name (``MAT_Stuff_COCO_...`` -> ``MAT``)."""
+    """The inpainting method: the folder under ``Forged/`` in the released layout, else the
+    file name's prefix (README layout: ``MAT_Stuff_COCO_...`` -> ``MAT``)."""
+    member = parse_member(path)
+    if member and member["kind"] == "forged":
+        return member["method"]
     return PurePosixPath(path).name.split("_", 1)[0]
 
 
 def stratum_key(path: str, depth: int) -> str:
-    """The first ``depth`` folders and the file's generator prefix."""
+    """``method/region/source`` in the released layout (``depth`` is not used there); else the
+    first ``depth`` folders and the file's generator prefix."""
+    member = parse_member(path)
+    if member and member["kind"] == "forged":
+        return "/".join((member["method"], member["region"], member["source"]))
     parts = PurePosixPath(path).parts
     return "/".join([*parts[: min(depth, len(parts) - 1)], method_of(path)])
 
@@ -126,7 +169,23 @@ def summarize(entries: Sequence[Mapping[str, Any]], depth: int = 3, examples: in
         if len(sample[top]) < examples:
             sample[top].append(e["path"])
     kinds = Counter(kind(e["path"]) for e in files)
+    members = [m for m in (parse_member(e["path"]) for e in files) if m]
+    strata = Counter(
+        "/".join((m["method"], m["region"], m["source"])) for m in members if m["kind"] == "forged"
+    )
+    mask_strata = Counter(
+        "/".join((m["region"], m["source"])) for m in members if m["kind"] == "mask"
+    )
+    sources = {m["source"] for m in members if m["kind"] == "forged"}
+    stems = {(m["source"], m["name"].rsplit("_", 1)[0]) for m in members if m["kind"] == "forged"}
     return {
+        "layout": "released (Forged/Mask/RealImage)" if members else "other",
+        "strata": dict(sorted(strata.items())),
+        "mask_strata": dict(sorted(mask_strata.items())),
+        "source_images": {s: sum(1 for x in stems if x[0] == s) for s in sorted(sources)},
+        "real_lists": sorted(
+            e["path"] for e in files if (parse_member(e["path"]) or {}).get("kind") == "real_list"
+        ),
         "members": len(entries),
         "files": len(files),
         "bytes": sum(e["size"] for e in files),
@@ -138,26 +197,35 @@ def summarize(entries: Sequence[Mapping[str, Any]], depth: int = 3, examples: in
 
 
 def _pair_key(path: str) -> str:
-    """The path without its image / mask folder (``Tp`` / ``Gt``) and without a mask suffix."""
+    """``region/source/name`` in the released layout (a forged file and its mask share it);
+    else the path without its image / mask folder (``Tp`` / ``Gt``) and mask suffix."""
+    member = parse_member(path)
+    if member and member["kind"] in ("forged", "mask"):
+        return "/".join((member["region"], member["source"], member["name"])).lower()
     p = PurePosixPath(path)
     folders = [d.lower() for d in p.parent.parts if d.lower() not in MASK_DIRS | IMAGE_DIRS]
     return "/".join([*folders, MASK_SUFFIX.sub("", p.stem).lower()])
 
 
 def pair_masks(paths: Iterable[str]) -> dict[str, Any]:
-    """Pairs each image with the mask of the same name stem (``x.png`` and ``x_mask.png``, or
-    the same name under a mask folder); returns pairs and the unpaired counts."""
+    """Pairs each image with its mask: in the released layout the mask of the same region,
+    source and name (one mask serves all five methods); in the README layout the mask of the same
+    name stem (``x.png`` and ``x_mask.png``, or the same name under a mask folder). Returns the
+    pairs and the unpaired counts; a key with more than one mask is ambiguous and left unpaired.
+    """
     images, masks = {}, {}
     for p in paths:
         k = kind(p)
         if k in ("image", "mask"):
             (masks if k == "mask" else images).setdefault(_pair_key(p), []).append(p)
-    pairs = {i[0]: masks[k][0] for k, i in images.items() if k in masks and len(i) == 1}
+    pairs = {
+        img: masks[k][0] for k, imgs in images.items() if len(masks.get(k, ())) == 1 for img in imgs
+    }
     return {
         "pairs": pairs,
-        "images_without_mask": sum(1 for k in images if k not in masks),
+        "images_without_mask": sum(len(v) for k, v in images.items() if k not in masks),
         "masks_without_image": sum(1 for k in masks if k not in images),
-        "ambiguous": sum(1 for k, v in images.items() if len(v) > 1),
+        "ambiguous": sum(1 for v in masks.values() if len(v) > 1),
     }
 
 
@@ -220,14 +288,39 @@ def extract(
     return [out_dir / m for m in members]
 
 
-def fake_listing(n_per_method: int = 6) -> str:
-    """``7z l -slt`` text of a small archive laid out as BR-Gen's README shows (Au/, Tp/, Gt/;
-    masks named ``<tampered stem>_mask.png``); tests and dry runs only."""
+METHODS = ("BrushNet", "LaMa", "MAT", "PowerPaint", "SDXL")
+REGIONS = ("Background", "Stuff")
+SOURCES = ("COCO", "ImageNet", "Places")
+
+
+def released_paths(n_per_source: int = 2) -> list[str]:
+    """Paths of a small archive in the released layout (tests and dry runs only)."""
+    paths = []
+    for source in SOURCES:
+        for i in range(n_per_source):
+            stem = f"{source.lower()}_{i:06d}"
+            for region in REGIONS:
+                name = f"{stem}_{region.lower()}.png"
+                paths.append(f"BR-Gen/Mask/{region}/{source}/{name}")
+                paths += [f"BR-Gen/Forged/{m}/{region}/{source}/{name}" for m in METHODS]
+        paths.append(f"BR-Gen/RealImage/{source}/{source}_image_list.txt")
+    return paths
+
+
+def fake_listing(n_per_method: int = 6, layout: str = "readme") -> str:
+    """``7z l -slt`` text of a small archive (tests and dry runs only). ``layout="readme"``: as
+    BR-Gen's README shows (Au/, Tp/, Gt/; masks named ``<tampered stem>_mask.png``);
+    ``"released"``: as the archive really is (:func:`released_paths`, ``n_per_method`` source
+    images per source)."""
     lines = ["7-Zip (z) fake", "", "----------"]
 
     def entry(path: str, size: int) -> None:
         lines.extend([f"Path = {path}", "Folder = -", f"Size = {size}", ""])
 
+    if layout == "released":
+        for i, path in enumerate(released_paths(n_per_method)):
+            entry(path, 100 + i)
+        return "\n".join(lines)
     for region in ("Stuff", "Background"):
         root = f"BR-Gen/BRGen-{region}-Val"
         for i in range(n_per_method):

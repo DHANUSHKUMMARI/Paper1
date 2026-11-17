@@ -3,6 +3,36 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR F — BR-Gen's released layout is parsed and paired — 2026-11-17
+
+Notebook 07 listed the complete archive: 13 volumes, 180,003 files, 68,555,453,840 bytes, read in 21.5 s for 0.015 CU. It paired **0** images with masks, because the code expected the README layout (`Au/`, `Tp/`, `Gt/`, `<stem>_mask.png`). The released archive, read from `brgen_listing.json` and `brgen_members.txt.gz` (file names only), is laid out like this:
+
+- **Forged images:** `BR-Gen/Forged/<Method>/<Region>/<Source>/<stem>_<region>.png`. There are 5 methods (BrushNet, LaMa, MAT, PowerPaint, SDXL), 2 regions (Background, Stuff) and 3 sources (COCO, ImageNet, Places). Each of the 30 combinations holds 5,000 images, so 150,000 in all.
+- **Masks:** `BR-Gen/Mask/<Region>/<Source>/<stem>_<region>.png`, 30,000 in all. Each mask is shared by the five methods' images of that file name. Every forged image has its mask.
+- **Real images:** `BR-Gen/RealImage/<Source>/<Source>_image_list.txt` holds lists only. The archive contains no real images.
+
+Code (`data/brgen.py`):
+- `parse_member` reads the method, region, source and name from a path in the released layout.
+- `kind`, `method_of`, `stratum_key` (method/region/source) and `_pair_key` (region/source/name) use those fields. The README layout is still recognised as a fallback.
+- `pair_masks` now pairs every image that shares a mask. A key counts as ambiguous only when it has more than one mask.
+- `summarize` adds `layout`, `strata`, `mask_strata`, `source_images` and `real_lists`.
+- `released_paths` and `fake_listing(layout="released")` build the released layout for tests and dry runs.
+
+Notebook 07:
+- The dry-run archive uses the released layout.
+- On a released-layout archive, the listing asserts that the number of pairs equals the number of forged images.
+- The subset cell no longer needs `STRATUM_DEPTH` for this layout.
+- The sample check records a mask/image size mismatch instead of stopping.
+
+### Results (sandbox: Python 3.13.18, CPU)
+- `ruff check src tests`: clean.
+- `python -m pytest -p no:warnings`: **413 passed**, one of them new, in `tests/test_cp4_prep.py`. It checks parsing, pairing (60 of 60), the 30 strata, per-source counts, the real-image lists and a 1-per-stratum subset. All earlier README-layout tests still pass.
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/07_cp4_prep.ipynb`: passed, with the pairs = forged-images assertion.
+
+### Not run here
+- The real listing: notebook 07 must be rerun. It is expected to find 150,000 pairs.
+
 ## CP4 PR E — notebook 07 completes the BR-Gen split archive before listing it — 2026-11-17
 
 **What went wrong:** notebook 07 stopped at the BR-Gen listing because the last volume, `BR-Gen_split.zip`, was missing.

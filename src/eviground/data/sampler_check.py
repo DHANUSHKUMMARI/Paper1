@@ -94,6 +94,11 @@ def check(records: Sequence[Mapping[str, Any]], seed: int = 42) -> dict[str, Any
         )["balanced_accuracy"],
         "quality_75": cp1.quality_75_share(list(records)),
         "source_mix": source_mix(records),
+        # the same without the edit-free context crops: the fix moves DiffSeg30k into the
+        # generated class by design; materiality is judged on everything else
+        "source_mix_without_context_generated": source_mix(
+            [r for r in records if r["context"] != CONTEXT_GENERATED]
+        ),
     }
 
 
@@ -125,28 +130,50 @@ def compare(cp3: Mapping[str, Any], fix: Mapping[str, Any]) -> dict[str, Any]:
             4,
         ),
     }
-    q75 = {
-        k: v
-        for k, v in _diffs(cp3["quality_75"]["per_class"], fix["quality_75"]["per_class"]).items()
-        if k.endswith("q75_any") or k.endswith("q75_420")
-    }
-    mix = _diffs(cp3["source_mix"], fix["source_mix"])
-    material = []
-    if not fix["criterion_pass"]:
-        material.append(f"real vs not real {fix['criterion_score']} > {shortcut.CRITERION}")
-    material += [
-        f"balanced accuracy {k} moved {v:+}"
-        for k, v in acc.items()
-        if abs(v) > MATERIAL["balanced_accuracy"]
-    ]
-    material += [f"quality-75 {k} moved {v}" for k, v in q75.items() if v > MATERIAL["q75_share"]]
-    material += [
-        f"source share {k} moved {v}" for k, v in mix.items() if v > MATERIAL["source_share"]
-    ]
+    q75 = _q75_changes(cp3["quality_75"], fix["quality_75"])
+    key = "source_mix_without_context_generated"
+    mix = _diffs(cp3[key], fix[key])
     return {
         "thresholds": MATERIAL,
         "balanced_accuracy_change": acc,
         "quality_75_change": q75,
+        "source_share_change_designed": _diffs(cp3["source_mix"], fix["source_mix"]),
         "source_share_change": mix,
-        "material": material,
+        "material": _material(fix, acc, q75, mix),
     }
+
+
+def _q75_changes(cp3: Mapping[str, Any], fix: Mapping[str, Any]) -> dict[str, float]:
+    """Quality-75 share changes per class and per class and source. A class/source pool that
+    exists on one side only (DiffSeg30k in the generated class with the fix) has no share to
+    compare; it shows in the source mix instead."""
+    out = {}
+    for level in ("per_class", "per_class_source"):
+        a, b = cp3.get(level) or {}, fix.get(level) or {}
+        shared = {k: (a[k], b[k]) for k in sorted(set(a) & set(b))}
+        for key, (x, y) in shared.items():
+            for field in ("q75_any", "q75_420"):
+                if x.get(field) is not None and y.get(field) is not None:
+                    out[f"{level}.{key}.{field}"] = round(abs(y[field] - x[field]), 4)
+    return out
+
+
+def _material(
+    fix: Mapping[str, Any],
+    acc: Mapping[str, float],
+    q75: Mapping[str, float],
+    mix: Mapping[str, float],
+) -> list[str]:
+    """The changes beyond :data:`MATERIAL` (and a criterion above 0.60)."""
+    out = []
+    if not fix["criterion_pass"]:
+        out.append(f"real vs not real {fix['criterion_score']} > {shortcut.CRITERION}")
+    lim = MATERIAL
+    out += [
+        f"balanced accuracy {k} moved {v:+}"
+        for k, v in acc.items()
+        if abs(v) > lim["balanced_accuracy"]
+    ]
+    out += [f"quality-75 {k} moved {v}" for k, v in q75.items() if v > lim["q75_share"]]
+    out += [f"source share {k} moved {v}" for k, v in mix.items() if v > lim["source_share"]]
+    return out

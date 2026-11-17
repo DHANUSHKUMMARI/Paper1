@@ -468,7 +468,8 @@ def test_context_crop_keeps_only_edit_free_or_valid_windows():
             continue
         assert share == 0 or crops.EDITED_SHARE[0] <= share <= crops.EDITED_SHARE[1]
         seen["free" if share == 0 else "edited"] += 1
-    assert seen["free"] > 0 and seen["edited"] > 0
+    assert seen["free"] > 0
+    assert seen["edited"] > 0
     assert crops.context_crop(np.zeros((100, 100), bool), rng)[0] is None  # smaller than a crop
     full = np.ones((300, 300), bool)  # every window is all edited: never accepted
     assert crops.context_crop(full, rng, tries=5)[0] is None
@@ -494,14 +495,18 @@ def test_context_crops_only_on_ai_base_edits_and_edit_free_ones_are_generated(pa
     tagged = Counter()
     for k, (i, spec) in enumerate(ds.items):
         if len(spec) > 5:
-            assert ds.rows[i]["label"] == "edited" and ds.rows[i]["base_type"] == "ai"
+            assert ds.rows[i]["label"] == "edited"
+            assert ds.rows[i]["base_type"] == "ai"
             tagged[spec[5]] += 1
             it = ds[k]
             share = float(it["mask"].mean())
             if spec[5] == "context_generated":
-                assert it["label"] == 1 and not it["has_mask"] and share == 0  # generated
+                assert it["label"] == 1  # generated
+                assert not it["has_mask"]
+                assert share == 0
             else:
-                assert it["label"] == 2 and it["has_mask"]
+                assert it["label"] == 2
+                assert it["has_mask"]
                 assert crops.EDITED_SHARE[0] <= share <= crops.EDITED_SHARE[1]
     assert sum(tagged.values()) == sum(ds.context_counts().values()) > 0
     real_base = [
@@ -566,7 +571,8 @@ def test_sampler_check_compares_the_cp3_and_fixed_samplers(packed):
     assert len(rec_cp3) == len(rec_fix) == 2 * 600
     a, b = sampler_check.check(rec_cp3), sampler_check.check(rec_fix)
     assert set(a["metadata_real_vs_not_real"]["features"]) == set(sampler_check.FEATURES)
-    assert a["context"] == {} and sum(b["context"].values()) > 0
+    assert a["context"] == {}
+    assert sum(b["context"].values()) > 0
     gen_ds = b["source_mix"]["generated"].get("diffseg30k", 0.0)
     assert gen_ds > 0  # edit-free DiffSeg30k AI-base crops now count as generated
     assert a["source_mix"]["generated"].get("diffseg30k", 0.0) == 0.0
@@ -577,4 +583,34 @@ def test_sampler_check_compares_the_cp3_and_fixed_samplers(packed):
     assert same["material"] == ([] if a["criterion_pass"] else same["material"])
     assert all(v == 0 for v in same["source_share_change"].values())
     diff = sampler_check.compare(a, b)
-    assert diff["source_share_change"]["generated.diffseg30k"] == pytest.approx(gen_ds, abs=1e-4)
+    assert diff["source_share_change_designed"]["generated.diffseg30k"] == pytest.approx(
+        gen_ds, abs=1e-4
+    )
+    # judged without the edit-free context crops: the designed move is not "material"
+    assert "generated.diffseg30k" not in diff["source_share_change"]
+    assert not [m for m in diff["material"] if "source share" in m]
+
+
+def test_sampler_check_flags_a_source_level_quality_75_shift():
+    """Codex review: a source's quality-75 share can move while its class total does not."""
+    from eviground.data import sampler_check
+
+    def summary(q_src):
+        per_class = {"real": {"n": 10, "q75_any": 0.3, "q75_420": 0.3}}
+        per_src = {f"real/{s}": {"n": 5, "q75_any": v, "q75_420": v} for s, v in q_src.items()}
+        return {
+            "criterion_score": 0.55,
+            "criterion_pass": True,
+            "metadata_three_class": {"balanced_accuracy": 0.5},
+            "quality_75": {"per_class": per_class, "per_class_source": per_src},
+            "source_mix": {"real": {"coco": 0.5, "genimage": 0.5}},
+            "source_mix_without_context_generated": {"real": {"coco": 0.5, "genimage": 0.5}},
+        }
+
+    base = summary({"coco": 0.5, "genimage": 0.1})
+    shifted = summary({"coco": 0.3, "genimage": 0.3})  # same class total, sources moved
+    out = sampler_check.compare(base, shifted)
+    assert out["quality_75_change"]["per_class.real.q75_any"] == 0
+    assert out["quality_75_change"]["per_class_source.real/coco.q75_any"] == 0.2
+    assert any("real/coco" in m for m in out["material"])
+    assert sampler_check.compare(base, base)["material"] == []

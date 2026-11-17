@@ -322,3 +322,21 @@ def test_max_steps_then_resume_keeps_the_epoch_loss(full_run, packed, tmp_path):
     want, got = _rows(run_dir / "metrics.csv"), _rows(tmp_path / "metrics.csv")
     for x, y in zip(want, got, strict=True):
         assert float(x["train_total"]) == pytest.approx(float(y["train_total"]), rel=0.01)
+
+
+def test_a_resume_with_another_context_share_stops(full_run, packed, tmp_path):  # noqa: F811
+    """CP4 fix (Codex review): a different context-crop share rebuilds a different epoch plan,
+    so resuming would skip the wrong draws. A CP3 checkpoint (no setting) counts as share 0."""
+    _tr, _out, run_dir = full_run
+    fixed = Trainer(
+        _cfg(**{"data.context_crop_share": 0.3333}),
+        packed["out"],
+        tmp_path / "f",
+        seed=42,
+        log=None,
+        resume=None,
+    )
+    with pytest.raises(ckpt.CheckpointMismatch, match="context_crop_share"):
+        fixed.resume(run_dir / "last.pt")
+    same = Trainer(_cfg(), packed["out"], tmp_path / "s", seed=42, log=None, resume=None)
+    assert same.resume(run_dir / "last.pt")  # share 0 on both sides

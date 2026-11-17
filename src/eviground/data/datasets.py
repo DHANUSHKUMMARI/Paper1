@@ -38,7 +38,13 @@ from eviground.data.transforms import Augment, resize_image, resize_mask, scaled
 log = logging.getLogger(__name__)
 
 LABELS = {"real": 0, "generated": 1, "edited": 2}
-Spec = tuple[int, int, int, int, float]  # left, top, right, bottom (resized image), scale
+Spec = tuple  # (left, top, right, bottom (resized image), scale[, tag]); tag: CONTEXT_* below
+CONTEXT = "context"  # a context crop (CP4 fix) that holds part of the edit: stays "edited"
+CONTEXT_GENERATED = "context_generated"  # an edit-free context crop: labelled "generated"
+
+
+class ContextCropError(RuntimeError):
+    """An edit-free context crop (labelled generated) that holds edited pixels: never trained on."""
 
 
 def _uid_seed(seed: int, uid: str) -> list[int]:
@@ -132,6 +138,7 @@ class ForensicDataset(Dataset):
         seed: int = 42,
         n_per_class: int | None = None,
         rows: Sequence[dict[str, Any]] | None = None,
+        context_share: float = 0.0,
     ) -> None:
         if split not in ("train", "val"):
             raise ValueError(f"split must be train or val, got {split!r}")
@@ -142,6 +149,9 @@ class ForensicDataset(Dataset):
         if self.dropped:
             log.info("%s: %d edited images without a valid crop left out", split, len(self.dropped))
         self.n_per_class = n_per_class
+        # CP4 fix (17 Nov 2026): this share of the edited AI-base draws takes a context crop.
+        # 0 draws nothing extra from the epoch's generator, so earlier plans stay identical.
+        self.context_share = float(context_share) if split == "train" else 0.0
         self.epoch = -1
         self.plan: epoch.EpochPlan | None = None
         self.items: list[tuple[int, Spec]] = []
@@ -178,11 +188,37 @@ class ForensicDataset(Dataset):
         w, h = int(e["width"]), int(e["height"])
         s = self.augment.scale(rng, w, h, self.crop)
         sw, sh = scaled_size(w, h, s)
-        if e["label"] == "edited":
-            box = crops.edited_crop(resize_mask(self.reader.mask(e), s), rng, self.crop)[0]
-        else:
+        if e["label"] != "edited":
             box = crops.random_box(sw, sh, rng, self.crop)
+            return None if box is None else (*box, s)
+        mask = resize_mask(self.reader.mask(e), s)
+        if self._wants_context(e, rng):
+            box, share, _tries = crops.context_crop(mask, rng, self.crop)
+            if box is not None:
+                return (*box, s, CONTEXT_GENERATED if share == 0 else CONTEXT)
+        box = crops.edited_crop(mask, rng, self.crop)[0]
         return None if box is None else (*box, s)
+
+    def _wants_context(self, e: dict[str, Any], rng: np.random.Generator) -> bool:
+        """A context crop for this edited draw? Only for AI-generated bases, at ``context_share``;
+        the generator is touched only when the share is above 0."""
+        if self.context_share <= 0 or e.get("base_type") != "ai":
+            return False
+        return bool(rng.random() < self.context_share)
+
+    def _check_edit_free(self, e: dict[str, Any], s: float, box: tuple[int, ...]) -> None:
+        """A crop labelled generated from an edited image must hold no edited pixel at all."""
+        left, top, right, bottom = box
+        if resize_mask(self.reader.mask(e), s)[top:bottom, left:right].any():
+            raise ContextCropError(f"{e['uid']}: an edit-free context crop holds edited pixels")
+
+    def context_counts(self) -> dict[str, int]:
+        """This epoch's context crops: with part of the edit, and edit-free (labelled generated)."""
+        tags = [spec[5] for _i, spec in self.items if len(spec) > 5]
+        return {
+            "context_edited": tags.count(CONTEXT),
+            "context_generated": tags.count(CONTEXT_GENERATED),
+        }
 
     def _validation_items(self) -> list[tuple[int, Spec]]:
         items = []
@@ -207,14 +243,18 @@ class ForensicDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, k: int) -> dict[str, Any]:
-        i, (left, top, right, bottom, s) = self.items[k]
+        i, spec = self.items[k]
+        left, top, right, bottom, s = spec[:5]
+        generated_context = len(spec) > 5 and spec[5] == CONTEXT_GENERATED
         e = self.rows[i]
         img = resize_image(self.reader.image(e), s)
         crop = np.asarray(img.crop((left, top, right, bottom)), dtype=np.uint8)
-        has_mask = e["label"] == "edited"
+        has_mask = e["label"] == "edited" and not generated_context
         if has_mask:
             mask = resize_mask(self.reader.mask(e), s)[top:bottom, left:right]
         else:
+            if generated_context:
+                self._check_edit_free(e, s, (left, top, right, bottom))
             mask = np.zeros(crop.shape[:2], dtype=bool)
         rng = np.random.default_rng([self.seed, max(self.epoch, 0), k, 3])
         crop, flipped = self.augment.photometric(crop, rng)
@@ -223,7 +263,7 @@ class ForensicDataset(Dataset):
         return {
             "image": torch.from_numpy(np.array(crop)).permute(2, 0, 1).float() / 255,
             "mask": torch.from_numpy(np.array(mask)).float().unsqueeze(0),
-            "label": LABELS[e["label"]],
+            "label": LABELS["generated" if generated_context else e["label"]],
             "has_mask": has_mask,
             "source": e["source"],
             "uid": e["uid"],

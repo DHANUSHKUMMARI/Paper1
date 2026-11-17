@@ -150,6 +150,7 @@ class Trainer:
             augment=Augment.from_config(self.cfg.get("data", {}).get("augment")),
             seed=self.seed,
             n_per_class=int(tc.get("crops_per_epoch", 24000)) // n_classes,
+            context_share=float(self.cfg.get("data", {}).get("context_crop_share", 0.0) or 0.0),
         )
         self.val_ds = ForensicDataset(
             self.shard_dir, "val", profile=self.profile, crop=crop, seed=self.seed
@@ -306,6 +307,8 @@ class Trainer:
         whether ``max_steps`` was reached."""
         workers = int(self.cfg.get("data", {}).get("num_workers", 0))
         self.train_ds.set_epoch(ep)
+        if self.train_ds.context_share > 0:
+            self.say(f"epoch {ep} context crops (CP4 fix): {self.train_ds.context_counts()}")
         self.model.train()
         sums = self.state["epoch_loss_sums"]
         self._t0 = time.time()

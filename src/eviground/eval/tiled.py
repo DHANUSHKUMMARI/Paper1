@@ -97,7 +97,8 @@ class TiledEvaluator:
         for uid, i in take:
             p = self.pending[uid]
             le, t, r, b = p["boxes"][i]
-            crops.append(torch.from_numpy(np.ascontiguousarray(p["item"].image[t:b, le:r])))
+            # a writable copy: torch warns on read-only arrays (decoded images can be read-only)
+            crops.append(torch.from_numpy(np.array(p["item"].image[t:b, le:r])))
         x = torch.stack(crops).to(self.device).permute(0, 3, 1, 2).float() / 255
         with torch.no_grad():
             outs = self.predict(x)

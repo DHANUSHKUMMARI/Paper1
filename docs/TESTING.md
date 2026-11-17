@@ -23,6 +23,8 @@ Run on main at `c8ed936`, 09:59–10:00 UTC, 0.003 CU. Results are read from Dri
 
 On 10:06 UTC a Colab save committed this notebook with its outputs to main (`e281e79`); its cell sources were unchanged. PR H's merge keeps the generated notebook without outputs, as for every notebook here. The numbers above are the record.
 
+The same happened to notebook 08 at 10:59 UTC (`cd6d6b0`: 25 outputs and Colab metadata, cell sources unchanged), and it was resolved the same way. Its results are in `localization_diagnosis_seed42.json` on Drive. The one warning in its outputs (a read-only NumPy array in `tiled.py`) is fixed: the tile is copied.
+
 ## CP4 PR H — seaborn figures, drawn from the saved result files — 2026-11-17
 
 Dhanush asked for seaborn in the notebooks' plots, for a clearer view.

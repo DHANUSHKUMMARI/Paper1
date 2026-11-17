@@ -99,4 +99,5 @@ def test_probe_features_do_not_keep_the_whole_token_tensor():
         m, [{"image": x, "label": torch.zeros(4)}], torch.device("cpu")
     )
     assert xs.untyped_storage().nbytes() == xs.numel() * xs.element_size()
-    assert cls.shape == (4, m.semantic.width) and patches.shape[0] == 4
+    assert cls.shape == (4, m.semantic.width)
+    assert patches.shape[0] == 4

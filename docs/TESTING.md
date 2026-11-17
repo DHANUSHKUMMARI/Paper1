@@ -3,6 +3,72 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR K — notebook 09 restored after a Colab save; the CP4 runs recorded — 2026-11-17
+
+**Why:** on main, `ff36b71` "Created using Colab" (17:55 UTC) saved notebook 09 with its outputs.
+That copy was opened before PR #41, so it removed PR #41's `RUN_EXPERIMENT` / `RUN_TAG` cells. Notebook 09
+is now generated again from its generator script, with no outputs. Its cell sources are identical to
+`d41bba6`, the version PR #41 merged. Notebooks 08 and 11 were not touched by the save. Please do not use
+"Save a copy in GitHub" in Colab: the results go to Drive.
+
+### Real runs (Colab; numbers from the result files on Drive; validation data and the P1 development split only)
+- **Notebook 10, sampler shortcut check** (CPU, commit `616bec5`, 294 s): epochs 0–2, 72,000 draws per sampler.
+  - **Metadata classifier, real vs not real:** 0.5122 (CP3) → 0.5120 (fix); 3-class 0.3443 → 0.3434. CP1 run 5 for reference: 0.5071 / 0.3469.
+  - **Quality-75 share (`q75_any`):** real 0.3727 → 0.3727; generated 0.3700 → 0.3716; edited 0.3679 → 0.3659.
+  - **Stored image size, real vs not real** (a diagnostic, not a criterion): 0.7832 → 0.7833.
+  - **Classes:** edited 24,000 → 22,802; generated 24,000 → 25,198.
+  - **Context draws:** 2,608 stay edited; 1,198 are edit-free and relabelled generated.
+  - **Generated-class sources:** GenImage 0.6666 → 0.6349, SID-Set 0.3334 → 0.3175, DiffSeg30k 0 → 0.0475.
+  - **Verdict:** `material changes: none`.
+- **Notebook 09, CP4 gate on the CP3 models, P2 off** (L4, commit `616bec5`, 1.405 h, 2.73 CU). **G1 FAIL; RF PASS.**
+  - **Mean accuracy over 8 generators** (detection model / detection probe / unified model / unified probe):
+    - raw: 0.7846 / 0.8136 / 0.8810 / 0.8953;
+    - harmonized: 0.7771 / 0.8015 / 0.8642 / 0.8777.
+  - **Mean AP, raw:** 0.9479 / 0.9194 / 0.9692 / 0.9563.
+  - **Detection model, raw:** real accuracy 0.994–0.998 on every generator. Generated accuracy:
+    - ADM 0.122, GLIDE 0.248, VQDM 0.354, BigGAN 0.423, Midjourney 0.473;
+    - Wukong 0.968, SD v1.4 0.999, SD v1.5 0.998.
+  - **RF:** only SD v1.5 (0.9969) and Wukong (0.9813) reach 0.98.
+  - **Unified model, real P1 images called edited:** 3.85% overall.
+    - By tile count: 1: 0.68%; 2–4: 3.05%; 5–9: 9.07%; 10–16: 15.56%; 17+: 21.64%.
+  - **Probes:** class token L2 0.001 (validation AUC: detection 0.9965, unified 0.9784); patch probe validation mask F1 0.2471.
+  - **Dhanush's decision:** the one fix stays with the unified model. G1 is recorded as failed, and the detection claim is narrowed.
+- **Notebook 11, retrain of the unified model with context crops** (L4, commit `ff36b71`; training 2.0126 GPU h, 3.421 CU at 1.7 CU/h; session 3.056 h, 5.2 CU).
+  - **Run:** best epoch 15 of 20, stopped early.
+  - **Health checks:** S1, S2a (macro AUC 0.997864), S2b, A1 (step 25 / 50), A3 and A4 (mask F1 0.758295) passed.
+  - **A2 FAILED:** real-crop marked area 0.010302 against a bar of ≤ 0.01; any mark 0.10532.
+  - **Against CP3's best (validation crops):**
+    - pooled edited IoU 0.67661 → 0.668879;
+    - generated crops with any mark: GenImage 0.0153 → 0.0273, SID-Set 0.0283 → 0.0638;
+    - real crops with any mark: 0.0815 → 0.1053.
+  - **Dhanush's decision:** run notebook 08 anyway; the A2 bar is unchanged.
+- **Notebook 08 on the fixed model** (L4, commit `ff36b71`, 0.652 h, 1.26 CU), against CP3's diagnosis (c8ed936, 0.827 h, 1.6 CU):
+
+| whole image, 1,177 edited images | CP3 | fix |
+|---|---|---|
+| edited IoU (DiffSeg30k mIoU) | 0.3946 | 0.4335 |
+| over-marking, share of all pixels | 0.2886 | 0.2148 |
+| misses, share of edited pixels | 0.1908 | 0.2276 |
+| AI base: IoU / over-marking / misses | 0.3303 / 0.3589 / 0.1945 | 0.3689 / 0.2628 / 0.2425 |
+| real base: IoU / over-marking / misses | 0.7209 / 0.0486 / 0.1821 | 0.7082 / 0.0507 / 0.1923 |
+| real images called edited (5,545) | 0.0893 | 0.1053 |
+
+  - **Real images called edited, by source** (fix): SID-Set 0.283, DiffSeg30k 0.190, COCO 0.079, GenImage 0.049.
+  - **Interior tiles** (model; 1,065 tiles that are ≥ 90% edited, holding 30.3% of the edited pixels):
+    - 10.7% are called fully generated; mean P(generated) is 0.147;
+    - 33.4% of their edited pixels are missed, against 18.1% elsewhere;
+    - in the 40–100% bin: 35.6% against 17.1%.
+  - **Threshold sweep:** best 0.4458 at 0.70. The gate stays at 0.5.
+  - **Patch probe:** edited IoU 0.1527.
+  - **Dhanush's decision:** G2 is gated once, on the fixed model.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- `ruff check src tests`: clean. `ruff format --check src tests`: 88 files already formatted.
+- `python -m pytest -p no:warnings`: 435 passed.
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 08 and 09: 2 passed.
+- `git diff d41bba6 -- notebooks/`: empty, so notebook 09 is back to the version PR #41 merged.
+
 ## CP4 PR J — the retrain notebook and the evaluation of the fixed model — 2026-11-17
 
 Prepared while PR I waits. **The L4 retrain runs only after Dhanush's go-ahead,** and after notebook 10 found no material change.

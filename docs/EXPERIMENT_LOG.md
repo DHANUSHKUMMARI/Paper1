@@ -27,6 +27,11 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-15 | CP2 (`05`, commit `2673e8f`), Cells 1–9 | L4 | 0.246 (Cells 2–9) | 0.42 (1.7 CU/h) | not recorded (read the balance in Colab) | **CP2 PASS** (script verdict): overfit 100% at step 25; kill-resume max loss difference 0.024%; views 0.064 ms, trace 0.631 ms per image; peak 5.64 GB at batch 32 bf16; loader 253.9 images/s; shards staged in 404 s |
 | 2026-11-15 | CP3 unified, seed 42 (`06`, commit `f2d0e1c`): A1 + 20 epochs | L4 | 3.015 (session; 2.056 GPU training hours) | 5.85 (1.94 CU/h) | not recorded (read the balance in Colab) | **CP3 PASS** (script verdict): A1 accuracy 1.0 at step 25, mask F1 0.871 at step 50; best epoch 20: macro AUC 0.998221, mask F1 0.762032, real marks 0.0815 / area 0.008319, generated 0.0179 / 0.004010, binary mIoU 0.661394 |
 | 2026-11-16 | CP3 detection, seed 42 (`06`, commit `f2d0e1c`): 15 epochs | L4 | 1.547 (session; 1.023 GPU training hours) | 3.00 (1.94 CU/h) | not recorded (read the balance in Colab) | **CP3 PASS** (script verdict): best epoch 15: binary AUC 0.999717, SD v1.4 accuracy 0.991568 |
+| 2026-11-17 | Localization diagnosis, CP3 unified (`08`, commit `c8ed936`), validation only | L4 | 0.827 | 1.60 (1.94 CU/h) | not recorded | Whole-image edited IoU 0.3946 (crops 0.677); over-marking 28.9% of pixels (AI bases 35.9%), misses 19.1%; real images called edited 8.9% |
+| 2026-11-17 | CP4 fix sampler check (`10`, commit `616bec5`) | none (CPU runtime) | 0.082 (294 s) | not recorded (CPU runtime) | not recorded | No material change: real vs not real 0.5122 → 0.5120; every change ≤ 0.002 |
+| 2026-11-17 | CP4 gate, CP3 models, P2 off (`09`, commit `616bec5`), P1 development split | L4 | 1.405 | 2.73 (1.94 CU/h) | not recorded | **G1 FAIL** (detection 0.7846 raw / 0.7771 harmonized; probe 0.8136 / 0.8015); RF PASS; G2 not run |
+| 2026-11-17 | CP4 fix: unified seed 42 with context crops (`11`, commit `ff36b71`): 20 epochs | L4 | 3.056 (session; 2.0126 GPU training hours) | 5.20 session, of which training 3.421 (1.7 CU/h) | not recorded | Health FAIL on A2 only (real-crop marked area 0.010302 > 0.01); best epoch 15: macro AUC 0.997864, mask F1 0.758295 |
+| 2026-11-17 | Localization diagnosis, fixed unified (`08`, `RUN_EXPERIMENT='eviground_ctx'`, commit `ff36b71`) | L4 | 0.652 | 1.26 (1.94 CU/h) | not recorded | Whole-image edited IoU 0.4335; over-marking 21.5% (AI bases 26.3%); misses 22.8%; real images called edited 10.5% |
 
 ## Runs
 
@@ -36,7 +41,11 @@ Training runs so far (seed 42, notebook 06, commit `f2d0e1c`); the numbers per c
 - `Paper 1/runs/eviground_unified_seed42/` (A1 record in `eviground_unified_seed42_overfit/`);
 - `Paper 1/runs/eviground_detection_seed42/`.
 
-No evaluation run on a test set has been made yet.
+The CP4 fix run (notebook 11, `data.context_crop_share=0.3333`, commit `ff36b71`):
+`Paper 1/runs/eviground_ctx_unified_seed42/` (A1 record reused from CP3).
+
+Test-set evaluation so far: only the CP4 development split of P1 (notebook 09, 17 Nov 2026), for the
+gate. P2 is not scored yet.
 
 ### Training shards (Milestone 3), 15 Nov 2026
 

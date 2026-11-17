@@ -3,6 +3,26 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 — the BR-Gen subset is frozen (notebook 07 on Colab, CPU) — 2026-11-17
+
+Run on main at `c8ed936`, 09:59–10:00 UTC, 0.003 CU. Results are read from Drive: `cp4_prep.json`, `brgen_subset.json` and `brgen_sample_check.json` in `runs/checkpoints/`.
+
+- **Development split:** reused and verified, `1e0792a8…` (P1 20,000 of 100,000; P2 486 of 2,434).
+- **Archive:** 13 volumes kept, 0 downloaded. The listing found 150,000 image–mask pairs, 5,000 in each of the 30 method × region × source groups, with 0 unpaired and 0 ambiguous.
+- **Subset `bebb86c5c9d20ba8ccb603307011e9e07eb0f52a2fe85b894a90c3ce2eebf0bb`:**
+  - 6,000 forged images: 1,200 source images × 5 methods, 200 per region × source group;
+  - every source image has all 5 methods, and its 1,200 masks are shared by the methods;
+  - distinct source ids: COCO 391, ImageNet 396, Places 389.
+- **Training overlap, by id:** ImageNet **168** of 5,000 BR-Gen source images are among the GenImage training reals. All 168 are excluded, and each ImageNet group still got 200. COCO and Places: 0.
+  - BR-Gen's own lists name its images the way our data does (`000000120836.jpg`, `n01797886_20962.JPEG`, `h-hangar-outdoor-00002800.jpg`). The ImageNet list also gives 168 matches.
+  - Training rows carrying a COCO or ImageNet id: COCO 4,837 of 4,837; GenImage 39,912 of 79,842 (the real half); SID-Set 50 of 19,868; DiffSeg30k 0 of 16,682. DiffSeg30k (COCO-based) therefore cannot be checked by id, so P3 is reported per source and on ImageNet + Places alone.
+- **Sample check: pass.**
+  - 20 images extracted in 33.3 s, 375–949 px wide, 4–12 tiles each.
+  - Every mask has the image's size and the values {0, 255}. Coverage is 1.0, and stitching returns the mask exactly.
+  - The edited share ranges from 4.9% to 99.85%, with a median of 46.6%. Background edits can cover almost the whole image, so P3 is also reported per region.
+
+On 10:06 UTC a Colab save committed this notebook with its outputs to main (`e281e79`); its cell sources were unchanged. PR H's merge keeps the generated notebook without outputs, as for every notebook here. The numbers above are the record.
+
 ## CP4 PR H — seaborn figures, drawn from the saved result files — 2026-11-17
 
 Dhanush asked for seaborn in the notebooks' plots, for a clearer view.

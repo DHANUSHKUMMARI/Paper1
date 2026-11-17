@@ -39,6 +39,13 @@ Carried over: the split composite assertion in `tests/test_shared_trunk.py` (Son
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 07, 08 and 09: all passed. 08 wrote 4 figures and 09 wrote 1, each as PNG + PDF.
 - I checked the figures by eye on synthetic data: no legend covers data, epochs are whole numbers, and the real-crop panel has no negative ticks.
 
+### Review fixes (second push)
+- **SonarCloud S3776, critical, ×3:** `sweep_rows`, `per_image_rows` and `diagnosis_figures` had cognitive complexity 16–17 (limit 15). They are split into one helper per row kind (`_sweep_point`, `_image_rows`) and one per figure (`_curves_figure`, `_sweep_figure`, `_size_figure`, `_editor_figure`). The output is unchanged: the 5 figure tests pass.
+- **Codex P2:** the "redraw on a CPU runtime" instruction failed, because cell 2 required a GPU.
+  - Cell 2 of notebooks 08 and 09 now has `FIGURES_ONLY = False`. Set to True, it skips the GPU check, and cell 3 stops at once, so no model runs.
+  - Checked without a GPU: cell 2 with `FIGURES_ONLY = True`, then the figures cell, on the saved files of the 08 dry run copied to a stand-in Drive. All 4 figures (PNG + PDF) were drawn, and cell 3 stopped with its message.
+- Full checks after both fixes: 422 passed; 08 and 09 dry runs passed; ruff clean; audit ok.
+
 ### Not run here
 - The figures on real results: they come with notebook 08's run, and with notebook 09's.
 

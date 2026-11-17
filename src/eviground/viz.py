@@ -93,45 +93,42 @@ def sweep_rows(sweep: Mapping[str, Any], heads: Iterable[str]) -> list[dict[str,
         block = sweep.get(head) or {}
         for kind, names in (("pixel", PIXEL_SWEEP), ("image", IMAGE_SWEEP)):
             for r in block.get(kind) or []:
-                for key, label in names.items():
-                    x = _num(r.get(key))
-                    if x is not None:
-                        rows.append(
-                            {
-                                "kind": kind,
-                                "head": HEAD_NAMES.get(head, head),
-                                "threshold": float(r["threshold"]),
-                                "metric": label,
-                                "value": x,
-                            }
-                        )
+                rows += _sweep_point(r, kind, HEAD_NAMES.get(head, head), names)
     return rows
+
+
+def _sweep_point(
+    r: Mapping[str, Any], kind: str, head: str, names: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """One sweep row (one threshold) -> one tidy row per metric it holds."""
+    base = {"kind": kind, "head": head, "threshold": float(r["threshold"])}
+    values = ((label, _num(r.get(key))) for key, label in names.items())
+    return [{**base, "metric": label, "value": x} for label, x in values if x is not None]
 
 
 def per_image_rows(edited_csv: Path) -> list[dict[str, Any]]:
     """The diagnosis' per-image CSV -> rows ``uid``, ``size_bin``, ``editor`` (one row per editor
     of a multi-turn image), ``base_type``, ``predictor``, ``iou``."""
-    rows = []
     with open(edited_csv, newline="") as fh:
-        for r in csv.DictReader(fh):
-            share = _num(r.get("share"))
-            editors = [e for e in (r.get("editors") or "").split("|") if e] or ["unknown"]
-            for col, name in PREDICTORS.items():
-                iou = _num(r.get(col))
-                if iou is None:
-                    continue
-                for editor in editors:
-                    rows.append(
-                        {
-                            "uid": r["uid"],
-                            "size_bin": "none" if share is None else size_bin(share),
-                            "editor": editor,
-                            "base_type": r.get("base_type") or "unknown",
-                            "predictor": name,
-                            "iou": iou,
-                        }
-                    )
-    return rows
+        return [row for r in csv.DictReader(fh) for row in _image_rows(r)]
+
+
+def _image_rows(r: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """One CSV row (one image) -> one tidy row per predictor with a value and per editor."""
+    share = _num(r.get("share"))
+    base = {
+        "uid": r["uid"],
+        "size_bin": "none" if share is None else size_bin(share),
+        "base_type": r.get("base_type") or "unknown",
+    }
+    editors = [e for e in (r.get("editors") or "").split("|") if e] or ["unknown"]
+    ious = ((name, _num(r.get(col))) for col, name in PREDICTORS.items())
+    return [
+        {**base, "editor": editor, "predictor": name, "iou": iou}
+        for name, iou in ious
+        if iou is not None
+        for editor in editors
+    ]
 
 
 def p1_rows(table: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -218,98 +215,122 @@ def diagnosis_figures(
     (``result``) and its per-image CSV: training curves, the validation threshold sweep, and
     per-image IoU by edit size, by editor and by base type. Returns the PNG paths."""
     sns, plt, pd = _libs()
+    per = pd.DataFrame(per_image_rows(Path(edited_csv)))
+    drawn = (
+        _curves_figure(sns, plt, pd.DataFrame(curve_rows(result.get("curves") or {}))),
+        _sweep_figure(
+            sns, plt, pd.DataFrame(sweep_rows(result.get("threshold_sweep") or {}, heads))
+        ),
+        _size_figure(sns, plt, per),
+        _editor_figure(sns, plt, per),
+    )
+    names = ("curves", "threshold_sweep", "iou_by_size", "iou_by_editor")
+    return [
+        _save(fig, plt, out_dir, f"diagnosis_{name}_seed{seed}", show)
+        for name, fig in zip(names, drawn, strict=True)
+        if fig is not None
+    ]
+
+
+def _curves_figure(sns: Any, plt: Any, curves: Any) -> Any:
+    """CP3 training curves: mask metrics (with the G2 bar) and marks on real crops."""
+    if curves.empty:
+        return None
     from matplotlib.ticker import MaxNLocator
 
-    saved = []
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.2))
+    for a, panel, title in (
+        (ax[0], "mask", "Mask metrics on validation crops (CP3 training)"),
+        (ax[1], "real", "Marks on real validation crops"),
+    ):
+        d = curves[curves.panel == panel]
+        if not d.empty:
+            sns.lineplot(data=d, x="epoch", y="value", hue="metric", marker="o", ax=a)
+            _legend_below(sns, a)
+        a.set_title(title)
+        a.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax[0].axhline(0.80, ls=":", c="k", lw=1)
+    ax[0].text(1, 0.81, "G2 bar 0.80", fontsize=8)
+    ax[1].set_yscale("symlog", linthresh=0.01)
+    ax[1].set_ylim(bottom=0)
+    return fig
 
-    curves = pd.DataFrame(curve_rows(result.get("curves") or {}))
-    if not curves.empty:
-        fig, ax = plt.subplots(1, 2, figsize=(13, 4.2))
-        for a, panel, title in (
-            (ax[0], "mask", "Mask metrics on validation crops (CP3 training)"),
-            (ax[1], "real", "Marks on real validation crops"),
-        ):
-            d = curves[curves.panel == panel]
-            if not d.empty:
-                sns.lineplot(data=d, x="epoch", y="value", hue="metric", marker="o", ax=a)
-                _legend_below(sns, a)
-            a.set_title(title)
-            a.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax[0].axhline(0.80, ls=":", c="k", lw=1)
-        ax[0].text(1, 0.81, "G2 bar 0.80", fontsize=8)
-        ax[1].set_yscale("symlog", linthresh=0.01)
-        ax[1].set_ylim(bottom=0)
-        saved.append(_save(fig, plt, out_dir, f"diagnosis_curves_seed{seed}", show))
 
-    sweep = pd.DataFrame(sweep_rows(result.get("threshold_sweep") or {}, heads))
-    if not sweep.empty:
-        fig, ax = plt.subplots(1, 2, figsize=(13, 4.2))
-        for a, kind, xlabel, title in (
-            (ax[0], "pixel", "pixel threshold", "Validation pixel metrics vs threshold"),
-            (ax[1], "image", "P(edited) threshold", "Validation image calls vs threshold"),
-        ):
-            d = sweep[sweep.kind == kind]
-            if not d.empty:
-                sns.lineplot(
-                    data=d, x="threshold", y="value", hue="metric", style="head", marker="o", ax=a
-                )
-                _legend_below(sns, a)
-            a.axvline(0.5, ls=":", c="k", lw=1)
-            a.set_xlabel(xlabel)
-            a.set_title(title)
-        saved.append(_save(fig, plt, out_dir, f"diagnosis_threshold_sweep_seed{seed}", show))
+def _sweep_figure(sns: Any, plt: Any, sweep: Any) -> Any:
+    """Validation threshold sweep: pixel metrics and image calls, a dotted line at 0.5."""
+    if sweep.empty:
+        return None
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.2))
+    for a, kind, xlabel, title in (
+        (ax[0], "pixel", "pixel threshold", "Validation pixel metrics vs threshold"),
+        (ax[1], "image", "P(edited) threshold", "Validation image calls vs threshold"),
+    ):
+        d = sweep[sweep.kind == kind]
+        if not d.empty:
+            sns.lineplot(
+                data=d, x="threshold", y="value", hue="metric", style="head", marker="o", ax=a
+            )
+            _legend_below(sns, a)
+        a.axvline(0.5, ls=":", c="k", lw=1)
+        a.set_xlabel(xlabel)
+        a.set_title(title)
+    return fig
 
-    per = pd.DataFrame(per_image_rows(Path(edited_csv)))
-    if not per.empty:
-        one = per.drop_duplicates(["uid", "predictor"])  # editors are exploded: one row per image
-        order = [b for b in SIZE_ORDER if b in set(one.size_bin)]
-        fig, a = plt.subplots(figsize=(13, 4.5))
-        sns.boxplot(
-            data=one,
-            x="size_bin",
-            y="iou",
-            hue="predictor",
-            order=order,
-            hue_order=[p for p in PREDICTORS.values() if p in set(one.predictor)],
-            showfliers=False,
-            ax=a,
-        )
-        counts = one[one.predictor == PREDICTORS["model_iou"]].size_bin.value_counts()
-        a.set_xticks(range(len(order)), [f"{b}\n(n={counts.get(b, 0)})" for b in order])
-        a.set_xlabel("edited share of the image")
+
+def _size_figure(sns: Any, plt: Any, per: Any) -> Any:
+    """Per-image IoU by edit size, beside the resolution ceilings, with n per bin."""
+    if per.empty:
+        return None
+    one = per.drop_duplicates(["uid", "predictor"])  # editors are exploded: one row per image
+    order = [b for b in SIZE_ORDER if b in set(one.size_bin)]
+    fig, a = plt.subplots(figsize=(13, 4.5))
+    sns.boxplot(
+        data=one,
+        x="size_bin",
+        y="iou",
+        hue="predictor",
+        order=order,
+        hue_order=[p for p in PREDICTORS.values() if p in set(one.predictor)],
+        showfliers=False,
+        ax=a,
+    )
+    counts = one[one.predictor == PREDICTORS["model_iou"]].size_bin.value_counts()
+    a.set_xticks(range(len(order)), [f"{b}\n(n={counts.get(b, 0)})" for b in order])
+    a.set_xlabel("edited share of the image")
+    a.set_ylabel("per-image edited IoU")
+    a.set_title(
+        "Per-image IoU by edit size (validation, training editors), with the resolution ceilings"
+    )
+    _legend_below(sns, a, ncol=4)
+    a.set_ylim(0, 1.02)
+    return fig
+
+
+def _editor_figure(sns: Any, plt: Any, per: Any) -> Any:
+    """Per-image IoU of the model and the probe by editor and by base type."""
+    if per.empty:
+        return None
+    heads_only = per[per.predictor.isin([PREDICTORS["model_iou"], PREDICTORS["probe_iou"]])]
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.5), gridspec_kw={"width_ratios": [3, 1]})
+    sns.boxplot(data=heads_only, x="editor", y="iou", hue="predictor", showfliers=False, ax=ax[0])
+    ax[0].set_title("Per-image IoU by editor (an image counts once per editor it went through)")
+    ax[0].tick_params(axis="x", rotation=20)
+    sns.boxplot(
+        data=heads_only.drop_duplicates(["uid", "predictor"]),
+        x="base_type",
+        y="iou",
+        hue="predictor",
+        showfliers=False,
+        ax=ax[1],
+    )
+    ax[1].set_title("By base type")
+    ax[1].set_xlabel("base image")
+    for a in ax:
         a.set_ylabel("per-image edited IoU")
-        a.set_title(
-            "Per-image IoU by edit size (validation, training editors), "
-            "with the resolution ceilings"
-        )
-        _legend_below(sns, a, ncol=4)
         a.set_ylim(0, 1.02)
-        saved.append(_save(fig, plt, out_dir, f"diagnosis_iou_by_size_seed{seed}", show))
-
-        heads_only = per[per.predictor.isin([PREDICTORS["model_iou"], PREDICTORS["probe_iou"]])]
-        fig, ax = plt.subplots(1, 2, figsize=(13, 4.5), gridspec_kw={"width_ratios": [3, 1]})
-        sns.boxplot(
-            data=heads_only, x="editor", y="iou", hue="predictor", showfliers=False, ax=ax[0]
-        )
-        ax[0].set_title("Per-image IoU by editor (an image counts once per editor it went through)")
-        ax[0].tick_params(axis="x", rotation=20)
-        sns.boxplot(
-            data=heads_only.drop_duplicates(["uid", "predictor"]),
-            x="base_type",
-            y="iou",
-            hue="predictor",
-            showfliers=False,
-            ax=ax[1],
-        )
-        ax[1].set_title("By base type")
-        ax[1].set_xlabel("base image")
-        for a in ax:
-            a.set_ylabel("per-image edited IoU")
-            a.set_ylim(0, 1.02)
-        ax[1].get_legend().remove()
-        _legend_below(sns, ax[0])
-        saved.append(_save(fig, plt, out_dir, f"diagnosis_iou_by_editor_seed{seed}", show))
-    return saved
+    ax[1].get_legend().remove()
+    _legend_below(sns, ax[0])
+    return fig
 
 
 def p1_figure(

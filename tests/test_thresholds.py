@@ -39,15 +39,15 @@ def test_histogram_sweep_equals_direct_thresholding(t):
     recs = _records()
     row = next(r for r in thresholds.pixel_sweep(recs, "model", grid=(t,)))
     direct = pooled([mask_record(r["prob"], r["gt"], threshold=t) for r in recs])
-    for key in ("iou_edited", "iou_background", "miou_binary", "f1_pooled"):
+    for key in ("iou_edited", "iou_background", "miou_diffseg30k", "miou_two_class", "f1_pooled"):
         assert row[key] == pytest.approx(direct[key], abs=1e-12), key
 
 
 def test_sweep_at_half_matches_the_recorded_counts():
     recs = _records()
     row = thresholds.pixel_sweep(recs, "model", grid=(0.5,))[0]
-    assert row["miou_binary"] == pytest.approx(
-        pooled([r["heads"]["model"] for r in recs])["miou_binary"], abs=1e-12
+    assert row["miou_diffseg30k"] == pytest.approx(
+        pooled([r["heads"]["model"] for r in recs])["miou_diffseg30k"], abs=1e-12
     )
 
 
@@ -89,10 +89,10 @@ def test_image_sweep_rates_and_tile_bins():
 
 def test_best_reports_the_argmax_and_the_default():
     sweep = [
-        {"threshold": 0.3, "miou_binary": 0.6},
-        {"threshold": 0.5, "miou_binary": 0.65},
-        {"threshold": 0.7, "miou_binary": 0.7},
-        {"threshold": 0.9, "miou_binary": None},
+        {"threshold": 0.3, "miou_diffseg30k": 0.6},
+        {"threshold": 0.5, "miou_diffseg30k": 0.65},
+        {"threshold": 0.7, "miou_diffseg30k": 0.7},
+        {"threshold": 0.9, "miou_diffseg30k": None},
     ]
     b = thresholds.best(sweep)
     assert (b["threshold"], b["value"], b["at_default"]) == (0.7, 0.7, 0.65)
@@ -107,7 +107,7 @@ def test_diagnosis_sweeps_block():
     real = [{"p_edited": {"model": 0.2}, "tiles": 4}]
     out = thresholds.diagnosis_sweeps(recs, real, ["model"], tile_bin=locdiag.tile_bin)
     assert len(out["model"]["pixel"]) == len(thresholds.PIXEL_GRID)
-    assert out["model"]["best"]["miou_binary"]["default_threshold"] == 0.5
+    assert out["model"]["best"]["miou_diffseg30k"]["default_threshold"] == 0.5
     rows = {r["threshold"]: r for r in out["model"]["image"]}
     assert rows[0.05]["real_called_edited_by_tiles"] == {"2-4": 1.0}
     assert rows[0.5]["real_called_edited_by_tiles"] == {"2-4": 0.0}

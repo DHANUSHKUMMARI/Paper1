@@ -231,7 +231,7 @@ def p1_pass(
 
 def p2_summary(records: list[dict[str, Any]], head: str) -> dict[str, Any]:
     """P2 metrics of ``head``: all images, the real-base subset, held-out-editor pixels."""
-    from eviground.eval.tiled import per_image, pooled
+    from eviground.eval.tiled import area_rule, per_image, pooled
 
     def block(rs: list[dict[str, Any]]) -> dict[str, Any]:
         counts = [r["heads"][head] for r in rs]
@@ -241,12 +241,14 @@ def p2_summary(records: list[dict[str, Any]], head: str) -> dict[str, Any]:
         f1 = [i["f1"] for i in imgs if i["f1"] is not None]
         bf1 = [i["boundary_f1"] for i in imgs if i["boundary_f1"] is not None]
         acc = [r["labels"][head] == "edited" for r in rs]
+        area = [area_rule(i["pred_share"]) for i in imgs]
         out = {
             "images": len(rs),
             **pooled(counts),
             "mean_f1_per_image": float(np.mean(f1)) if f1 else None,
             "mean_boundary_f1": float(np.mean(bf1)) if bf1 else None,
             "image_acc_edited": float(np.mean(acc)),
+            "image_acc_edited_area_rule": float(np.mean(area)),
         }
         if all("ho_tp" in c for c in counts):
             out["heldout_pixels"] = pooled(counts, prefix="ho_")

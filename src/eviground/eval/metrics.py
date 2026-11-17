@@ -148,8 +148,9 @@ def mask_scores(
     - ``mask_f1``: mean of per-image F1 on edited crops (the selection score's mask term);
     - ``mask_f1_pooled`` and ``mask_iou_pooled``: over all edited pixels together;
     - ``mask_miou_binary``: the mean of the edited-class IoU and the background IoU, from one
-      confusion matrix pooled over the edited crops (the standard segmentation mIoU, as the
-      DiffSeg30k paper reports it); a guide in CP3, not CP4's P2 number (tiled whole images);
+      confusion matrix pooled over the edited crops; a guide in CP3, not CP4's P2 number (tiled
+      whole images). The DiffSeg30k paper excludes the background class from mIoU (arXiv
+      2511.19111v2, section 4.1, checked 17 Nov 2026), so its binary mIoU is ``mask_iou_pooled``;
     - ``real_any_pred`` / ``gen_any_pred``: share of real / fully generated crops with any pixel
       predicted edited (their target is all zeros);
     - ``real_pred_area`` / ``gen_pred_area``: mean predicted-edited share on those crops.

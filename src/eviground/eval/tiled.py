@@ -27,8 +27,14 @@ from eviground.data import tiles as tiling
 from eviground.models.eviground import aggregate_tiles, decide
 
 AUC_BINS = 1000
-BOUNDARY_TOLERANCE = 2  # pixels; to be checked against the DiffSeg30k paper's boundary F1
+BOUNDARY_TOLERANCE = 2  # pixels; ours: the DiffSeg30k paper reports bF1 without a tolerance
 HELDOUT_VALUES = (2, 6)  # DiffSeg30k mask values of Kolors and Glide
+# DiffSeg30k (arXiv 2511.19111v2, section 4.1): "The background class is excluded from mIoU and
+# bF1 calculations", so its binary mIoU is the edited-class IoU (pooled over pixels here; the
+# paper does not say how it averages, mmsegmentation's default accumulates over the dataset).
+# Its image-level rule for a segmentation model (section 4.2): edited when the predicted edited
+# area exceeds 1% of the image.
+AREA_RULE = 0.01
 
 
 @dataclass
@@ -216,7 +222,8 @@ def pooled(records: list[Mapping[str, Any]], prefix: str = "") -> dict[str, floa
     out: dict[str, float | None] = {
         "iou_edited": iou_e,
         "iou_background": iou_b,
-        "miou_binary": None if iou_e is None or iou_b is None else (iou_e + iou_b) / 2,
+        "miou_diffseg30k": iou_e,  # the paper's binary mIoU (background excluded); G2
+        "miou_two_class": None if iou_e is None or iou_b is None else (iou_e + iou_b) / 2,
         "f1_pooled": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,
         "pixel_acc": (tp + tn) / (tp + fp + fn + tn) if tp + fp + fn + tn else None,
         "fp_share_of_pixels": fp / (tp + fp + fn + tn) if tp + fp + fn + tn else None,
@@ -236,7 +243,13 @@ def per_image(r: Mapping[str, Any]) -> dict[str, float | None]:
         "f1": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,
         "boundary_f1": boundary_f1(r),
         "share": r["gt_pixels"] / r["pixels"],
+        "pred_share": (r["tp"] + r["fp"]) / r["pixels"],
     }
+
+
+def area_rule(pred_share: float, min_share: float = AREA_RULE) -> bool:
+    """The DiffSeg30k image rule: edited when the predicted edited area exceeds 1% of the image."""
+    return pred_share > min_share
 
 
 def hist_auc(pos: np.ndarray, neg: np.ndarray) -> float | None:

@@ -3,6 +3,43 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR D — metric definitions checked against the DiffSeg30k paper — 2026-11-17
+
+Checked against DiffSeg30k, arXiv 2511.19111v2, sections 4.1–4.2 (read 17 Nov). The paper says: "The background class is excluded from mIoU and bF1 calculations." So its binary mIoU, including SegFormer's 0.951 on the unseen Glide + Kolors pair (Table 4), is the IoU of the edited class alone.
+
+Dhanush decided on 17 Nov:
+- **G2** uses the paper's definition: the IoU of the edited class, pooled over all P2 dev pixels, must be at least 0.80.
+- **The paper's image rule** is reported beside ours: an image counts as edited when more than 1% of its pixels are predicted edited.
+
+Code:
+- **`eval/tiled.py`**
+  - `pooled` reports `miou_diffseg30k` (edited-class IoU) and `miou_two_class` (the mean of the edited and background IoU, our earlier `miou_binary`).
+  - `per_image` reports `pred_share`.
+  - New `area_rule` and `AREA_RULE = 0.01`.
+- **`eval/thresholds.py`:** the sweep reports both mIoU values. `best` defaults to `miou_diffseg30k`.
+- **`eval/cp4.py`**
+  - G2 reads `miou_diffseg30k` and also records `miou_two_class`.
+  - The published GenImage numbers are checked against arXiv 2511.01293, Table 7, SD v1.4 training: ResNet-50 72.1, NPR 88.6, FatFormer 88.9, Ojha 73.3. All four match.
+- **`eval/locdiag.py` and `runner.p2_summary`:** both report `called_edited_area_rule` / `image_acc_edited_area_rule`. These come from records that already exist, so there is no extra model pass.
+- **`eval/metrics.py`:** a docstring correction only. CP3's `mask_miou_binary` is the two-class mean; the paper's mIoU on crops is `mask_iou_pooled`. No CP3 number changes.
+- **Notebook 08**
+  - `crop_vs_full` puts both definitions side by side.
+  - The sweep plot uses the paper's mIoU.
+  - The result file names its definitions and their source.
+
+Not stated in the paper, so these stay ours:
+- whether the mIoU is pooled over pixels or averaged per image (we pool, which is mmsegmentation's default);
+- the boundary tolerance of bF1 (we use 2 px);
+- the boundary rule (we use 4 neighbours, and the image edge is not a boundary).
+
+The paper's bF1 also excludes the background; ours measures only the edited class's boundary, so the two agree on that.
+
+### Results (sandbox: Python 3.13.18, torch 2.15.0, CPU)
+- `ruff check src tests`: clean.
+- `python -m pytest -p no:warnings`: **407 passed** (406 before, plus 1 area-rule test; the existing gate test gains a two-class-versus-edited-IoU case).
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/08_localization_diagnosis.ipynb notebooks/09_cp4_gate.ipynb`: 2 passed.
+
 ## CP4 PR C — validation-only threshold sweep in the localization diagnosis — 2026-11-16
 
 Requested by Dhanush before notebook 08 runs.

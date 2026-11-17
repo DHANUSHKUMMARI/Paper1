@@ -51,7 +51,8 @@ def _metrics(c: Mapping[str, int]) -> dict[str, float | None]:
     return {
         "iou_edited": iou_e,
         "iou_background": iou_b,
-        "miou_binary": None if iou_e is None or iou_b is None else (iou_e + iou_b) / 2,
+        "miou_diffseg30k": iou_e,
+        "miou_two_class": None if iou_e is None or iou_b is None else (iou_e + iou_b) / 2,
         "f1_pooled": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,
         "fp_share_of_pixels": fp / n if n else None,
         "fn_share_of_edited": fn / (tp + fn) if tp + fn else None,
@@ -140,7 +141,7 @@ def image_sweep(
 
 
 def best(
-    sweep: Sequence[Mapping[str, Any]], key: str = "miou_binary", at: float = 0.5
+    sweep: Sequence[Mapping[str, Any]], key: str = "miou_diffseg30k", at: float = 0.5
 ) -> dict[str, Any]:
     """The threshold of ``sweep`` with the largest ``key``, its value, and the value at ``at``."""
     rows = [r for r in sweep if r.get(key) is not None]
@@ -177,7 +178,8 @@ def diagnosis_sweeps(
             "pixel": px,
             "image": img,
             "best": {
-                "miou_binary": best(px, "miou_binary"),
+                "miou_diffseg30k": best(px, "miou_diffseg30k"),
+                "miou_two_class": best(px, "miou_two_class"),
                 "f1_pooled": best(px, "f1_pooled"),
                 "mean_f1_per_image": best(px, "mean_f1_per_image"),
                 "mean_boundary_f1": best(px, "mean_boundary_f1"),

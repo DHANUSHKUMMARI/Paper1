@@ -43,6 +43,14 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
   - Fake manifest (2 generators × 5 per label, 1 per stratum in the dev split) → P1 12 images.
   - Then release (dry).
 
+### Review fixes (PR #46)
+- **Codex P2:** on a rerun, the frozen file was reused when its stored hash equalled the new one, without recomputing that hash from the stored uid list.
+  - New `subsets.intact()` recomputes the hash and image count.
+  - Cell 4 reuses the file only when it is intact and its hash matches; otherwise it stops and asks.
+  - A new test covers an altered uid list.
+- **SonarCloud S7519 (minor):** `dict.fromkeys` in `balanced_counts`.
+- **Rerun:** ruff clean; 451 passed; the notebook 12 dry run passed.
+
 ### Not run here
 - The real `Chameleon.zip` (Drive only) and the real manifest: notebook 12 on a Colab CPU runtime.
 

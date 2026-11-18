@@ -101,3 +101,11 @@ def test_p1_subset_excludes_dev_and_takes_per_label():
     assert s["sha256"] == subsets.p1_test_subset(rows, dev, per_label=5)["sha256"]
     with pytest.raises(ValueError, match="fewer than"):
         subsets.p1_test_subset(rows, dev, per_label=10)
+
+
+def test_a_stored_subset_with_an_edited_uid_list_is_not_intact():
+    items = [{"uid": f"r{i}", "label": "real"} for i in range(6)]
+    items += [{"uid": f"f{i}", "label": "generated"} for i in range(6)]
+    s = subsets.p4_subset(items, total=6)
+    assert subsets.intact(s)
+    assert not subsets.intact({**s, "uids": s["uids"][:-1]})

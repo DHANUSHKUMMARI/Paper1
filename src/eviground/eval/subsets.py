@@ -74,7 +74,7 @@ def balanced_counts(available: Mapping[str, int], total: int) -> dict[str, int]:
     """Half each when both classes allow it, else proportional to the class sizes."""
     half = total // 2
     if all(v >= half for v in available.values()) and len(available) == 2:
-        return {k: half for k in available}
+        return dict.fromkeys(available, half)
     n = sum(available.values())
     if n <= total:
         return dict(available)
@@ -101,6 +101,12 @@ def p4_subset(
     chosen = [r for k in sorted(counts) for r in take(by_label[k], counts[k], seed, salt)]
     rule = "balanced" if len(set(counts.values())) == 1 else "stratified (a class is short)"
     return _record("P4", chosen, seed, salt, per_class=counts, available=available, rule=rule)
+
+
+def intact(subset: Mapping[str, Any]) -> bool:
+    """True when a stored subset's hash and size match its own uid list."""
+    uids = subset.get("uids") or []
+    return subset.get("sha256") == file_list_sha256(uids) and subset.get("images") == len(uids)
 
 
 def summary(subset: Mapping[str, Any]) -> dict[str, Any]:

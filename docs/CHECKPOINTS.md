@@ -10,7 +10,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP1 | 2 | Data integrity and leakage | **PASS** (14 Nov 2026, run 5, DiffSeg30k mask reading; runs 1–4 below) | DHANUSH|
 | CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) |DHANUSH |
 | CP3 | 5 | Training health | **PASS** (seed 42, both models; notebook 06 on an L4, 15–16 Nov 2026; script verdict, awaiting Dhanush) |DHANUSH |
-| CP4 | 6 | Generalization gate | pending | |
+| CP4 | 6 | Generalization gate | **FAIL** (G1 and G2; RF PASS; one fix used, no second fix; 17–18 Nov 2026; awaiting Dhanush's decision on the narrowed claims) | |
 | CP5 | 7 | Evidence faithfulness | pending | |
 | CP6 | 8 | Grounded explanations | pending | |
 | CP7 | 10 | Full benchmark | pending | |
@@ -406,3 +406,119 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
   and CP4 to be accepted.
 - **Verified by Dhanush:** DHANUSH
 
+---
+
+### CP4 — Generalization gate, seed 42 — 2026-11-18 — **FAIL** (G1 and G2; RF PASS; no second fix)
+
+- **Judged on:** the frozen development hold-out only. `cp4_dev_split.json`, seed 42, salt `cp4_dev_v1`,
+  SHA-256 `1e0792a8f474…`.
+  - P1: 20,000 images, 20% of each GenImage validation folder.
+  - P2: 486 images (229 on AI-generated bases, 257 on real bases).
+  - No other test image was read. Thresholds stay at 0.5.
+- **Models:**
+  - detection = CP3's `eviground_detection_seed42/best.pt`;
+  - unified, gated = the CP4 fix run, `eviground_ctx_unified_seed42/best.pt` (below).
+- **Result files** (Drive `Paper 1/runs/checkpoints/`):
+  - `cp4_generalization_gate_seed42.json`: P1, G1 and RF. Written on 17 Nov (commit `616bec5`), then
+    overwritten on 18 Nov (`33707a3`) with identical P1 values by the mistaken run below.
+  - `cp4_generalization_gate_seed42_ctx.json`: G2 (commit `ff1b14d`, 12:53 UTC; P1 reused from the file above,
+    `p1_rerun: false`).
+  - `localization_diagnosis_seed42.json` and `localization_diagnosis_seed42_ctx.json`: validation only.
+
+**Gate**
+
+| # | Criterion | Measured | Result |
+|---|-----------|----------|--------|
+| G1 | P1 mean accuracy over 8 generators > 0.721 **and** > the detection CLIP probe, raw and harmonized | detection model 0.7846 raw / 0.7771 harmonized; probe 0.8136 / 0.8015 | **FAIL** (above 0.721, below the probe) |
+| RF | Accuracy ≥ 0.98 on every unseen generator (raw) | SD v1.5 0.9969, Wukong 0.9813, Midjourney 0.7342, BigGAN 0.7088, VQDM 0.6758, GLIDE 0.6221, ADM 0.5592 | PASS (not raised) |
+| G2 | P2 edited-class IoU (DiffSeg30k mIoU, pooled) ≥ 0.80, unified model | **0.5101** (two-class mIoU 0.5799) | **FAIL** |
+
+**G1, details** (P1 dev, mean over 8 generators; per-generator numbers are in the JSON):
+
+| | detection model | detection probe | unified model | unified probe |
+|---|---|---|---|---|
+| accuracy, raw | 0.7846 | 0.8136 | 0.8810 | 0.8953 |
+| accuracy, harmonized | 0.7771 | 0.8015 | 0.8642 | 0.8777 |
+| AP, raw | 0.9479 | 0.9194 | 0.9692 | 0.9563 |
+
+- **The detection model's misses are at the 0.5 threshold, not in its ranking.**
+  - Real images are classed correctly 99.4–99.8% of the time.
+  - Generated images, raw: ADM 0.122, GLIDE 0.248, VQDM 0.354, BigGAN 0.423, Midjourney 0.473.
+  - Its AP is above the probe's (0.948 vs 0.919).
+  - Raw and harmonized differ by 0.008, so compression does not explain it.
+- **Unified-model rows (reported, not judged):** they are for the CP3 unified model. The fixed model's P1 row
+  comes with the full evaluation.
+- **Real P1 images called edited** by the CP3 unified model: 3.85%. By tile count: 1: 0.68%; 2–4: 3.05%;
+  5–9: 9.07%; 10–16: 15.56%; 17+: 21.64%.
+
+**G2, details** (P2 dev, whole images, 0.5):
+
+| | fixed unified model (gated) | patch probe |
+|---|---|---|
+| edited IoU, all 486 | **0.5101** | 0.1392 |
+| edited IoU, held-out-editor pixels only | 0.4588 | 0.1355 |
+| edited IoU, real base (257) | 0.7471 | 0.1574 |
+| edited IoU, real base, held-out pixels | 0.6792 | 0.1287 |
+| over-marking (share of pixels) / misses (share of edited pixels), all | 0.1339 / 0.3148 | 0.0331 / 0.8489 |
+| pixel AUC / mean boundary F1, all | 0.8137 / 0.2320 | 0.6530 / 0.0624 |
+| edited images called edited (P(edited) ≥ 0.5) / by the paper's 1% area rule | 0.9753 / 0.9938 | 0.9671 / 0.7016 |
+
+- **The DiffSeg30k paper's SegFormer** reaches 0.951 on its Glide + Kolors hold-out (all images; arXiv
+  2511.19111v2, Table 4). Our 0.5101 is far below it, so the localization claim is narrowed.
+
+**The one fix (context crops on AI-generated bases; Dhanush, 17 Nov)**
+- **Why:** the localization diagnosis (validation, CP3 unified) found:
+  - whole-image edited IoU 0.3946;
+  - over-marking 28.9% of pixels;
+  - on AI-generated bases, 35.9% of pixels over-marked, IoU 0.3303 (real bases 0.7209).
+- **Change:** for 1/3 of the edited training draws on an AI-generated base, a crop is taken anywhere in the image.
+  - It is kept at edited share exactly 0, labelled generated with an empty mask.
+  - Or kept at 1–90%, labelled edited.
+  - `data.context_crop_share = 0.3333`; nothing else changed.
+- **Shortcut check (notebook 10, CPU):** no material change.
+  - Real vs not real 0.5122 → 0.5120.
+  - Every quality-75 and source share moved by ≤ 0.002, apart from the designed move: DiffSeg30k is now
+    4.75% of the generated class.
+- **Retrain (notebook 11, `runs/eviground_ctx_unified_seed42/`, commit `ff36b71`):**
+  - best epoch 15 of 20 (early stop);
+  - macro AUC 0.997864;
+  - mask F1 0.758295.
+  - **A2 FAILED by 0.0003:** real-crop marked area 0.010302 against ≤ 0.01. Dhanush let it go on to
+    notebook 08; the bar is unchanged.
+- **Whole-image validation (notebook 08), CP3 → fixed:**
+  - edited IoU 0.3946 → 0.4335;
+  - over-marking 0.2886 → 0.2148 (AI bases 0.3589 → 0.2628);
+  - misses 0.1908 → 0.2276;
+  - real images called edited 0.0893 → 0.1053.
+  - Interior tiles (≥ 90% edited) miss 33.4% of their pixels, against 18.1% elsewhere.
+- **The gated model:** Dhanush chose the fixed model for G2 on 17 Nov, from validation only, before any P2
+  number existed.
+
+**Run on the wrong model, 18 Nov (recorded, not the gate)**
+- Notebook 09 ran with `P2_ENABLED = True` and `RUN_EXPERIMENT` left at `None`, so P2 was scored on the
+  **CP3** unified model. Edited IoU 0.4904 (real base 0.7518; held-out pixels 0.4162). It cost 4.33 CU.
+- It does not change the gated model.
+- A guard now stops a real P2 run unless `RUN_EXPERIMENT == 'eviground_ctx'`. It caught one more wrong
+  attempt before any scoring.
+
+- **Compute (from the result files; CU/h as entered in each session):**
+
+| Run | Notebook | Hours | CU |
+|---|---|---|---|
+| Localization diagnosis, CP3 unified | 08 | 0.827 | 1.60 |
+| Sampler shortcut check | 10 (CPU) | 0.082 | not recorded |
+| Gate, CP3 models, P2 off | 09 | 1.405 | 2.73 |
+| Fix retrain (session; training 3.421) | 11 | 3.056 | 5.20 |
+| Localization diagnosis, fixed unified | 08 | 0.652 | 1.26 |
+| Gate with P2 on the CP3 model (mistake) | 09 | 2.232 | 4.33 |
+| **G2 gate, fixed unified, P2 only** | 09 | 0.370 | **0.72** |
+| **CP4 in all** | | | **15.84** |
+
+- **Result:** **FAIL** on G1 and G2. RF passed. The one fix was used (context crops, unified model), and
+  there is no second fix. As the CP4 row says, the claims are narrowed:
+  - **Detection:** above the GenImage ResNet-50 bar (0.785 vs 0.721) but below a CLIP linear probe trained on
+    the same data, in accuracy at threshold 0.5. Above the probe in AP.
+  - **Localization:** held-out-editor localization reaches edited IoU 0.510 (0.747 on real bases), not the 0.80
+    target. Interior misses and over-marking on AI-generated bases are the stated limits.
+  - The **final configuration** is the context-crop unified model, which seeds 123 and 2026 use.
+- **Verified by Dhanush:** ☐

@@ -41,6 +41,12 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
   - In 06, 08, 09 and 11 the release cell asserts that it was reached (`'dry'`).
 - **The one-off P2-only dry run of notebook 09** (`P1_ENABLED = False`, a `_ctx` model) was run again with the new cells: passed.
 
+### Review fixes (PR #44)
+- **SonarCloud S3358 ×3 (major):** nested conditional expressions in the pre-flight cells of 06 and 09. They are now plain `if` statements.
+- **Codex P2:** notebook 09's pre-flight now also requires `runs/checkpoints/cp1/manifest_cp1.csv.gz` and `cp1_data_integrity.json`, which cell 4 reads. A missing CP1 file now stops the run before staging, not after.
+  - Checked by running the cell's code outside the dry run, with both files absent: refused, naming both.
+- **Rerun:** ruff clean; 445 passed; the dry runs of 06, 08, 09 and 11 passed; the P2-only dry run of 09 passed.
+
 ### Not run here
 - `runtime.unassign()` on a real Colab runtime. It is checked only against a fake module.
 

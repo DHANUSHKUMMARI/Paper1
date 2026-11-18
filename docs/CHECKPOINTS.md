@@ -522,3 +522,30 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
     target. Interior misses and over-marking on AI-generated bases are the stated limits.
   - The **final configuration** is the context-crop unified model, which seeds 123 and 2026 use.
 - **Verified by Dhanush:** ☐
+
+### CP3 training health of the extra seeds (final configuration) — 2026-11-18
+
+Notebook 13 (L4, commit `911e680`) trained the unified model in the final configuration (context crops,
+`data.context_crop_share = 0.3333`) with seeds 123 and 2026, and ran the CP3 checks on each. The A1 overfit record of CP3
+was reused (a pipeline check, not a seed one). Values are on validation crops, at each run's best epoch.
+
+| Seed | Best epoch | Selection | Macro AUC | Pooled edited IoU | Mask F1 (A4 ≥ 0.5) | Real crops: any mark (A2 ≤ 0.2) / area (A2 ≤ 0.01) | Generated crops: any / area (A3) | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| 42 (17 Nov, notebook 11) | 15 | 0.87808 | 0.997864 | 0.668879 | 0.758295 | 0.10532 / **0.010302** | 0.0345 / 0.0067 | FAIL on A2 only |
+| 123 | 18 of 20 | 0.87056 | 0.997629 | 0.650245 | 0.743497 | 0.102074 / 0.008986 | 0.029512 / 0.004327 | **PASS** |
+| 2026 | 12 (early stop at 17) | 0.87596 | 0.997456 | 0.666702 | 0.754473 | 0.102435 / **0.010192** | 0.041558 / 0.005523 | FAIL on A2 only |
+
+- **Over the three seeds:**
+  - selection 0.8749 ± 0.0039;
+  - pooled edited IoU 0.6619 ± 0.0101;
+  - macro AUC 0.99765 ± 0.00020 (mean ± sample sd).
+- **Reported checks (seeds 123 / 2026):**
+  - S3 GenImage 3-class accuracy 0.9848 / 0.9826;
+  - R1 gap in "called edited" 0.0335 / 0.0356;
+  - R2 binary mIoU 0.6385 / 0.6540.
+- **A2:** two of the three seeds exceed the 0.01 area bar by 0.0002–0.0003. That is a property of the configuration, not of
+  one seed. **Decision (Dhanush, 18 Nov):** each is recorded as FAIL, the bar is unchanged, and all three seeds are kept
+  for the three-seed results. A2 is reported per seed in the training-health appendix.
+- **Compute:** the session ran 5.77 h on an L4. Dhanush's Colab balance fell from about 44.3 to about 31–32 CU, so
+  about 12.5–13 CU. The notebook's own record (1.7 CU/h) says 9.805; the real rate is about 2.2 CU/h.
+- **Verified by Dhanush:** ☐

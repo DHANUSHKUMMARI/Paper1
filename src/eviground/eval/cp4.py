@@ -164,6 +164,31 @@ def evaluate(
     }
 
 
+class RunSettingsError(RuntimeError):
+    """Notebook 09 settings that would repeat a known mistake."""
+
+
+def check_run_settings(p2_enabled: bool, run_experiment: str | None, dry: bool) -> None:
+    """P2 on the CP3 unified model was already scored once, by mistake (18 Nov 2026); G2 is gated
+    on the fixed model (Dhanush, 17 Nov). A real run with P2 on must name the fixed model."""
+    if p2_enabled and not run_experiment and not dry:
+        raise RunSettingsError(
+            "P2_ENABLED = True needs RUN_EXPERIMENT = 'eviground_ctx': G2 is gated once on the "
+            "fixed unified model; P2 on the CP3 model was already run (18 Nov 2026)"
+        )
+
+
+def p1_from_report(report: Mapping[str, Any]) -> tuple[dict[str, Any], Any, Any]:
+    """The P1 table, the probe reports and the false-edited rates of a saved gate report, for a
+    P2-only run (the detection model is unchanged, so G1 and RF are recomputed from its rows)."""
+    table = report.get("p1") or {}
+    for head in ("detection", "detection_probe"):
+        missing = [v for v in ("raw", "harmonized") if v not in table.get(head, {})]
+        if missing:
+            raise ValueError(f"the saved report has no P1 {head} rows for {missing}")
+    return dict(table), report.get("probes"), report.get("false_edited_unified_p1_real")
+
+
 def write_report(report: Mapping[str, Any], path: Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

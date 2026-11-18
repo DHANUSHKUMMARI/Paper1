@@ -364,3 +364,45 @@ def test_diffseg30k_area_rule_in_the_summaries():
         for s in (0.0, 0.005, 0.02, 0.5)
     ]
     assert locdiag.summarize_real(real, ["m"])["m"]["all"]["called_edited_area_rule"] == 0.5
+
+
+def _p1_rows(acc_model, acc_probe):
+    per = {g: {"acc": acc_model, "ap": 0.9} for g in ("sd14", "adm")}
+    perp = {g: {"acc": acc_probe, "ap": 0.9} for g in ("sd14", "adm")}
+    return {
+        "detection": {
+            v: {"per_generator": per, "mean_acc": acc_model} for v in ("raw", "harmonized")
+        },
+        "detection_probe": {
+            v: {"per_generator": perp, "mean_acc": acc_probe} for v in ("raw", "harmonized")
+        },
+    }
+
+
+def test_p1_reused_from_a_saved_report_gives_the_same_g1_and_rf():
+    table = _p1_rows(0.78, 0.81)
+    saved = cp4.evaluate(
+        table, extra={"probes": {"x": 1}, "false_edited_unified_p1_real": {"rate": 0.04}}
+    )
+    reused, probes, false_edited = cp4.p1_from_report(saved)
+    again = cp4.evaluate(reused, p2={"miou_diffseg30k": 0.5})
+    assert again["checks"]["G1"] == saved["checks"]["G1"]
+    assert again["checks"]["RF"] == saved["checks"]["RF"]
+    assert probes == {"x": 1}
+    assert false_edited == {"rate": 0.04}
+    assert again["checks"]["G2"]["status"] == cp4.FAIL
+
+
+def test_p1_reuse_needs_both_versions():
+    table = _p1_rows(0.78, 0.81)
+    del table["detection"]["harmonized"]
+    with pytest.raises(ValueError, match="harmonized"):
+        cp4.p1_from_report({"p1": table})
+
+
+def test_p2_on_the_cp3_model_is_refused_in_a_real_run():
+    with pytest.raises(cp4.RunSettingsError):
+        cp4.check_run_settings(True, None, dry=False)
+    cp4.check_run_settings(True, "eviground_ctx", dry=False)
+    cp4.check_run_settings(True, None, dry=True)
+    cp4.check_run_settings(False, None, dry=False)

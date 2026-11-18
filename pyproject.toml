@@ -15,6 +15,7 @@ dependencies = [
     "omegaconf>=2.3",
     "pyarrow>=14",          # SID-Set parquet shards (data layer)
     "huggingface_hub>=0.24", # DiffSeg30k / SID-Set downloads (Colab only; imported lazily)
+    "scipy>=1.11",          # connected components of the CP5 evidence regions (preinstalled on Colab)
 ]
 
 [project.optional-dependencies]

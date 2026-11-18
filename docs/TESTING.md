@@ -3,6 +3,35 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## PR Q — CP5 explanation code and the frozen P6 subsets, notebook 12b (CPU) — 2026-11-18
+
+Code and tests only, on CPU with the tiny model and hand-made maps; no real image, no real model and no GPU in the sandbox. The CP5 run itself is notebook 14 (GPU, later, after its own estimate and Dhanush's go-ahead). Design as approved by Dhanush on 18 Nov 2026.
+
+**New `src/eviground/explain/`:**
+- **`gradcam.py`:** Grad-CAM++ on the fused 16×16 tokens Z (`gradcam_pp` returns the raw relu map, upsampled to the tile). `tiled_map` stitches the raw tile maps like the mask and then normalizes once per image by the image max (no per-tile normalization). `decoder_map` (the CP5 fallback) and `alpha_map` (ablation 4).
+- **`regions.py`:** connected components with `scipy.ndimage.label` (4-connectivity, components under 0.5% dropped); box, area %, mask confidence, attribution mass, frequency anomaly (8×8 block-DCT high-frequency energy, u+v ≥ 8) and noise anomaly (variance of the image minus its 3×3 mean); `top_attribution_regions` (A1–A3); `rle_encode` / `rle_decode`.
+- **`evidence.py`:** the §8 M5 record (E regions for an edited verdict, A1–A3 for fully generated, none for real; G1 branch reliance, G2/G3 image anomalies; unique IDs). The region pixel masks go to a side file keyed by region ID; the LLM record carries no mask. `save_bundle` / `load_bundle`: the evidence JSON, the region RLEs, float16 maps at 1/4 resolution, the probabilities and the gate (what CP6 reads).
+- **`faithfulness.py`:** EPG and the area fraction; one `remove_region` (blur baseline) shared by deletion/insertion and counterfactual consistency; RISE deletion/insertion AUC with a random-order baseline; `best_tile`; Gaussian SSIM; cascading randomization (heads → fusion → trace → semantic LoRA) on a deep copy.
+
+**P6 (`eval/subsets.py`):** `P6_PARTS` (400 DiffSeg30k held-out, 400 SID-Set tampered, 400 BR-Gen without SDXL, 150 real, 150 generated); `TrainingIndex` (exact SHA-256 / pixel SHA-256 and pHash ≤ 6 against the training pool); `take_clean`; `p6_pools`; `even_over`; `chameleon_candidates`; `p6_subset`, which builds P6, `P6_mllm` (500, by part) and `P6_deletion` (300, edited only) and stops if any part is short.
+
+**Notebook 12b `12b_p6_subsets.ipynb`** (generator `make_nb12b.py`; CPU; estimate 0.05 CU):
+- pre-flight; checks that P1 and P4 in `eval_subsets.json` and `brgen_subset.json` are intact;
+- unpacks Chameleon again to the local disk and hashes the first 400 real images outside P4 in P6 rank order (the pick equals the one from hashing all of them while 50 pass; tested);
+- builds P6, extracts the 400 BR-Gen images and their masks with 7z, opens them, checks image and mask sizes, and records their SHA-256 (`P6_brgen_files`) for notebook 14;
+- adds `P6`, `P6_mllm`, `P6_deletion` and `P6_brgen_files` to `eval_subsets.json`, leaving P1 and P4 untouched; an existing P6 is kept only if identical, otherwise it stops;
+- writes `p6_subsets_record.json` and `compute_p6_subsets.json`, then releases the runtime.
+- **Dependency:** `scipy>=1.11` (preinstalled on Colab). **CI:** a step for the notebook 12b dry run.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- `tests/test_explain.py`: 12 passed (components, RLE round trip, noise anomaly, EPG, `remove_region`, deletion below random order, `best_tile`/SSIM, the evidence record by verdict, the bundle round trip, Grad-CAM++ on the tiny model, a blank tile next to a strong one stays below 0.01 after stitching, randomization changes the map).
+- **A bug found by the randomization test:** the first `_randomize` zeroed the LayerNorm weights, so the randomized map was all zero. It now calls each layer's `reset_parameters()`; SSIM after each step is 0.05–0.10 on the tiny model.
+- `tests/test_eval_subsets.py`: 11 passed (4 new: the P6 mix, real-source split and SID-Set top-up, nested subsets, deletion edited only, deterministic hash; exact and near duplicates refused; a short part stops; hashing only the Chameleon head gives the same pick). One fixture was wrong at first (its training pHash sat one bit from the test rows'), and the code refused those rows correctly.
+- **`EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/12b_p6_subsets.ipynb`:** passed. Fake world: P6 1,500 (400/400/400/150/150); real 50/50/50 with 20 topped up from SID-Set; `P6_mllm` 134/133/133/50/50; `P6_deletion` 100/100/100; 400 BR-Gen files extracted with 7z, 0 problems.
+- Dry runs of notebooks 12 and 13: passed.
+- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: 468 passed. `python -m eviground.utils.repo_audit --history`: ok.
+- **Not run here:** the real data (the manifest, Chameleon, BR-Gen) and anything on the real models; Grad-CAM++ speed on an L4.
+
 ## PR P — notebook 13: the unified model, seeds 123 and 2026, in one L4 session — 2026-11-18
 
 **Notebook 12 ran first** (Colab CPU, 0.0977 h, **0.008 CU**). Results from its printout and `eval_subsets_record.json`:

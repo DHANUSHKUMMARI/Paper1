@@ -46,6 +46,7 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 - **Codex P2:** notebook 09's pre-flight now also requires `runs/checkpoints/cp1/manifest_cp1.csv.gz` and `cp1_data_integrity.json`, which cell 4 reads. A missing CP1 file now stops the run before staging, not after.
   - Checked by running the cell's code outside the dry run, with both files absent: refused, naming both.
 - **Rerun:** ruff clean; 445 passed; the dry runs of 06, 08, 09 and 11 passed; the P2-only dry run of 09 passed.
+- **SonarCloud S1192 (critical), from the fix above:** notebook 09 now repeated `'manifest_cp1.csv.gz'` 3 times. It is now the constant `CP1_MANIFEST`, set in cell 2. Rerun: the dry runs of 08 and 09 and the P2-only dry run passed; 445 passed.
 
 ### Not run here
 - `runtime.unassign()` on a real Colab runtime. It is checked only against a fake module.

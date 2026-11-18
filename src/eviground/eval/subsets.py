@@ -136,3 +136,196 @@ def save(subsets: Mapping[str, Mapping[str, Any]], path: Path) -> Path:
 def label_counts(subset: Mapping[str, Any], rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     keep = set(subset["uids"])
     return dict(sorted(Counter(r["label"] for r in rows if r["uid"] in keep).items()))
+
+
+# --------------------------------------------------------------------------------------
+# P6: explanation quality (spec section 10, P6 row; Dhanush, 18 Nov 2026)
+# --------------------------------------------------------------------------------------
+
+P6_SALT = "p6_v1"
+P6_PARTS = {  # the spec's mix: 1,500 images
+    "diffseg_heldout": 400,
+    "sidset_tampered": 400,
+    "brgen": 400,
+    "real": 150,
+    "generated": 150,
+}
+P6_EDITED = ("diffseg_heldout", "sidset_tampered", "brgen")
+P6_REAL_SOURCES = ("genimage", "diffseg_unedited", "chameleon")
+P6_MLLM = 500
+P6_DELETION = 300
+NEAR_DUP = 6  # pHash Hamming distance (the CP1 leakage rule)
+
+
+class TrainingIndex:
+    """Exact hashes and pHashes of the training pool, for the leakage check of extra images."""
+
+    def __init__(self, train_rows: Iterable[Mapping[str, Any]]) -> None:
+        from eviground.data import hashing
+
+        rows = list(train_rows)
+        self.exact = {r[k] for r in rows for k in ("sha256", "pixel_sha256") if r.get(k)}
+        self.phash = hashing.as_uint64(r["phash"] for r in rows if r.get("phash") not in (None, ""))
+
+    def clean(self, row: Mapping[str, Any]) -> bool:
+        """No exact match and no pHash within :data:`NEAR_DUP` of a training image."""
+        from eviground.data import hashing
+
+        if any(row.get(k) in self.exact for k in ("sha256", "pixel_sha256") if row.get(k)):
+            return False
+        if row.get("phash") in (None, "") or self.phash.size == 0:
+            return True
+        dist, _ = hashing.min_hamming(hashing.as_uint64([row["phash"]]), self.phash)
+        return int(dist[0]) > NEAR_DUP
+
+
+def take_clean(
+    rows: Iterable[Mapping[str, Any]], n: int, seed: int, salt: str, index: TrainingIndex
+) -> tuple[list[Mapping[str, Any]], int]:
+    """The first ``n`` rows by the seeded rank that pass the training check, and how many were
+    skipped on the way."""
+    chosen, skipped = [], 0
+    for r in sorted(rows, key=lambda r: (_rank(seed, salt, r["uid"]), r["uid"])):
+        if len(chosen) == n:
+            break
+        if index.clean(r):
+            chosen.append(r)
+        else:
+            skipped += 1
+    return chosen, skipped
+
+
+def chameleon_candidates(
+    rows: Iterable[Mapping[str, Any]], k: int, seed: int = SEED, salt: str = P6_SALT
+) -> list[Mapping[str, Any]]:
+    """The first ``k`` Chameleon real rows in the order :func:`p6_subset` reads them, so only
+    these need hashing (the pick is the same while at least 50 of them pass the training check)."""
+    return take(rows, k, seed, f"{salt}/real/ch")
+
+
+def p6_pools(
+    manifest_rows: Iterable[Mapping[str, Any]],
+    dev_uids: Iterable[str],
+    p1_uids: Iterable[str],
+) -> dict[str, list[Mapping[str, Any]]]:
+    """The manifest pools of P6 (BR-Gen and Chameleon come from outside the manifest)."""
+    dev, p1 = set(dev_uids), set(p1_uids)
+    pools: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for r in manifest_rows:
+        pool = _p6_pool(r, dev, p1)
+        if pool:
+            pools[pool].append(r)
+    return dict(pools)
+
+
+def _p6_pool(r: Mapping[str, Any], dev: set[str], p1: set[str]) -> str | None:
+    """The P6 pool of one manifest row (None: not a P6 candidate)."""
+    src, role, label, uid = r.get("source"), r.get("role"), r.get("label"), r["uid"]
+    if src == "sidset" and role == "test_P3b":
+        return "sidset_tampered" if label == "edited" else f"sidset_{label}"
+    if src == "diffseg30k" and role == "unused_validation":
+        return None if r.get("editors") else "diffseg_unedited"
+    if uid in dev or role not in ("test_P1", "test_P2"):
+        return None
+    if role == "test_P2":
+        return "diffseg_heldout"
+    if label == "generated":
+        return "generated"
+    return None if uid in p1 else "genimage_real"
+
+
+def even_over(rows: Sequence[Mapping[str, Any]], key: str, n: int, seed: int, salt: str) -> list:
+    """``n`` rows spread as evenly as possible over the values of ``key`` (sorted; the first
+    values take the remainder)."""
+    groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for r in rows:
+        groups[str(r[key])].append(r)
+    names = sorted(groups)
+    base, extra = divmod(n, len(names))
+    out = []
+    for i, g in enumerate(names):
+        out += take(groups[g], base + (1 if i < extra else 0), seed, f"{salt}/{g}")
+    return out
+
+
+def p6_subset(
+    pools: Mapping[str, Sequence[Mapping[str, Any]]],
+    brgen_items: Sequence[str],
+    chameleon_real: Sequence[Mapping[str, Any]],
+    index: TrainingIndex,
+    *,
+    seed: int = SEED,
+    salt: str = P6_SALT,
+) -> dict[str, Any]:
+    """The P6 set (``P6_PARTS``) and its two nested subsets.
+
+    ``brgen_items``: the frozen BR-Gen subset's forged members (SDXL is dropped here);
+    ``chameleon_real``: Chameleon real rows outside P4, with their hashes. The 150 real images
+    are about 50 per source; DiffSeg30k unedited validation images are topped up from SID-Set
+    validation real when short. Every real image passes the training check."""
+    from eviground.data import brgen
+
+    parts: dict[str, list[Mapping[str, Any]]] = {}
+    parts["diffseg_heldout"] = take(
+        pools.get("diffseg_heldout", []), P6_PARTS["diffseg_heldout"], seed, f"{salt}/p2"
+    )
+    parts["sidset_tampered"] = take(
+        pools.get("sidset_tampered", []), P6_PARTS["sidset_tampered"], seed, f"{salt}/sid"
+    )
+    br = [{"uid": i} for i in brgen_items if brgen.parse_member(i).get("method") != "SDXL"]
+    parts["brgen"] = take(br, P6_PARTS["brgen"], seed, f"{salt}/brgen")
+    parts["generated"] = even_over(
+        pools.get("generated", []), "generator", P6_PARTS["generated"], seed, f"{salt}/gen"
+    )
+    per = P6_PARTS["real"] // len(P6_REAL_SOURCES)
+    real, skipped, top_up = {}, {}, 0
+    real["genimage"], skipped["genimage"] = take_clean(
+        pools.get("genimage_real", []), per, seed, f"{salt}/real/gi", index
+    )
+    real["diffseg_unedited"], skipped["diffseg_unedited"] = take_clean(
+        pools.get("diffseg_unedited", []), per, seed, f"{salt}/real/ds", index
+    )
+    if len(real["diffseg_unedited"]) < per:
+        extra, skipped["sidset_real"] = take_clean(
+            pools.get("sidset_real", []),
+            per - len(real["diffseg_unedited"]),
+            seed,
+            f"{salt}/real/sid",
+            index,
+        )
+        top_up = len(extra)
+        real["diffseg_unedited"] = [*real["diffseg_unedited"], *extra]
+    real["chameleon"], skipped["chameleon"] = take_clean(
+        chameleon_real, per, seed, f"{salt}/real/ch", index
+    )
+    parts["real"] = [r for k in P6_REAL_SOURCES for r in real[k]]
+    counts = {k: len(v) for k, v in parts.items()}
+    short = {k: (counts[k], n) for k, n in P6_PARTS.items() if counts[k] != n}
+    if short:
+        raise ValueError(f"P6 parts short (got, wanted): {short}")
+    part_of = {r["uid"]: k for k, v in parts.items() for r in v}
+    all_rows = [r for v in parts.values() for r in v]
+    p6 = _record(
+        "P6",
+        all_rows,
+        seed,
+        salt,
+        per_part=counts,
+        real_sources={k: len(v) for k, v in real.items()},
+        sidset_top_up=top_up,
+        skipped_near_training=skipped,
+        part_of=part_of,
+    )
+    mllm_counts = balanced_counts(counts, P6_MLLM)
+    mllm = [
+        r for k in sorted(mllm_counts) for r in take(parts[k], mllm_counts[k], seed, f"{salt}/mllm")
+    ]
+    del_counts = balanced_counts({k: counts[k] for k in P6_EDITED}, P6_DELETION)
+    deletion = [
+        r for k in sorted(del_counts) for r in take(parts[k], del_counts[k], seed, f"{salt}/del")
+    ]
+    return {
+        "P6": p6,
+        "P6_mllm": _record("P6_mllm", mllm, seed, f"{salt}/mllm", per_part=mllm_counts),
+        "P6_deletion": _record("P6_deletion", deletion, seed, f"{salt}/del", per_part=del_counts),
+    }

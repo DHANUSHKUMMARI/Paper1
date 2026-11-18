@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections import Counter
 
 import pytest
 from PIL import Image
@@ -119,3 +120,114 @@ def test_p1_subset_refuses_a_missing_stratum_or_generator_count():
     with pytest.raises(ValueError, match="generators found"):
         subsets.p1_test_subset(rows, [], per_label=5, generators=8)
     assert subsets.p1_test_subset(rows, [], per_label=5, generators=2)["images"] == 20
+
+
+def _p6_world(n=500):
+    rows = []
+    for i in range(n):
+        rows.append(
+            {"uid": f"ds/p2/{i}", "source": "diffseg30k", "role": "test_P2", "label": "edited"}
+        )
+        rows.append(
+            {"uid": f"sid/t/{i}", "source": "sidset", "role": "test_P3b", "label": "edited"}
+        )
+        rows.append(
+            {
+                "uid": f"sid/r/{i}",
+                "source": "sidset",
+                "role": "test_P3b",
+                "label": "real",
+                "sha256": f"sr{i}",
+                "phash": 1000 + i,
+            }
+        )
+    for g in ("adm", "biggan", "glide", "midjourney", "sd14", "sd15", "vqdm", "wukong"):
+        for i in range(40):
+            rows.append(
+                {"uid": f"{g}/gen/{i}", "role": "test_P1", "label": "generated", "generator": g}
+            )
+            rows.append(
+                {
+                    "uid": f"{g}/real/{i}",
+                    "role": "test_P1",
+                    "label": "real",
+                    "generator": g,
+                    "sha256": f"{g}r{i}",
+                    "phash": 0,
+                }
+            )
+    for i in range(20):  # DiffSeg30k unedited validation: too few, so SID-Set real tops up
+        rows.append(
+            {
+                "uid": f"ds/u/{i}",
+                "source": "diffseg30k",
+                "role": "unused_validation",
+                "editors": "",
+                "sha256": f"du{i}",
+            }
+        )
+    rows.append(
+        {"uid": "ds/v/edited", "source": "diffseg30k", "role": "unused_validation", "editors": "1"}
+    )
+    brgen = [
+        f"BR-Gen/Forged/{m}/Background/COCO/{i}_background.png"
+        for m in ("BrushNet", "LaMa", "MAT", "PowerPaint", "SDXL")
+        for i in range(150)
+    ]
+    cham = [
+        {"uid": f"cham/real/{i}", "label": "real", "sha256": f"c{i}", "phash": 0} for i in range(80)
+    ]
+    return rows, brgen, cham
+
+
+def test_p6_mix_nested_subsets_and_training_check():
+    rows, brgen, cham = _p6_world()
+    # one exact match (adm/real/0); the pHash is 64 bits from every test row's
+    train = [{"uid": "t", "sha256": "admr0", "phash": (1 << 64) - 1}]
+    index = subsets.TrainingIndex(train)
+    pools = subsets.p6_pools(rows, dev_uids=["ds/p2/0"], p1_uids=["adm/real/1"])
+    assert "ds/v/edited" not in {r["uid"] for r in pools["diffseg_unedited"]}
+    out = subsets.p6_subset(pools, brgen, cham, index)
+    p6 = out["P6"]
+    assert p6["per_part"] == subsets.P6_PARTS
+    assert p6["images"] == 1500
+    assert p6["real_sources"] == {"genimage": 50, "diffseg_unedited": 50, "chameleon": 50}
+    assert p6["sidset_top_up"] == 30
+    uids = set(p6["uids"])
+    assert not uids & {"ds/p2/0", "adm/real/1", "adm/real/0"}  # dev, P1 subset, training duplicate
+    assert not any("/SDXL/" in u for u in uids)
+    gens = Counter(u.split("/")[0] for u in uids if "/gen/" in u)
+    assert sorted(gens.values()) == [18, 18, 19, 19, 19, 19, 19, 19]
+    assert set(out["P6_mllm"]["uids"]) <= uids
+    assert out["P6_mllm"]["images"] == 500
+    dele = out["P6_deletion"]
+    assert dele["images"] == 300
+    assert set(dele["uids"]) <= uids
+    assert set(dele["per_part"]) == set(subsets.P6_EDITED)
+    assert all(p6["part_of"][u] in subsets.P6_EDITED for u in dele["uids"])
+    assert subsets.p6_subset(pools, brgen, cham, index)["P6"]["sha256"] == p6["sha256"]
+
+
+def test_training_index_refuses_exact_and_near_duplicates():
+    index = subsets.TrainingIndex([{"sha256": "a", "phash": 0b1111}])
+    assert not index.clean({"sha256": "a"})
+    assert not index.clean({"sha256": "b", "phash": 0b1110})  # 1 bit away
+    assert index.clean({"sha256": "b", "phash": (1 << 40) - 1})  # 36 bits away
+
+
+def test_p6_stops_when_a_part_is_short():
+    rows, brgen, cham = _p6_world(n=100)
+    with pytest.raises(ValueError, match="short"):
+        subsets.p6_subset(subsets.p6_pools(rows, [], []), brgen, cham, subsets.TrainingIndex([]))
+
+
+def test_hashing_only_the_chameleon_head_gives_the_same_pick():
+    rows, brgen, cham = _p6_world()
+    # every 3rd Chameleon real image is a training duplicate
+    cham = [{**c, "sha256": "dup" if i % 3 == 0 else c["sha256"]} for i, c in enumerate(cham)]
+    index = subsets.TrainingIndex([{"sha256": "dup"}])
+    pools = subsets.p6_pools(rows, [], [])
+    full = subsets.p6_subset(pools, brgen, cham, index)["P6"]
+    head = subsets.chameleon_candidates(cham, 76)
+    assert subsets.p6_subset(pools, brgen, head, index)["P6"]["sha256"] == full["sha256"]
+    assert full["skipped_near_training"]["chameleon"] > 0

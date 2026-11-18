@@ -25,6 +25,8 @@ P1_SALT = "p1_test_v1"
 P4_SALT = "chameleon_v1"
 P1_PER_LABEL = 1250
 P4_TOTAL = 5000
+LABELS = ("generated", "real")
+P1_GENERATORS = 8
 
 
 def take(
@@ -54,13 +56,24 @@ def p1_test_subset(
     per_label: int = P1_PER_LABEL,
     seed: int = SEED,
     salt: str = P1_SALT,
+    generators: int | None = None,
 ) -> dict[str, Any]:
-    """P1 rows outside the dev split, ``per_label`` real and generated per generator."""
+    """P1 rows outside the dev split, ``per_label`` real and generated per generator.
+
+    Every generator in the P1 rows must keep both labels after the dev split is removed (a
+    missing stratum is an error, not a smaller subset); with ``generators``, their number is
+    checked too (8 for GenImage)."""
     dev = set(dev_uids)
-    strata: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    strata: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    gens: set[str] = set()
     for r in manifest_rows:
-        if r.get("role") == "test_P1" and r.get("split") == "test" and r["uid"] not in dev:
-            strata[(r["generator"], r["label"])].append(r)
+        if r.get("role") == "test_P1" and r.get("split") == "test":
+            gens.add(r["generator"])
+            if r["uid"] not in dev:
+                strata.setdefault((r["generator"], r["label"]), []).append(r)
+    missing = [f"{g}/{lab}" for g in sorted(gens) for lab in LABELS if (g, lab) not in strata]
+    if missing or (generators is not None and len(gens) != generators):
+        raise ValueError(f"P1 strata missing: {missing}; generators found: {sorted(gens)}")
     short = {f"{g}/{lab}": len(rs) for (g, lab), rs in strata.items() if len(rs) < per_label}
     if short:
         raise ValueError(f"strata with fewer than {per_label} images: {short}")

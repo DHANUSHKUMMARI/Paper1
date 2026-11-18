@@ -49,7 +49,11 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
   - Cell 4 reuses the file only when it is intact and its hash matches; otherwise it stops and asks.
   - A new test covers an altered uid list.
 - **SonarCloud S7519 (minor):** `dict.fromkeys` in `balanced_counts`.
-- **Rerun:** ruff clean; 451 passed; the notebook 12 dry run passed.
+- **Codex P2 (second finding):** a whole missing generator/label stratum was not caught, so P1 could have been frozen below 20,000.
+  - `p1_test_subset` now requires both labels for every generator in the P1 rows after the dev split is removed.
+  - With `generators=8` (the real run), it also checks the generator count.
+  - A new test covers a removed stratum and a wrong count.
+- **Rerun:** ruff clean; 452 passed; the notebook 12 dry run passed.
 
 ### Not run here
 - The real `Chameleon.zip` (Drive only) and the real manifest: notebook 12 on a Colab CPU runtime.

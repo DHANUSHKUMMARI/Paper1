@@ -109,3 +109,13 @@ def test_a_stored_subset_with_an_edited_uid_list_is_not_intact():
     s = subsets.p4_subset(items, total=6)
     assert subsets.intact(s)
     assert not subsets.intact({**s, "uids": s["uids"][:-1]})
+
+
+def test_p1_subset_refuses_a_missing_stratum_or_generator_count():
+    rows = _p1_rows(10)
+    dev = [r["uid"] for r in rows if r["uid"].startswith("adm/real/")]  # the whole stratum
+    with pytest.raises(ValueError, match="adm/real"):
+        subsets.p1_test_subset(rows, dev, per_label=5)
+    with pytest.raises(ValueError, match="generators found"):
+        subsets.p1_test_subset(rows, [], per_label=5, generators=8)
+    assert subsets.p1_test_subset(rows, [], per_label=5, generators=2)["images"] == 20

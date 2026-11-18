@@ -194,13 +194,15 @@ def test_p6_mix_nested_subsets_and_training_check():
     assert p6["real_sources"] == {"genimage": 50, "diffseg_unedited": 50, "chameleon": 50}
     assert p6["sidset_top_up"] == 30
     uids = set(p6["uids"])
-    assert "ds/p2/0" not in uids and "adm/real/1" not in uids and "adm/real/0" not in uids
+    assert not uids & {"ds/p2/0", "adm/real/1", "adm/real/0"}  # dev, P1 subset, training duplicate
     assert not any("/SDXL/" in u for u in uids)
     gens = Counter(u.split("/")[0] for u in uids if "/gen/" in u)
     assert sorted(gens.values()) == [18, 18, 19, 19, 19, 19, 19, 19]
-    assert set(out["P6_mllm"]["uids"]) <= uids and out["P6_mllm"]["images"] == 500
+    assert set(out["P6_mllm"]["uids"]) <= uids
+    assert out["P6_mllm"]["images"] == 500
     dele = out["P6_deletion"]
-    assert dele["images"] == 300 and set(dele["uids"]) <= uids
+    assert dele["images"] == 300
+    assert set(dele["uids"]) <= uids
     assert set(dele["per_part"]) == set(subsets.P6_EDITED)
     assert all(p6["part_of"][u] in subsets.P6_EDITED for u in dele["uids"])
     assert subsets.p6_subset(pools, brgen, cham, index)["P6"]["sha256"] == p6["sha256"]

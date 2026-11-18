@@ -212,19 +212,26 @@ def p6_pools(
     dev, p1 = set(dev_uids), set(p1_uids)
     pools: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for r in manifest_rows:
-        src, role, label, uid = r.get("source"), r.get("role"), r.get("label"), r["uid"]
-        if role == "test_P2" and uid not in dev:
-            pools["diffseg_heldout"].append(r)
-        elif src == "sidset" and role == "test_P3b":
-            pools["sidset_tampered" if label == "edited" else f"sidset_{label}"].append(r)
-        elif role == "test_P1" and uid not in dev:
-            if label == "generated":
-                pools["generated"].append(r)
-            elif uid not in p1:
-                pools["genimage_real"].append(r)
-        elif src == "diffseg30k" and role == "unused_validation" and not r.get("editors"):
-            pools["diffseg_unedited"].append(r)
+        pool = _p6_pool(r, dev, p1)
+        if pool:
+            pools[pool].append(r)
     return dict(pools)
+
+
+def _p6_pool(r: Mapping[str, Any], dev: set[str], p1: set[str]) -> str | None:
+    """The P6 pool of one manifest row (None: not a P6 candidate)."""
+    src, role, label, uid = r.get("source"), r.get("role"), r.get("label"), r["uid"]
+    if src == "sidset" and role == "test_P3b":
+        return "sidset_tampered" if label == "edited" else f"sidset_{label}"
+    if src == "diffseg30k" and role == "unused_validation":
+        return None if r.get("editors") else "diffseg_unedited"
+    if uid in dev or role not in ("test_P1", "test_P2"):
+        return None
+    if role == "test_P2":
+        return "diffseg_heldout"
+    if label == "generated":
+        return "generated"
+    return None if uid in p1 else "genimage_real"
 
 
 def even_over(rows: Sequence[Mapping[str, Any]], key: str, n: int, seed: int, salt: str) -> list:

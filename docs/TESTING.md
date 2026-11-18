@@ -37,7 +37,7 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
   - G1 and RF are recomputed from those rows, so they are identical;
   - the report records `p1_source` (file, its `utc`, its commit, `p1_rerun: false`);
   - the unified P1 row and the false-"edited" rate are left out. The saved ones belong to the CP3 unified model.
-- **Guard `cp4.check_run_settings`:** a real run with `P2_ENABLED = True` stops unless `RUN_EXPERIMENT` names the fixed model.
+- **Guard `cp4.check_run_settings`:** a real run with `P2_ENABLED = True` stops unless `RUN_EXPERIMENT` is exactly `'eviground_ctx'` (`cp4.FIXED_EXPERIMENT`). Review fix, Codex P2: the first version accepted any non-empty value, so `'eviground'` (the CP3 run) would have passed.
 - **`cp4.p1_from_report`:** returns the saved P1 table, the probes and the false-edited rates. It raises if a detection or detection-probe version is missing.
 
 ### Checks (sandbox, Python 3.13.18, CPU)
@@ -51,7 +51,7 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
   2. then a P2-only pass with `P1_ENABLED = False` on a `_ctx` copy of the model, writing `cp4_generalization_gate_seed42_ctx.json`.
   - Asserted: `p1_source` points to the first file; G1 and RF are equal; only the detection rows are kept; P2 is scored; there are no P1 statistics. Passed.
 - `ruff check src tests`: clean. `ruff format --check src tests`: 88 files already formatted.
-- `python -m pytest -p no:warnings`: 438 passed.
+- `python -m pytest -p no:warnings`: 438 passed (the guard test now also rejects `'eviground'`).
 - `python -m eviground.utils.repo_audit --history`: ok.
 - `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 08 and 09: 2 passed. Notebook 08 is unchanged.
 

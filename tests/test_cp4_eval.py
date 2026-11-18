@@ -403,6 +403,8 @@ def test_p1_reuse_needs_both_versions():
 def test_p2_on_the_cp3_model_is_refused_in_a_real_run():
     with pytest.raises(cp4.RunSettingsError):
         cp4.check_run_settings(True, None, dry=False)
+    with pytest.raises(cp4.RunSettingsError):
+        cp4.check_run_settings(True, "eviground", dry=False)
     cp4.check_run_settings(True, "eviground_ctx", dry=False)
     cp4.check_run_settings(True, None, dry=True)
     cp4.check_run_settings(False, None, dry=False)

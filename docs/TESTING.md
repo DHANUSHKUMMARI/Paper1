@@ -3,6 +3,54 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## PR N — lean GPU sessions: pre-flight, compute record, runtime release — 2026-11-18
+
+**Why:** compute is the binding constraint, with 45 CU left (Dhanush, 18 Nov). Every GPU notebook now:
+1. checks and prints the run before any staging;
+2. writes its own compute record;
+3. releases the Colab runtime as its last step.
+
+**New `src/eviground/utils/session.py`:**
+- **`preflight(what, paths, est_cu, cu_left, expect)`**
+  - prints the run's settings, the estimated CU and the balance after it;
+  - stops (`PreflightError`) when an input is missing, a setting differs from `expect`, or the estimate exceeds `cu_left`.
+- **`finish(folder, t0, cu_per_hour, name, extra)`** writes the session's compute record: wall hours × rate, the commit and the GPU.
+- **`release(dry)`** calls `google.colab.runtime.unassign()`. It does nothing outside Colab and in the dry run, and says so.
+
+**Notebooks 06, 08, 09 and 11** (via their generators) get:
+- **a cell 2b, pre-flight.** It sets `CU_LEFT = None` (enter the Colab balance to enforce it) and `EST_CU`, both estimated from measured runs:
+  - 06: 5.9 unified / 3.0 detection;
+  - 08: 1.6;
+  - 09: 2.8 with P1, 0.3 P2-only;
+  - 11: 5.2.
+- **a last cell** that writes the session's compute record, then releases the runtime:
+  - `compute_session.json` in the run folder for 06 and 11 (the trainer's `compute.json` still holds GPU training hours);
+  - `runs/cp4/compute_*.json` for 08 and 09.
+- **`FIGURES_ONLY` instructions** now say to run cells 1, 2 and the last two cells.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- **7 new tests in `tests/test_session.py`:**
+  - the printout and the balance after the run;
+  - the three refusals;
+  - the `compute.json` fields;
+  - `release` in the dry run, outside Colab, and with a fake `google.colab` (`unassign` called once).
+- `ruff check src tests`: clean. `ruff format --check src tests`: 90 files already formatted.
+- `python -m pytest -p no:warnings`: **445 passed**.
+- `python -m eviground.utils.repo_audit --history`: ok.
+- **`EVIGROUND_DRY_RUN=1 pytest --nbmake`** on notebooks 06, 07, 08, 09, 10 and 11: all passed.
+  - In 06, 08, 09 and 11 the release cell asserts that it was reached (`'dry'`).
+- **The one-off P2-only dry run of notebook 09** (`P1_ENABLED = False`, a `_ctx` model) was run again with the new cells: passed.
+
+### Review fixes (PR #44)
+- **SonarCloud S3358 ×3 (major):** nested conditional expressions in the pre-flight cells of 06 and 09. They are now plain `if` statements.
+- **Codex P2:** notebook 09's pre-flight now also requires `runs/checkpoints/cp1/manifest_cp1.csv.gz` and `cp1_data_integrity.json`, which cell 4 reads. A missing CP1 file now stops the run before staging, not after.
+  - Checked by running the cell's code outside the dry run, with both files absent: refused, naming both.
+- **Rerun:** ruff clean; 445 passed; the dry runs of 06, 08, 09 and 11 passed; the P2-only dry run of 09 passed.
+- **SonarCloud S1192 (critical), from the fix above:** notebook 09 now repeated `'manifest_cp1.csv.gz'` 3 times. It is now the constant `CP1_MANIFEST`, set in cell 2. Rerun: the dry runs of 08 and 09 and the P2-only dry run passed; 445 passed.
+
+### Not run here
+- `runtime.unassign()` on a real Colab runtime. It is checked only against a fake module.
+
 ## CP4 PR L — a P2-only gate run, and a guard after a run on the wrong model — 2026-11-18
 
 **What happened.** Notebook 09 ran on 18 Nov with `P2_ENABLED = True`, but `RUN_EXPERIMENT` was left at `None` (commit `33707a3`, L4, 2.232 h, 4.33 CU).

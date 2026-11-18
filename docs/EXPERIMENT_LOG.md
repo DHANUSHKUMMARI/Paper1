@@ -48,8 +48,17 @@ Training runs so far (seed 42, notebook 06, commit `f2d0e1c`); the numbers per c
 The CP4 fix run (notebook 11, `data.context_crop_share=0.3333`, commit `ff36b71`):
 `Paper 1/runs/eviground_ctx_unified_seed42/` (A1 record reused from CP3).
 
-Test-set evaluation so far: only the CP4 development split of P1 (notebook 09, 17 Nov 2026), for the
-gate. P2 is not scored yet.
+The extra seeds of the final configuration (notebook 13, commit `911e680`, 18 Nov 2026; A1 record reused from CP3);
+CP3 health per seed in `docs/CHECKPOINTS.md`:
+
+- `Paper 1/runs/eviground_ctx_unified_seed123/`;
+- `Paper 1/runs/eviground_ctx_unified_seed2026/`;
+- the health files `training_health_unified_ctx_seed{123,2026}.json` and the session record `compute_unified_seeds.json`
+  in `Paper 1/runs/checkpoints/`.
+
+Test-set evaluation so far: only the CP4 development splits, for the gate. P1 dev was scored on the CP3 models (notebook 09,
+17 Nov 2026), and P2 dev on the fixed unified model (G2, 18 Nov 2026; and once on the CP3 unified model by mistake, as
+recorded above).
 
 ### Training shards (Milestone 3), 15 Nov 2026
 

@@ -1,7 +1,9 @@
 # Testing log
 
-Commands and results for every milestone, newest first. Everything here runs on CPU with
-synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
+Commands and results for every milestone, newest first. The local checks (lint, tests, notebook dry
+runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
+Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
+are read from the result files the notebooks write to Drive.
 
 ## Notebook 13 run: unified seeds 123 and 2026 (Colab L4) — 2026-11-18
 

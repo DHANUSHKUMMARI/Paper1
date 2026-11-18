@@ -74,3 +74,8 @@ jobs:
         env:
           EVIGROUND_DRY_RUN: "1"
         run: pytest -q --nbmake notebooks/12_eval_subsets.ipynb
+
+      - name: Notebook 13 dry run (unified seeds 123 and 2026)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: pytest -q --nbmake notebooks/13_unified_seeds.ipynb

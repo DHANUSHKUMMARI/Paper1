@@ -3,6 +3,40 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## PR P — notebook 13: the unified model, seeds 123 and 2026, in one L4 session — 2026-11-18
+
+**Notebook 12 ran first** (Colab CPU, 0.0977 h, **0.008 CU**). Results from its printout and `eval_subsets_record.json`:
+- **`Chameleon.zip`:**
+  - 2,683,359,341 bytes; 26,033 members, all images;
+  - real 14,863, generated 11,170;
+  - unpacked to the local disk, 0 unreadable, 0 unlabelled;
+  - copy 60.6 s, unpack 47.6 s, open 135.6 s.
+- **P4:** 2,500 real + 2,500 generated (`balanced`). SHA-256 `50167dd2d6df9dc46ade467822f27449c9dcef46bd316810bffb7fe67b5a2cb3`.
+- **P1:** 20,000 images, 1,250 per generator and label in all 16 strata (ADM, for example, has 4,800 per label available outside the dev split). SHA-256 `881098bb04db866dc879478551f86c7bc57fcd643cad2bfb06d54c55b93d6dad`.
+- The runtime was released by the notebook.
+
+**Notebook 13 `13_unified_seeds.ipynb`** (generator, built from notebook 11's), for Dhanush's item 4: unified seeds 123 and 2026 first, both in one session.
+- **Configuration:** the final configuration (`data.context_crop_share = 0.3333`, experiment `eviground_ctx`), CP3's schedule, CP3's A1 record reused (A1 checks the pipeline, not the seed).
+- **Pre-flight:** an estimate of 7.5 CU. It requires the A1 record and seed 42's run of the final configuration.
+- **Shards:** staged once.
+- **Seeds:** one after the other. A seed whose `summary.json` exists is skipped on a rerun; a seed in progress resumes (the trainer checks the seed and the context share).
+- **Per seed:**
+  - curves;
+  - the CP3 checks;
+  - a comparison with seed 42 on validation crops (`fixcompare.compare_runs`, each run at its best epoch);
+  - the result file `training_health_unified_ctx_seed{seed}.json`.
+- **Last cell:** writes `compute_unified_seeds.json` (with each run's `compute.json` CU), then releases the runtime.
+- **CI:** a step for the notebook 13 dry run.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- **`EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/13_unified_seeds.ipynb`:** passed (fake world, tiny model, both seeds trained, both result files written, release dry).
+- **One-off rerun check** (`/tmp/claude-0/-home-user-Paper1/d56e2aef-4c2a-5b25-a13a-a24272263c08/scratchpad/nb13chk/run.py`, not committed): cells 5 and 7 run again in the same kernel, and both seeds are reported as "finished earlier, skipped".
+- `ruff check src tests`: clean. `ruff format --check src tests`: 93 files already formatted.
+- `python -m pytest -p no:warnings`: 452 passed. `python -m eviground.utils.repo_audit --history`: ok.
+
+### Not run here
+- The L4 session itself: about 7.5 CU (estimated), only after Dhanush's go-ahead.
+
 ## PR O — frozen evaluation subsets: Chameleon (P4) and P1, notebook 12 (CPU) — 2026-11-18
 
 **Why (Dhanush, 18 Nov):**

@@ -33,6 +33,7 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-17 | CP4 fix: unified seed 42 with context crops (`11`, commit `ff36b71`): 20 epochs | L4 | 3.056 (session; 2.0126 GPU training hours) | 5.20 session, of which training 3.421 (1.7 CU/h) | not recorded | Health FAIL on A2 only (real-crop marked area 0.010302 > 0.01); best epoch 15: macro AUC 0.997864, mask F1 0.758295 |
 | 2026-11-17 | Localization diagnosis, fixed unified (`08`, `RUN_EXPERIMENT='eviground_ctx'`, commit `ff36b71`) | L4 | 0.652 | 1.26 (1.94 CU/h) | not recorded | Whole-image edited IoU 0.4335; over-marking 21.5% (AI bases 26.3%); misses 22.8%; real images called edited 10.5% |
 | 2026-11-18 | CP4 gate with P2 on, **by mistake on the CP3 unified model** (`09`, `RUN_EXPERIMENT` left `None`, commit `33707a3`) | L4 | 2.232 | 4.33 (1.94 CU/h) | not recorded | Not the gate run (G2 is gated on the fixed model). CP3 unified on P2 dev: edited IoU 0.4904; G1/RF identical to 17 Nov |
+| 2026-11-18 | **CP4 G2 gate**, fixed unified, P2 only (`09`, `RUN_EXPERIMENT='eviground_ctx'`, `P1_ENABLED=False`, commit `ff1b14d`) | L4 | 0.370 | 0.72 (1.94 CU/h) | about 44.3 (45 reported by Dhanush before the run, minus 0.72) | **G2 FAIL**: edited IoU 0.5101 (real base 0.7471; held-out pixels 0.4588). CP4 FAIL (G1, G2); RF PASS |
 
 ## Runs
 

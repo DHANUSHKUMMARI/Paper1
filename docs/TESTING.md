@@ -3,6 +3,26 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## PR M — the CP4 record — 2026-11-18
+
+**Docs only:** `docs/CHECKPOINTS.md` (the CP4 entry and its status row) and `docs/EXPERIMENT_LOG.md` (the G2 ledger row).
+
+- **Every number comes from the result files on Drive:**
+  - `cp4_generalization_gate_seed42.json`;
+  - `cp4_generalization_gate_seed42_ctx.json`;
+  - `localization_diagnosis_seed42{,_ctx}.json`;
+  - `cp4_fix_training_health_unified_seed42.json`;
+  - `cp4_fix_sampler_check.json` (from notebook 10's printout).
+- **The G2 gate run** (notebook 09, `RUN_EXPERIMENT = 'eviground_ctx'`, `P1_ENABLED = False`, `P2_ENABLED = True`,
+  commit `ff1b14d`, 0.370 h, 0.72 CU):
+  - `p1_source` names the saved CP3 file (`p1_rerun: false`), and G1/RF equal it;
+  - G2: edited IoU 0.5101, FAIL;
+  - the patch-probe numbers equal the mistaken run's, as expected: the probe is trained once and cached.
+- **CP4 compute in all:** 15.84 CU, summed from the seven runs in the CP4 entry's table.
+
+### Checks
+- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: 445 passed. `python -m eviground.utils.repo_audit --history`: ok.
+
 ## PR N — lean GPU sessions: pre-flight, compute record, runtime release — 2026-11-18
 
 **Why:** compute is the binding constraint, with 45 CU left (Dhanush, 18 Nov). Every GPU notebook now:

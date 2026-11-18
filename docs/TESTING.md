@@ -34,6 +34,11 @@ synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 - `ruff check src tests`: clean. `ruff format --check src tests`: 93 files already formatted.
 - `python -m pytest -p no:warnings`: 452 passed. `python -m eviground.utils.repo_audit --history`: ok.
 
+### Review fixes (PR #47)
+- **SonarCloud S1192 (critical):** the `'summary.json'` literal was repeated. It is now the constant `SUMMARY`.
+- **SonarCloud S3776 (critical, complexity 21 against 15) and S117 (minor):** `plot_curves(RUN)` is split into `_loss_axis`, `_auc_axis`, `_mask_axis` and `_marks_axis`, with the parameter renamed `run`.
+- **Rerun:** the notebook 13 dry run passed.
+
 ### Not run here
 - The L4 session itself: about 7.5 CU (estimated), only after Dhanush's go-ahead.
 

@@ -3,6 +3,58 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## CP4 PR L — a P2-only gate run, and a guard after a run on the wrong model — 2026-11-18
+
+**What happened.** Notebook 09 ran on 18 Nov with `P2_ENABLED = True`, but `RUN_EXPERIMENT` was left at `None` (commit `33707a3`, L4, 2.232 h, 4.33 CU).
+
+- **It scored P2 on the CP3 unified model.** Dhanush had chosen the fixed model for G2 on 17 Nov, from validation data only, before any P2 number existed.
+- **Evidence:**
+  - the unified model's P1 raw mean is 0.8809895833, identical to the CP3 run;
+  - the file was written without the `_ctx` suffix, so it replaced the 17 Nov `cp4_generalization_gate_seed42.json`. Its G1 and RF values are identical.
+- **These numbers are recorded as a mistaken run, not as the gate.** G2 is still gated once, on the fixed model (Dhanush, 18 Nov).
+
+**CP3 unified model on P2 dev** (486 images; whole images, 0.5 threshold):
+
+| | model | patch probe |
+|---|---|---|
+| edited IoU (G2 metric) | **0.4904** (bar 0.80) | 0.1392 |
+| two-class mIoU | 0.5362 | 0.3761 |
+| over-marking, share of pixels | 0.1948 | 0.0331 |
+| misses, share of edited pixels | 0.2648 | 0.8489 |
+| pixel AUC | 0.7943 | 0.6530 |
+| mean boundary F1 | 0.2306 | 0.0624 |
+| edited images called edited | 0.9794 | 0.9671 |
+| held-out-editor pixels only: edited IoU | 0.4162 | 0.1355 |
+| real base (257 images): edited IoU | 0.7518 | 0.1574 |
+| real base, held-out-editor pixels: edited IoU | 0.6779 | 0.1287 |
+
+**Changes:**
+
+- **Notebook 09 (via its generator), new setting `P1_ENABLED` (default `True`).** With `False`:
+  - P1 is not staged or scored;
+  - only the unified model and its probe are loaded;
+  - the P1 table of the detection model and its probe comes from the saved CP3 gate file;
+  - G1 and RF are recomputed from those rows, so they are identical;
+  - the report records `p1_source` (file, its `utc`, its commit, `p1_rerun: false`);
+  - the unified P1 row and the false-"edited" rate are left out. The saved ones belong to the CP3 unified model.
+- **Guard `cp4.check_run_settings`:** a real run with `P2_ENABLED = True` stops unless `RUN_EXPERIMENT` is exactly `'eviground_ctx'` (`cp4.FIXED_EXPERIMENT`). Review fix, Codex P2: the first version accepted any non-empty value, so `'eviground'` (the CP3 run) would have passed.
+- **`cp4.p1_from_report`:** returns the saved P1 table, the probes and the false-edited rates. It raises if a detection or detection-probe version is missing.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- **3 new tests in `tests/test_cp4_eval.py`:**
+  - a reused P1 table gives the same G1 and RF as the saved checks;
+  - a missing harmonized row raises;
+  - the guard refuses P2 on the CP3 model in a real run, and allows it with the fixed model or in a dry run.
+- **One-off dry run of notebook 09** (fake world, tiny models, script
+  `/tmp/claude-0/-home-user-Paper1/d56e2aef-4c2a-5b25-a13a-a24272263c08/scratchpad/p1off/run.py`, not committed):
+  1. a full pass with P2 on;
+  2. then a P2-only pass with `P1_ENABLED = False` on a `_ctx` copy of the model, writing `cp4_generalization_gate_seed42_ctx.json`.
+  - Asserted: `p1_source` points to the first file; G1 and RF are equal; only the detection rows are kept; P2 is scored; there are no P1 statistics. Passed.
+- `ruff check src tests`: clean. `ruff format --check src tests`: 88 files already formatted.
+- `python -m pytest -p no:warnings`: 438 passed (the guard test now also rejects `'eviground'`).
+- `python -m eviground.utils.repo_audit --history`: ok.
+- `EVIGROUND_DRY_RUN=1 pytest --nbmake` on notebooks 08 and 09: 2 passed. Notebook 08 is unchanged.
+
 ## CP4 PR K — notebook 09 restored after a Colab save; the CP4 runs recorded — 2026-11-17
 
 **Why:** on main, `ff36b71` "Created using Colab" (17:55 UTC) saved notebook 09 with its outputs.

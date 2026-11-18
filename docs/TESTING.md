@@ -3,6 +3,61 @@
 Commands and results for every milestone, newest first. Everything here runs on CPU with
 synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
 
+## PR O — frozen evaluation subsets: Chameleon (P4) and P1, notebook 12 (CPU) — 2026-11-18
+
+**Why (Dhanush, 18 Nov):**
+- **Chameleon was incomplete:** `05_Chameleon` held only 1,412 loose images (1,280 real, 132 fake, from the 13 Nov data probe). The authors' full `Chameleon.zip` (2.68 GB) is now a Drive shortcut in that folder.
+- **P4:** a seeded, class-balanced 5,000 subset (2,500 + 2,500, or stratified if a class is short), frozen by SHA-256 before any scoring. Seed 42 only.
+- **P1:** 1,250 real + 1,250 generated per generator from the 80% outside the CP4 dev split (decided the same day).
+
+**New code:**
+- **`src/eviground/data/chameleon.py`:**
+  - `label_of`: `0_real` / `real` and `1_fake` / `fake` path components;
+  - `is_image`: skips `__MACOSX` and dot files;
+  - `inspect_zip`: size, `testzip` CRC check of every member, images per class. It stops on a missing or unreadable archive, or an image count more than 10% from about 26,000;
+  - `unpack`: the whole archive, to the local disk;
+  - `unreadable`: PIL `verify` and `load` of every image;
+  - `items`.
+- **`src/eviground/eval/subsets.py`:**
+  - `p1_test_subset`: per generator and label, outside the dev split; stops when a stratum is short;
+  - `p4_subset` with `balanced_counts`: half each, else proportional, with largest remainders;
+  - both use the seeded SHA-256 rank of `devsplit` and `file_list_sha256`.
+- **Notebook 12 `12_eval_subsets.ipynb`** (generator), CPU, estimated 0.1 CU:
+  1. pre-flight (zip shortcut, dev split, CP1 manifest);
+  2. copies the zip to the local disk (one read through Drive), checks it, unpacks it in full locally and opens every image. It stops and asks on any failure, unreadable image or unlabelled image;
+  3. freezes `runs/checkpoints/eval_subsets.json`. An existing file is reused only when both hashes match; otherwise it stops;
+  4. writes `eval_subsets_record.json`: counts per class available and frozen, the zip check, timings, compute;
+  5. writes the compute record and releases the runtime.
+- **CI:** a step for the notebook 12 dry run.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- **5 new tests in `tests/test_eval_subsets.py`:**
+  - labels from paths;
+  - zip check, unpack and read on a fake archive, including one corrupted image found;
+  - stops on a missing archive, a non-zip and a wrong count;
+  - P4 balanced (10/10), proportional (49 → 20 + 29) and deterministic under reordering;
+  - P1 excludes the dev split, takes `per_label`, has a stable hash, and stops on a short stratum.
+- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: 450 passed. `python -m eviground.utils.repo_audit --history`: ok.
+- **`EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/12_eval_subsets.ipynb`:** passed.
+  - Fake zip of 40 images (24 real, 16 fake) → P4 10 + 10.
+  - Fake manifest (2 generators × 5 per label, 1 per stratum in the dev split) → P1 12 images.
+  - Then release (dry).
+
+### Review fixes (PR #46)
+- **Codex P2:** on a rerun, the frozen file was reused when its stored hash equalled the new one, without recomputing that hash from the stored uid list.
+  - New `subsets.intact()` recomputes the hash and image count.
+  - Cell 4 reuses the file only when it is intact and its hash matches; otherwise it stops and asks.
+  - A new test covers an altered uid list.
+- **SonarCloud S7519 (minor):** `dict.fromkeys` in `balanced_counts`.
+- **Codex P2 (second finding):** a whole missing generator/label stratum was not caught, so P1 could have been frozen below 20,000.
+  - `p1_test_subset` now requires both labels for every generator in the P1 rows after the dev split is removed.
+  - With `generators=8` (the real run), it also checks the generator count.
+  - A new test covers a removed stratum and a wrong count.
+- **Rerun:** ruff clean; 452 passed; the notebook 12 dry run passed.
+
+### Not run here
+- The real `Chameleon.zip` (Drive only) and the real manifest: notebook 12 on a Colab CPU runtime.
+
 ## PR M — the CP4 record — 2026-11-18
 
 **Docs only:** `docs/CHECKPOINTS.md` (the CP4 entry and its status row) and `docs/EXPERIMENT_LOG.md` (the G2 ledger row).

@@ -69,3 +69,8 @@ jobs:
         env:
           EVIGROUND_DRY_RUN: "1"
         run: pytest -q --nbmake notebooks/08_localization_diagnosis.ipynb notebooks/09_cp4_gate.ipynb
+
+      - name: Notebook 12 dry run (frozen evaluation subsets)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: pytest -q --nbmake notebooks/12_eval_subsets.ipynb

@@ -29,8 +29,14 @@ Code and tests only, on CPU with the tiny model and hand-made maps; no real imag
 - `tests/test_eval_subsets.py`: 11 passed (4 new: the P6 mix, real-source split and SID-Set top-up, nested subsets, deletion edited only, deterministic hash; exact and near duplicates refused; a short part stops; hashing only the Chameleon head gives the same pick). One fixture was wrong at first (its training pHash sat one bit from the test rows'), and the code refused those rows correctly.
 - **`EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/12b_p6_subsets.ipynb`:** passed. Fake world: P6 1,500 (400/400/400/150/150); real 50/50/50 with 20 topped up from SID-Set; `P6_mllm` 134/133/133/50/50; `P6_deletion` 100/100/100; 400 BR-Gen files extracted with 7z, 0 problems.
 - Dry runs of notebooks 12 and 13: passed.
-- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: 468 passed. `python -m eviground.utils.repo_audit --history`: ok.
+- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: 468 passed (470 after the review fixes). `python -m eviground.utils.repo_audit --history`: ok.
 - **Not run here:** the real data (the manifest, Chameleon, BR-Gen) and anything on the real models; Grad-CAM++ speed on an L4.
+- **Review fixes (SonarCloud and Codex on `08d6cff`):**
+  - S3776 (critical): `p6_pools` classifies each row in a helper, `_p6_pool`; the rules are unchanged. S9073: the composite test assertions are split.
+  - Codex P1: the Grad-CAM++ denominator used the sum over positions of A·g³. It is now 2g² + (sum over positions of A)·g³, in `channel_weights`, tested against a loop written from the formula.
+  - Codex P2: when fewer than 10% of pixels carry attribution, the 90th-percentile cutoff is 0, and the A regions took in the zero background. Only positive pixels are kept now (test: a 100-pixel square gives one 100-pixel region).
+  - Codex P2: notebook 12b decodes each BR-Gen image and mask (`load()`), not only the header, before recording its hash.
+  - After the fixes: `tests/test_explain.py` 14 passed; full suite below.
 
 ## PR P — notebook 13: the unified model, seeds 123 and 2026, in one L4 session — 2026-11-18
 

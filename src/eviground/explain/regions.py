@@ -112,7 +112,7 @@ def top_attribution_regions(
     if attr.max() <= 0:
         return []
     cut = np.quantile(attr, 1.0 - top)
-    comps = components(attr >= cut, min_frac)
+    comps = components((attr >= cut) & (attr > 0), min_frac)  # a zero cutoff keeps no background
     comps.sort(key=lambda m: -attr[m].sum())
     return comps[:k]
 

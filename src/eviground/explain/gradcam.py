@@ -26,6 +26,16 @@ def _grid(n_tokens: int) -> int:
     return g
 
 
+def channel_weights(a: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    """Grad-CAM++ channel weights (B, d) from activations and gradients (B, N, d), N positions:
+    alpha = g^2 / (2 g^2 + (sum over positions of A) * g^3), w = sum over positions of
+    alpha * relu(g)."""
+    g2, g3 = g.pow(2), g.pow(3)
+    denom = 2 * g2 + a.sum(dim=1, keepdim=True) * g3
+    alpha = g2 / torch.where(denom != 0, denom, torch.ones_like(denom))
+    return (alpha * F.relu(g)).sum(dim=1)
+
+
 def gradcam_pp(model: torch.nn.Module, images: torch.Tensor, cls: int) -> torch.Tensor:
     """Raw Grad-CAM++ maps (B, H, W) >= 0 for class ``cls`` on the fused tokens Z."""
     b, _, h, w = images.shape
@@ -36,11 +46,7 @@ def gradcam_pp(model: torch.nn.Module, images: torch.Tensor, cls: int) -> torch.
         model.zero_grad(set_to_none=True)
         out["logits"][:, cls].sum().backward()
         a, g = z.detach(), z.grad.detach()  # (B, N, d)
-    g2, g3 = g.pow(2), g.pow(3)
-    denom = 2 * g2 + (a * g3).sum(dim=1, keepdim=True)
-    weights = g2 / torch.where(denom != 0, denom, torch.ones_like(denom))
-    w_k = (weights * F.relu(g)).sum(dim=1)  # (B, d)
-    cam = F.relu((a * w_k[:, None, :]).sum(dim=-1))  # (B, N)
+    cam = F.relu((a * channel_weights(a, g)[:, None, :]).sum(dim=-1))  # (B, N)
     grid = _grid(cam.shape[1])
     cam = cam.reshape(b, 1, grid, grid)
     return F.interpolate(cam, size=(h, w), mode="bilinear", align_corners=False)[:, 0]

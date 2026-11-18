@@ -34,6 +34,14 @@ def test_components_drop_tiny_ones_and_report_boxes():
     assert stats["attr_mass"] == pytest.approx(256 / 257)
 
 
+def test_a_sparse_map_gives_regions_without_the_zero_background():
+    attr = np.zeros((64, 64))
+    attr[10:20, 10:20] = 1.0  # 2.4% of the pixels: the 90th percentile is 0
+    comps = regions.top_attribution_regions(attr)
+    assert len(comps) == 1
+    assert comps[0].sum() == 100
+
+
 def test_rle_round_trip():
     for m in (_square(), ~_square(), np.zeros((5, 7), bool), np.ones((3, 3), bool)):
         assert (regions.rle_decode(regions.rle_encode(m)) == m).all()
@@ -147,6 +155,22 @@ def model():
     m = build_model(load_config("debug").model)
     m.eval()
     return m
+
+
+def test_channel_weights_follow_the_gradcam_pp_formula():
+    from eviground.explain import gradcam
+
+    gen = torch.Generator().manual_seed(0)
+    a, g = torch.rand(2, 5, 3, generator=gen), torch.randn(2, 5, 3, generator=gen)
+    want = torch.zeros(2, 3)
+    for b in range(2):
+        for k in range(3):
+            total = a[b, :, k].sum()
+            for i in range(5):
+                gi = g[b, i, k]
+                alpha = gi**2 / (2 * gi**2 + total * gi**3)
+                want[b, k] += alpha * torch.relu(gi)
+    assert torch.allclose(gradcam.channel_weights(a, g), want, atol=1e-6)
 
 
 def test_gradcam_is_raw_and_non_negative(model):

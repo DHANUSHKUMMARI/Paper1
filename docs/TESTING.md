@@ -5,6 +5,35 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 12b run: frozen P6 subsets (Colab CPU) — 2026-11-18
+
+Run on main at `a843a74`, finished 23:29 UTC; wall 0.182 h, **0.015 CU** at 0.08 CU/h (estimate 0.05). Results are read from Drive:
+`p6_subsets_record.json`, `compute_p6_subsets.json` and the new keys of `eval_subsets.json` (P1 and P4 untouched).
+
+| Subset | Images | Per part (DiffSeg30k held-out / SID-Set tampered / BR-Gen / generated / real) | SHA-256 |
+|---|---|---|---|
+| P6 | 1,500 | 400 / 400 / 400 / 150 / 150 | `c12ba888637b8f6fce0f4ac9f67d180823062f31d39c01ad7736b4a55df17415` |
+| P6_mllm | 500 | 134 / 133 / 133 / 50 / 50 | `1aa9bb7e9096e0b8572e341f382addab98fb40c9099715c8b069c0005442976e` |
+| P6_deletion | 300 | 100 / 100 / 100 / – / – | `c42ed65cea118494de2f89319dc8b2a1f617f9d47a4d16f643dedf908b267ab3` |
+
+- **Pools:**
+  - DiffSeg30k held-out 1,948;
+  - SID-Set tampered / real / generated 2,000 each;
+  - P1 generated 40,000;
+  - GenImage real outside the dev split and P1 30,000;
+  - training pool 121,229 rows.
+- **The 150 real images are GenImage 50, SID-Set validation real 50 and Chameleon 50.**
+  - The manifest has **no unedited DiffSeg30k validation image**: all 3,192 `unused_validation` rows carry editors, so that pool is empty.
+  - The approved fallback filled the 50 from SID-Set validation real (`sidset_top_up: 50`).
+  - The record still lists these 50 under the frozen key `diffseg_unedited`, but they are SID-Set images.
+  - These SID-Set real images are `test_P3b` rows, so they also appear in the P3b evaluation (a different protocol).
+- **Training check:** 0 real images skipped as exact or near (pHash ≤ 6) duplicates of training, in every source.
+- **Chameleon:** 26,033 images unpacked to the local disk; 12,363 real outside P4; the first 400 in P6 rank order hashed in 116 s.
+- **BR-Gen:**
+  - the 400 chosen images and their masks were extracted with 7z, fully decoded and size-checked in 517 s, with 0 problems;
+  - file-list hash `e58434f264fca68d79db88aa1db24c03e6297a205933f2a8eba96223cc4edf58` (per-file SHA-256 in `P6_brgen_files`).
+- **The runtime was released** by the notebook's last cell.
+
 ## Notebook 13 run: unified seeds 123 and 2026 (Colab L4) — 2026-11-18
 
 Run on main at `911e680`, 17:05–22:50 UTC; wall 5.768 h. Results are read from Drive: `training_health_unified_ctx_seed{123,2026}.json`,

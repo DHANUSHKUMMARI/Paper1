@@ -36,6 +36,7 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-18 | **CP4 G2 gate**, fixed unified, P2 only (`09`, `RUN_EXPERIMENT='eviground_ctx'`, `P1_ENABLED=False`, commit `ff1b14d`) | L4 | 0.370 | 0.72 (1.94 CU/h) | about 44.3 (45 reported by Dhanush before the run, minus 0.72) | **G2 FAIL**: edited IoU 0.5101 (real base 0.7471; held-out pixels 0.4588). CP4 FAIL (G1, G2); RF PASS |
 | 2026-11-18 | Frozen evaluation subsets (`12`, CPU, commit after PR #46) | none (CPU runtime) | 0.0977 | 0.008 (0.08 CU/h) | about 44.3 | Chameleon.zip 2,683,359,341 bytes, 26,033 images (real 14,863, generated 11,170), 0 unreadable; P4 2,500 + 2,500 (`50167dd2…`); P1 20,000 = 1,250 per generator and label (`881098bb…`) |
 | 2026-11-18 | Unified, final configuration, seeds 123 and 2026 (`13`, commit `911e680`), one session | L4 | 5.768 (session; training 2.0364 + 1.7304 GPU h) | **about 12.5–13 measured from the balance** (44.3 → 31–32 reported by Dhanush); the notebook recorded 9.805 at 1.7 CU/h (runs 3.462 + 2.942), so the real rate is about 2.2 CU/h | about 31–32 | Seed 123 health **PASS** (best epoch 18; macro AUC 0.997629; mask F1 0.743497; A2 area 0.008986). Seed 2026 health **FAIL on A2 only** (area 0.010192 > 0.01; early stop at epoch 17, best 12; macro AUC 0.997456; mask F1 0.754473); kept, as seed 42 was (Dhanush, 18 Nov) |
+| 2026-11-18 | Frozen P6 subsets (`12b`, CPU, commit `a843a74`) | none (CPU runtime) | 0.182 | 0.015 (0.08 CU/h) | about 31–32 | P6 1,500 (`c12ba888…`), P6_mllm 500 (`1aa9bb7e…`), P6_deletion 300 (`c42ed65c…`); real images GenImage 50 / SID-Set validation real 50 (no unedited DiffSeg30k validation image exists) / Chameleon 50; 0 near-duplicates of training |
 
 ## Runs
 
@@ -55,6 +56,9 @@ CP3 health per seed in `docs/CHECKPOINTS.md`:
 - `Paper 1/runs/eviground_ctx_unified_seed2026/`;
 - the health files `training_health_unified_ctx_seed{123,2026}.json` and the session record `compute_unified_seeds.json`
   in `Paper 1/runs/checkpoints/`.
+
+Frozen evaluation subsets: P1 and P4 (notebook 12) and P6, P6_mllm, P6_deletion (notebook 12b), all in
+`Paper 1/runs/checkpoints/eval_subsets.json`; no model has been scored on them yet.
 
 Test-set evaluation so far: only the CP4 development splits, for the gate. P1 dev was scored on the CP3 models (notebook 09,
 17 Nov 2026), and P2 dev on the fixed unified model (G2, 18 Nov 2026; and once on the CP3 unified model by mistake, as

@@ -1,7 +1,29 @@
 # Testing log
 
-Commands and results for every milestone, newest first. Everything here runs on CPU with
-synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
+Commands and results for every milestone, newest first. The local checks (lint, tests, notebook dry
+runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, no real images.
+Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
+are read from the result files the notebooks write to Drive.
+
+## Notebook 13 run: unified seeds 123 and 2026 (Colab L4) — 2026-11-18
+
+Run on main at `911e680`, 17:05–22:50 UTC; wall 5.768 h. Results are read from Drive: `training_health_unified_ctx_seed{123,2026}.json`,
+`compute_unified_seeds.json`, and each run's `summary.json` / `compute.json`.
+- **Seed 123:**
+  - 20 epochs, best at 18, selection 0.87056;
+  - health **PASS**: macro AUC 0.997629, mask F1 0.743497, real-crop area 0.008986;
+  - 181.1 min of training.
+- **Seed 2026:**
+  - early stop at epoch 17, best at 12, selection 0.87596;
+  - health **FAIL on A2 only**: real-crop area 0.010192 against the 0.01 bar; macro AUC 0.997456, mask F1 0.754473;
+  - 153.8 min of training.
+  - Kept, as seed 42 was (Dhanush, 18 Nov).
+- **No NaN or inf** in either run (S1); both stayed within the same configuration (index `1085a527…`, CLIP `32bd6428…`).
+- **Compute:**
+  - the notebook recorded 9.805 CU at 1.7 CU/h;
+  - Dhanush's balance fell from about 44.3 to about 31–32 CU (about 12.5–13 CU), so the real L4 rate is about 2.2 CU/h;
+  - the CU in earlier rows recorded at 1.7 or 1.94 CU/h are therefore low by roughly 15–30%.
+- **The runtime was released** by the notebook's last cell.
 
 ## PR Q — CP5 explanation code and the frozen P6 subsets, notebook 12b (CPU) — 2026-11-18
 

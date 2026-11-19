@@ -35,6 +35,7 @@ Hours and CU are measured values from `runs/<run>/compute.json`, never estimates
 | 2026-11-18 | CP4 gate with P2 on, **by mistake on the CP3 unified model** (`09`, `RUN_EXPERIMENT` left `None`, commit `33707a3`) | L4 | 2.232 | 4.33 (1.94 CU/h) | not recorded | Not the gate run (G2 is gated on the fixed model). CP3 unified on P2 dev: edited IoU 0.4904; G1/RF identical to 17 Nov |
 | 2026-11-18 | **CP4 G2 gate**, fixed unified, P2 only (`09`, `RUN_EXPERIMENT='eviground_ctx'`, `P1_ENABLED=False`, commit `ff1b14d`) | L4 | 0.370 | 0.72 (1.94 CU/h) | about 44.3 (45 reported by Dhanush before the run, minus 0.72) | **G2 FAIL**: edited IoU 0.5101 (real base 0.7471; held-out pixels 0.4588). CP4 FAIL (G1, G2); RF PASS |
 | 2026-11-18 | Frozen evaluation subsets (`12`, CPU, commit after PR #46) | none (CPU runtime) | 0.0977 | 0.008 (0.08 CU/h) | about 44.3 | Chameleon.zip 2,683,359,341 bytes, 26,033 images (real 14,863, generated 11,170), 0 unreadable; P4 2,500 + 2,500 (`50167dd2…`); P1 20,000 = 1,250 per generator and label (`881098bb…`) |
+| 2026-11-18 | Unified, final configuration, seeds 123 and 2026 (`13`, commit `911e680`), one session | L4 | 5.768 (session; training 2.0364 + 1.7304 GPU h) | **about 12.5–13 measured from the balance** (44.3 → 31–32 reported by Dhanush); the notebook recorded 9.805 at 1.7 CU/h (runs 3.462 + 2.942), so the real rate is about 2.2 CU/h | about 31–32 | Seed 123 health **PASS** (best epoch 18; macro AUC 0.997629; mask F1 0.743497; A2 area 0.008986). Seed 2026 health **FAIL on A2 only** (area 0.010192 > 0.01; early stop at epoch 17, best 12; macro AUC 0.997456; mask F1 0.754473); kept, as seed 42 was (Dhanush, 18 Nov) |
 
 ## Runs
 
@@ -47,8 +48,17 @@ Training runs so far (seed 42, notebook 06, commit `f2d0e1c`); the numbers per c
 The CP4 fix run (notebook 11, `data.context_crop_share=0.3333`, commit `ff36b71`):
 `Paper 1/runs/eviground_ctx_unified_seed42/` (A1 record reused from CP3).
 
-Test-set evaluation so far: only the CP4 development split of P1 (notebook 09, 17 Nov 2026), for the
-gate. P2 is not scored yet.
+The extra seeds of the final configuration (notebook 13, commit `911e680`, 18 Nov 2026; A1 record reused from CP3);
+CP3 health per seed in `docs/CHECKPOINTS.md`:
+
+- `Paper 1/runs/eviground_ctx_unified_seed123/`;
+- `Paper 1/runs/eviground_ctx_unified_seed2026/`;
+- the health files `training_health_unified_ctx_seed{123,2026}.json` and the session record `compute_unified_seeds.json`
+  in `Paper 1/runs/checkpoints/`.
+
+Test-set evaluation so far: only the CP4 development splits, for the gate. P1 dev was scored on the CP3 models (notebook 09,
+17 Nov 2026), and P2 dev on the fixed unified model (G2, 18 Nov 2026; and once on the CP3 unified model by mistake, as
+recorded above).
 
 ### Training shards (Milestone 3), 15 Nov 2026
 

@@ -70,6 +70,37 @@ def _meta(part: str, row: Mapping[str, Any] | None, **extra: Any) -> dict[str, A
     return meta
 
 
+def _brgen_item(uid: str, brgen_dir: Path | None, brgen_masks: Mapping[str, str] | None) -> Item:
+    if brgen_dir is None or brgen_masks is None:
+        raise P6DataError("BR-Gen images need brgen_dir and brgen_masks")
+    path, mpath = Path(brgen_dir) / uid, Path(brgen_dir) / brgen_masks[uid]
+    if not path.is_file() or not mpath.is_file():
+        raise P6DataError(f"BR-Gen file missing: {uid}")
+    return Item(uid, _rgb(path), binary_mask(mpath), None, _meta("brgen", None, source="brgen"))
+
+
+def _chameleon_item(uid: str, part: str, chameleon_dir: Path | None) -> Item:
+    if part != "real" or chameleon_dir is None:
+        raise P6DataError(f"{uid} ({part}) is neither in the manifest nor in Chameleon")
+    path = Path(chameleon_dir) / uid
+    if not path.is_file():
+        raise P6DataError(f"Chameleon file missing: {uid}")
+    return Item(uid, _rgb(path), None, None, _meta(part, None, source="chameleon"))
+
+
+def _manifest_item(uid: str, part: str, row: Mapping[str, Any]) -> Item:
+    if part == "diffseg_heldout":
+        item = next(testsets.file_items([row]))
+        item.meta.update(_meta(part, row))
+        return item
+    mask = None
+    if part == "sidset_tampered":
+        if not row.get("mask_path"):
+            raise P6DataError(f"SID-Set tampered image without a mask: {uid}")
+        mask = binary_mask(Path(row["mask_path"]))
+    return Item(uid, _rgb(Path(row["path"])), mask, None, _meta(part, row))
+
+
 def p6_items(
     uids: Iterable[str],
     part_of: Mapping[str, str],
@@ -79,35 +110,15 @@ def p6_items(
     brgen_masks: Mapping[str, str] | None = None,
     chameleon_dir: Path | None = None,
 ) -> Iterator[Item]:
-    """Whole images (with their edit masks) of the given P6 ``uids``, in the given order."""
+    """Whole images (with their edit masks) of the given P6 uids, in the given order."""
     for uid in uids:
-        part = part_of[uid]
-        row = rows_by_uid.get(uid)
+        part, row = part_of[uid], rows_by_uid.get(uid)
         if part == "brgen":
-            if brgen_dir is None or brgen_masks is None:
-                raise P6DataError("BR-Gen images need brgen_dir and brgen_masks")
-            path, mpath = Path(brgen_dir) / uid, Path(brgen_dir) / brgen_masks[uid]
-            if not path.is_file() or not mpath.is_file():
-                raise P6DataError(f"BR-Gen file missing: {uid}")
-            yield Item(uid, _rgb(path), binary_mask(mpath), None, _meta(part, None, source="brgen"))
+            yield _brgen_item(uid, brgen_dir, brgen_masks)
         elif row is None:
-            if part != "real" or chameleon_dir is None:
-                raise P6DataError(f"{uid} ({part}) is neither in the manifest nor in Chameleon")
-            path = Path(chameleon_dir) / uid
-            if not path.is_file():
-                raise P6DataError(f"Chameleon file missing: {uid}")
-            yield Item(uid, _rgb(path), None, None, _meta(part, None, source="chameleon"))
-        elif part == "diffseg_heldout":
-            item = next(testsets.file_items([row]))
-            item.meta.update(_meta(part, row))
-            yield item
-        elif part == "sidset_tampered":
-            if not row.get("mask_path"):
-                raise P6DataError(f"SID-Set tampered image without a mask: {uid}")
-            img = _rgb(Path(row["path"]))
-            yield Item(uid, img, binary_mask(Path(row["mask_path"])), None, _meta(part, row))
+            yield _chameleon_item(uid, part, chameleon_dir)
         else:
-            yield Item(uid, _rgb(Path(row["path"])), None, None, _meta(part, row))
+            yield _manifest_item(uid, part, row)
 
 
 def manifest_rows(

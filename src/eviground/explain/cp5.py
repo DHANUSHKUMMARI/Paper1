@@ -235,12 +235,11 @@ def cp5_verdict(
         verdict, primary = "FALLBACK", "decoder"
     else:
         verdict, primary = "FAIL", None
+    secondary = {"gradcam": "decoder", "decoder": "gradcam"}.get(primary)
     return {
         "verdict": verdict,
         "primary_map": primary,
-        "secondary_map": None
-        if primary is None
-        else ("decoder" if primary == "gradcam" else "gradcam"),
+        "secondary_map": secondary,
         "rule": {"epg_ratio_min": EPG_RATIO, "p_max": P_MAX, "ssim_max": SSIM_MAX},
         "maps": per_map,
     }

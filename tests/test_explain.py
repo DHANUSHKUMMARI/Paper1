@@ -241,14 +241,18 @@ def test_cp5_verdict_rules():
     from eviground.explain import cp5
 
     ok = cp5.cp5_verdict(_records(), _rand(0.2))
-    assert ok["verdict"] == "PASS" and ok["primary_map"] == "gradcam"
+    assert ok["verdict"] == "PASS"
+    assert ok["primary_map"] == "gradcam"
+    assert ok["secondary_map"] == "decoder"
     assert ok["maps"]["gradcam"]["epg"]["ratio"] == pytest.approx(3.0, rel=0.1)
     # EPG only 1.25x the area fraction: Grad-CAM++ fails the ratio; the decoder takes over
     recs = _records()
     for r in recs:
         r["epg_gradcam"] = 1.25 * r["area_fraction"] + 0.001
     fb = cp5.cp5_verdict(recs, _rand(0.2))
-    assert fb["verdict"] == "FALLBACK" and fb["primary_map"] == "decoder"
+    assert fb["verdict"] == "FALLBACK"
+    assert fb["primary_map"] == "decoder"
+    assert fb["secondary_map"] == "gradcam"
     assert not fb["maps"]["gradcam"]["epg"]["pass"]
     # too few images for p < 0.01 although the ratio is high
     few = cp5.cp5_verdict(_records(n=4), _rand(0.2))

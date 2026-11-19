@@ -81,9 +81,11 @@ def test_every_part_loads_with_the_right_mask(tmp_path):
     assert items["sid/t"].mask.sum() == 200  # only values > 127
     assert items[br].mask.sum() == 200
     assert items["ds/1"].mask.sum() == 100  # the DiffSeg30k training rule
-    assert items["gi/g"].mask is None and items["gi/g"].meta["label"] == "generated"
+    assert items["gi/g"].mask is None
+    assert items["gi/g"].meta["label"] == "generated"
     cham = items["Chameleon/test/0_real/r1.png"]
-    assert cham.mask is None and cham.meta == {
+    assert cham.mask is None
+    assert cham.meta == {
         "part": "real",
         "label": "real",
         "source": "chameleon",

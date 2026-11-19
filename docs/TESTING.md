@@ -5,6 +5,48 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## PR T — notebook 14: CP5 evidence faithfulness and the P6 explanation pass (code, CPU-tested) — 2026-11-19
+
+The code and notebook for CP5. Nothing has run on real data yet: notebook 14 runs on an L4 (Dhanush, 19 Nov 2026: L4 only, one session).
+
+- **CP5 rule** (spec §9.1; decided by Dhanush on 19 Nov), checked for both maps, Grad-CAM++ and the mask decoder:
+  - **EPG:** mean EPG ≥ 1.5 × the mean area fraction of the edit, and a one-sided paired Wilcoxon test with p < 0.01;
+  - **randomization:** mean SSIM after the last cumulative step (heads → fusion → trace → LoRA) < 0.5;
+  - **deletion:** mean deletion AUC below the random-order AUC.
+  - **Result:** Grad-CAM++ passes all three → `PASS` (Grad-CAM++ is primary). Otherwise the decoder is primary → `FALLBACK` (the spec's fix). Neither passes → `FAIL`, stop and ask.
+  - The go/no-go uses validation images only: 200 edited (training editors) with seeded salt `cp5_val_v1`, 30 tiles for randomization, and 20 overlays.
+- **New `explain/cp5.py`:**
+  - `explain_image`: probabilities, gate, decoder map, Grad-CAM++ for the edited class and for the predicted class;
+  - `faithfulness_record`: EPG, area fraction, and deletion / insertion against a random order on the best tile;
+  - `randomization`: one model copy per batch of tiles, both maps;
+  - `map_verdict` / `cp5_verdict`, `summarize`, `overlay_figure`.
+- **New `eval/p6data.py`:** P6 images by part:
+  - DiffSeg30k masks by the training rule;
+  - SID-Set and BR-Gen masks binarized at > 127;
+  - Chameleon read from the zip;
+  - BR-Gen files checked against notebook 12b's SHA-256 (`check_brgen`).
+- **`EviGround.predict_tiled`:** now also returns the mean gate (`None` when a forward has no gate).
+- **Notebook 14** (generator `make_nb14.py`; L4):
+  - pre-flight at 2.2 CU/h, estimate 3.0 CU;
+  - stages the shards and the P6 files;
+  - runs CP5 on validation;
+  - writes a P6 evidence bundle per image, plus faithfulness (EPG on all edited images, deletion on `P6_deletion`). The pass resumes from `p6_records.jsonl`.
+  - Randomization on 50 P6 tiles.
+  - Writes `cp5_evidence_faithfulness_seed42.json`, `p6_faithfulness_seed42.csv`, `cp5_overlays_val.png` and `compute_cp5.json`, then releases the runtime.
+  - A CI step runs its dry run.
+
+### Checks (sandbox, Python 3.13.18, CPU)
+- `tests/test_explain.py`: 17 passed (3 new: the verdict rules, including the 1.25× ratio, too few images for p < 0.01, unchanged maps and deletion no better than random; summaries and the overlay file; the CP5 functions on the tiny model).
+- `tests/test_p6data.py`: 3 passed (every part with its mask rule; the BR-Gen hash check and missing files; the manifest rows).
+- **A first full run failed twice** in `test_models.py`: the fake forwards in those tests return no `gate`. Fixed by making the gate optional in `predict_tiled`.
+- **`EVIGROUND_DRY_RUN=1 pytest --nbmake notebooks/14_cp5_explanations.ipynb`:** passed (fake world, tiny model trained one epoch, fake P6 of 9 images, fake BR-Gen and Chameleon zips).
+  - The dry verdict was `FAIL`, as expected for an untrained tiny model.
+  - **One-off resume check** (`/tmp/claude-0/-home-user-Paper1/d56e2aef-4c2a-5b25-a13a-a24272263c08/scratchpad/nb14chk/run.py`, not committed): the P6 cell run a second time reported "9 images done earlier, 0 to go".
+- **The fake world has no edited validation image in its shards,** so the dry run (only) uses edited training rows, as notebook 08's does. The real run requires edited validation images.
+- Dry runs of notebooks 08, 09, 12, 12b and 13: passed.
+- `ruff check src tests`: clean. `python -m pytest -p no:warnings`: 476 passed. `python -m eviground.utils.repo_audit --history`: ok.
+- **Not run here:** the real model, the real data and L4 timing. The 3.0 CU figure is an estimate.
+
 ## Notebook 12b run: frozen P6 subsets (Colab CPU) — 2026-11-18
 
 Run on main at `a843a74`, finished 23:29 UTC; wall 0.182 h, **0.015 CU** at 0.08 CU/h (estimate 0.05). Results are read from Drive:

@@ -207,3 +207,102 @@ def test_randomization_changes_the_map(model):
     steps = faithfulness.randomization_check(model, lambda m: gradcam.gradcam_pp(m, x, 2)[0])
     assert [s["step"] for s in steps] == ["heads", "fusion", "trace", "semantic_lora"]
     assert all(s["ssim"] < 1.0 for s in steps)
+
+
+# --------------------------------------------------------------------------------------
+# CP5 (notebook 14)
+# --------------------------------------------------------------------------------------
+
+
+def _records(n=20, epg=0.6, area=0.2, dele=0.2, rnd=0.5, seed=0):
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n):
+        r = {"area_fraction": area + rng.normal(0, 0.01)}
+        for m in ("gradcam", "decoder"):
+            r[f"epg_{m}"] = epg + rng.normal(0, 0.02)
+            r[f"deletion_{m}"] = dele + rng.normal(0, 0.02)
+            r[f"insertion_{m}"] = 0.7
+        r["deletion_random"] = rnd + rng.normal(0, 0.02)
+        r["insertion_random"] = 0.5
+        out.append(r)
+    return out
+
+
+def _rand(ssim_last):
+    steps = [
+        {"step": s, "ssim_mean": v, "ssim": [v] * 3}
+        for s, v in (("heads", 0.8), ("all", ssim_last))
+    ]
+    return {"gradcam": steps, "decoder": steps}
+
+
+def test_cp5_verdict_rules():
+    from eviground.explain import cp5
+
+    ok = cp5.cp5_verdict(_records(), _rand(0.2))
+    assert ok["verdict"] == "PASS"
+    assert ok["primary_map"] == "gradcam"
+    assert ok["secondary_map"] == "decoder"
+    assert ok["maps"]["gradcam"]["epg"]["ratio"] == pytest.approx(3.0, rel=0.1)
+    # EPG only 1.25x the area fraction: Grad-CAM++ fails the ratio; the decoder takes over
+    recs = _records()
+    for r in recs:
+        r["epg_gradcam"] = 1.25 * r["area_fraction"] + 0.001
+    fb = cp5.cp5_verdict(recs, _rand(0.2))
+    assert fb["verdict"] == "FALLBACK"
+    assert fb["primary_map"] == "decoder"
+    assert fb["secondary_map"] == "gradcam"
+    assert not fb["maps"]["gradcam"]["epg"]["pass"]
+    # too few images for p < 0.01 although the ratio is high
+    few = cp5.cp5_verdict(_records(n=4), _rand(0.2))
+    assert few["maps"]["gradcam"]["epg"]["wilcoxon_p"] >= 0.01
+    assert few["verdict"] == "FAIL"
+    # maps that do not change under randomization fail for both maps
+    assert cp5.cp5_verdict(_records(), _rand(0.9))["verdict"] == "FAIL"
+    # deletion no better than random
+    assert not cp5.cp5_verdict(_records(dele=0.6), _rand(0.2))["maps"]["gradcam"]["deletion"][
+        "pass"
+    ]
+
+
+def test_cp5_summarize_and_overlay(tmp_path):
+    from eviground.explain import cp5
+
+    s = cp5.summarize([{"part": "a", "x": 1.0}, {"part": "a", "x": 3.0}, {"part": "b", "x": 5.0}])
+    assert s["a"] == {"images": 2, "x": 2.0}
+    assert s["all"]["x"] == 3.0
+    img = (np.random.default_rng(0).random((64, 64, 3)) * 255).astype(np.uint8)
+    rec = {"regions": [{"id": "E1", "bbox": [16, 16, 16, 16]}]}
+    maps = {"decoder": _square().astype(float), "gradcam_pred": _square().astype(float)}
+    path = cp5.overlay_figure(
+        [{"image": img, "mask": _square(), "maps": maps, "record": rec}], tmp_path / "o.png"
+    )
+    assert path.stat().st_size > 1000
+
+
+def test_cp5_on_the_tiny_model(model):
+    from eviground.explain import cp5
+
+    img = (np.random.default_rng(0).random((300, 400, 3)) * 255).astype(np.uint8)
+    out = cp5.explain_image(model, img, torch.device("cpu"))
+    assert 0.0 <= out["gate"] <= 1.0
+    assert out["verdict"] in ("real", "generated", "edited")
+    for k in ("decoder", "gradcam", "gradcam_pred"):
+        assert out[k].shape == (300, 400)
+    mask = np.zeros((300, 400), bool)
+    mask[50:200, 100:300] = True
+    rec = cp5.faithfulness_record(
+        model,
+        img,
+        mask,
+        {"gradcam": out["gradcam"], "decoder": out["decoder"]},
+        torch.device("cpu"),
+        steps=4,
+    )
+    assert rec["area_fraction"] == pytest.approx(mask.mean())
+    assert {"epg_gradcam", "deletion_decoder", "insertion_random"} <= set(rec)
+    tiles_x = torch.rand(2, 3, 256, 256)
+    rnd = cp5.randomization(model, tiles_x)
+    assert [s["step"] for s in rnd["gradcam"]] == ["heads", "fusion", "trace", "semantic_lora"]
+    assert len(rnd["decoder"][-1]["ssim"]) == 2

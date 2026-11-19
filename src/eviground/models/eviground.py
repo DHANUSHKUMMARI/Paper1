@@ -93,16 +93,18 @@ class EviGround(nn.Module):
         self, image: torch.Tensor, batch_size: int = tiling.TILE_BATCH
     ) -> dict[str, Any]:
         """``image``: (3, H, W) in [0, 1]. Every tile (full coverage), run in batches of
-        ``batch_size``; aggregated probabilities and the stitched mask (mean where tiles
-        overlap)."""
+        ``batch_size``; aggregated probabilities, the stitched mask (mean where tiles overlap) and
+        the mean gate."""
         _, h, w = image.shape
         boxes = tiling.tile_boxes(h, w)
-        probs, masks = [], []
+        probs, masks, gates = [], [], []
         for i in range(0, len(boxes), batch_size):
             crops = torch.stack([image[:, t:b, le:r] for le, t, r, b in boxes[i : i + batch_size]])
             out = self(crops)
             probs.append(torch.softmax(out["logits"].float(), dim=-1))
             masks.append(torch.sigmoid(out["mask_logits"].float())[:, 0])
+            if "gate" in out:
+                gates.append(out["gate"].float().reshape(-1))
         p = torch.cat(probs)
         agg = aggregate_tiles(p)
         mask = tiling.stitch(torch.cat(masks), boxes, h, w)
@@ -110,6 +112,8 @@ class EviGround(nn.Module):
             "probs": agg,
             "label": decide(agg, self.edit_threshold),
             "mask": mask,
+            # the semantic share g, mean over tiles (M5 evidence G1); None without a gate
+            "gate": float(torch.cat(gates).mean()) if gates else None,
             "tiles": len(boxes),
             "coverage": tiling.coverage(h) * tiling.coverage(w),
         }

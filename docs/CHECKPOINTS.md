@@ -565,6 +565,7 @@ was reused (a pipeline check, not a seed one). Values are on validation crops, a
 | Grad-CAM++ | 1.38× (2.3e-7) | 0.455 | 0.919 vs 0.832 | fail (EPG, deletion) |
 | Mask decoder | 2.00× (4.1e-33) | 0.545 | 0.921 vs 0.832 | fail (SSIM, deletion) |
 
+- **P6 masks:** some real P6 masks differ in size from their images. They were resized to the image (nearest, then > 0) by Dhanush's patch in cell 7; the loaders now apply the same rule (PR U), and notebook 15 reports the count per part.
 - **The pixel deletion test was confounded:** the blur that removes pixels is itself a local edit, so P(edited) stayed near 0.9 in every order (deletion ≈ insertion).
 - **Decision (Dhanush, 24 Nov):** CP5 is FAIL. The spec's fallback applies: **the mask decoder is the primary evidence map**, Grad-CAM++ secondary, and CP6 uses the decoder map.
 - **Repair of the test:** one pre-registered repair (spec cards `sg_jrepjxk8bs`, `sg_rdyd3wa8x3`): token deletion before fusion, oracle validity first, and Spearman beside SSIM, in notebook 15. Its result is added here.

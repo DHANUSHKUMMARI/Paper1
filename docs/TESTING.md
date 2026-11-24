@@ -26,6 +26,7 @@ Run on main at `1973329`; the result files were written at 18:56 UTC. Results ar
   - **EPG ratio, Grad-CAM++ / decoder:** all 1.16× / 1.65×; DiffSeg30k held-out 1.29× / 1.78×; SID-Set tampered 1.42× / 3.04×; BR-Gen 1.00× (p 0.52) / 1.20×.
   - **Randomization last step (50 tiles):** Grad-CAM++ 0.507, decoder 0.290.
   - **Deletion (300):** 0.890 / 0.912 vs random 0.730; insertion 0.878 / 0.919 vs 0.732.
+- **P6 masks of another size:** some real P6 masks are not the size of their image, and cell 7 crashed on them. Dhanush patched cell 7 in Colab: such a mask is resized to the image with `F.interpolate(mode='nearest')`, then > 0. The P6 numbers here were computed with that patch. The loaders now do the same (PR U), and notebook 15 reports how many masks were resized, per part.
 - **P6 verdicts:**
   - edited images → 1,040 edited, 150 real, 10 generated;
   - generated → 79 generated, 45 edited, 26 real;
@@ -45,6 +46,8 @@ Run on main at `1973329`; the result files were written at 18:56 UTC. Results ar
 - **`EviGround.branch_tokens` / `logits_from_tokens`:** the branch tokens before fusion, then fusion → class head. `forward` now shares `_trace_tokens`.
 - **`explain/cp5.py`:** `token_scores`, `token_deletion`, `token_deletion_verdict`, `bundle_tile`, `spearman`. `randomization` also reports Spearman per step.
 - **`eval/p6data.py`:** `write_cache` / `read_cache` / `cached_items`, a tar of the decoded P6 images and masks with a SHA-256 manifest. Any changed member stops the run.
+- **`p6data.align_mask`:** the notebook 14 cell 7 patch moved into the loaders. An edit mask of another size is resized to its image with `torch.nn.functional.interpolate(mode='nearest')`, then > 0, for all three edited parts (DiffSeg30k's editor map too). The original size goes to `meta['mask_resized_from']`, and the cache stores the aligned mask. A mask whose aspect ratio differs from its image's by more than 2% stops the run (Dhanush, 24 Nov). `resize_summary` gives the count per part, which notebook 15 prints and saves as `p6_mask_resize`.
+  - **My miss:** the loaders never compared mask and image sizes, and the fake world had only same-size masks, so no dry run could catch it. The dry world now has half-size SID-Set and DiffSeg30k masks.
 - **`session.finish(..., balance_start=)`:** records `cu_balance_start`.
 - **Notebook 15** (`make_nb15.py`, L4, estimate 1.5 CU):
   - `CU_BALANCE_START` is required;
@@ -60,7 +63,8 @@ Run on main at `1973329`; the result files were written at 18:56 UTC. Results ar
   - token deletion with a synthetic head: the oracle beats random, a good map passes, a random map fails, and a flat head is flagged uninformative;
   - `token_scores` and Spearman;
   - `bundle_tile`;
-  - the cache round trip, and a changed member refused.
+  - the cache round trip, and a changed member refused;
+  - `align_mask`: unchanged at the same size, equal to the notebook 14 rule on a half-size mask, a 1% rounding difference accepted, another aspect ratio refused; each edited part aligned from a half-size mask (DiffSeg30k editor values kept), the loader stopping on a misshaped mask, and the cache keeping the aligned mask.
 - **Notebook 15 dry run:** passed.
   - **One-off check** (`/tmp/claude-0/-home-user-Paper1/d56e2aef-4c2a-5b25-a13a-a24272263c08/scratchpad/nb15chk/run.py`): running the cache and token cells a second time reported "P6 cache reused" and "3 images done earlier, 0 to go".
   - The dry verdict was UNINFORMATIVE, as expected for an untrained tiny model.

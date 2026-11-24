@@ -10,7 +10,9 @@
 - ``real``: a manifest file (GenImage, SID-Set) or, for Chameleon, the unpacked zip member;
 - ``generated``: the manifest file.
 
-Real and generated images carry no mask.
+Real and generated images carry no mask. An edit mask whose size differs from its image is resized
+to the image by :func:`align_mask` (Dhanush's notebook 14 rule, 24 Nov 2026); a mask whose aspect
+ratio differs by more than 2% stops the run.
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 from PIL import Image
 
 from eviground.eval import testsets
@@ -31,6 +35,7 @@ from eviground.eval.tiled import Item
 
 EDITED_PARTS = ("diffseg_heldout", "sidset_tampered", "brgen")
 MASK_CUT = 127
+ASPECT_TOLERANCE = 0.02
 
 
 class P6DataError(RuntimeError):
@@ -46,6 +51,63 @@ def binary_mask(path: Path, cut: int = MASK_CUT) -> np.ndarray:
     """A grey-level mask file as booleans (value > ``cut``)."""
     with Image.open(path) as m:
         return np.asarray(m.convert("L")) > cut
+
+
+def align_mask(
+    mask: np.ndarray, image_shape: Sequence[int], *, tolerance: float = ASPECT_TOLERANCE
+) -> tuple[np.ndarray, list[int] | None]:
+    """``mask`` at the image's (H, W): resized with ``torch.nn.functional.interpolate``
+    (``mode='nearest'``) and thresholded at > 0, the rule of Dhanush's notebook 14 patch. Returns
+    the mask and its original [h, w] (None when the sizes already match). A mask whose aspect
+    ratio differs from the image's by more than ``tolerance`` (relative) raises
+    :class:`P6DataError`: that is a misaligned mask, not another resolution."""
+    mask = np.asarray(mask)
+    h, w = mask.shape[:2]
+    H, W = int(image_shape[0]), int(image_shape[1])
+    if (h, w) == (H, W):
+        return mask.astype(bool), None
+    ratio_mask, ratio_image = w / h, W / H
+    if abs(ratio_mask - ratio_image) / ratio_image > tolerance:
+        raise P6DataError(
+            f"mask {h}x{w} and image {H}x{W} differ in aspect ratio by more than "
+            f"{tolerance:.0%}; stop and ask"
+        )
+    t = torch.from_numpy(np.ascontiguousarray(mask, dtype=np.float32))[None, None]
+    out = F.interpolate(t, size=(H, W), mode="nearest")[0, 0] > 0
+    return out.numpy(), [int(h), int(w)]
+
+
+def _aligned(item: Item) -> Item:
+    """The item with its mask (and DiffSeg editor map) at the image size; the original mask size
+    is recorded in ``meta['mask_resized_from']``."""
+    if item.mask is None:
+        return item
+    mask, orig = align_mask(item.mask, item.image.shape[:2])
+    if orig is None:
+        return item
+    editors = item.editors
+    if editors is not None:
+        e = torch.from_numpy(np.ascontiguousarray(editors, dtype=np.float32))[None, None]
+        e = F.interpolate(e, size=mask.shape, mode="nearest")[0, 0].numpy()
+        editors = np.where(mask, e, 0).astype(np.asarray(item.editors).dtype)
+    meta = dict(item.meta)
+    meta["mask_resized_from"] = orig
+    return Item(item.uid, item.image, mask, editors, meta)
+
+
+def resize_summary(items_meta: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per part: the number of masks resized to their image and the original sizes seen."""
+    out: dict[str, Any] = {}
+    for meta in items_meta:
+        part = meta.get("part", "?")
+        rec = out.setdefault(part, {"items": 0, "resized": 0, "from_sizes": {}})
+        rec["items"] += 1
+        orig = meta.get("mask_resized_from")
+        if orig:
+            rec["resized"] += 1
+            key = f"{orig[0]}x{orig[1]}"
+            rec["from_sizes"][key] = rec["from_sizes"].get(key, 0) + 1
+    return out
 
 
 def check_brgen(files: Mapping[str, Mapping[str, Any]], folder: Path) -> list[str]:
@@ -116,11 +178,12 @@ def p6_items(
     for uid in uids:
         part, row = part_of[uid], rows_by_uid.get(uid)
         if part == "brgen":
-            yield _brgen_item(uid, brgen_dir, brgen_masks)
+            item = _brgen_item(uid, brgen_dir, brgen_masks)
         elif row is None:
-            yield _chameleon_item(uid, part, chameleon_dir)
+            item = _chameleon_item(uid, part, chameleon_dir)
         else:
-            yield _manifest_item(uid, part, row)
+            item = _manifest_item(uid, part, row)
+        yield _aligned(item)
 
 
 def manifest_rows(

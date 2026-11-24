@@ -138,6 +138,19 @@ def mask_metric_items(items: Iterable[Item], *, include_mismatched: bool = False
         yield it
 
 
+def record_variants(records: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    """Per-image metric records in their two reporting variants: ``as_run`` keeps every record
+    (CP5 was run, and is recorded, with the aspect-mismatched SID-Set masks resized and
+    included); ``excl_mismatched`` drops the flagged ones (the sensitivity check for CP5; the
+    pre-registered rule for CP6 HR-GT, Phase C CC and later EPG). A record without the flag
+    counts as not flagged."""
+    rows = list(records)
+    return {
+        "as_run": rows,
+        "excl_mismatched": [r for r in rows if not r.get("mask_aspect_mismatch")],
+    }
+
+
 def resize_summary(items_meta: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Per part: the number of masks resized to their image and the original sizes seen."""
     out: dict[str, Any] = {}

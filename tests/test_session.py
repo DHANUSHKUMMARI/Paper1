@@ -89,19 +89,19 @@ def test_the_balance_drop_wins_over_the_rate(tmp_path):
     assert abs(info["cu_estimate"] - 2.2) < 0.01
 
 
-def test_record_balance_after_the_run(tmp_path):
-    session.finish(tmp_path, time.time() - 3600, gpu="NVIDIA L4", balance_start=10.0)
-    info = session.record_balance(tmp_path / "compute.json", 7.5)
-    saved = json.loads((tmp_path / "compute.json").read_text())
-    assert saved == info
-    assert saved["cu"] == 2.5
-    assert saved["compute_units"] == 2.5
+def test_with_balance_after_the_run(tmp_path):
+    info = session.finish(tmp_path, time.time() - 3600, gpu="NVIDIA L4", balance_start=10.0)
+    out = session.with_balance(info, 7.5)
+    assert out["cu"] == 2.5
+    assert out["compute_units"] == 2.5
+    assert out["cu_source"] == "balance"
+    assert info["cu_source"] == "rate x wall time"  # the input is not changed
 
 
-def test_record_balance_needs_the_start_balance(tmp_path):
-    session.finish(tmp_path, time.time() - 60, 2.2)
+def test_with_balance_needs_the_start_balance(tmp_path):
+    info = session.finish(tmp_path, time.time() - 60, 2.2)
     with pytest.raises(ValueError, match="cu_balance_start"):
-        session.record_balance(tmp_path / "compute.json", 7.5)
+        session.with_balance(info, 7.5)
 
 
 def test_an_unknown_gpu_has_no_estimate(tmp_path):

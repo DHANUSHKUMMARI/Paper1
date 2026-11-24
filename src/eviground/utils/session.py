@@ -111,7 +111,7 @@ def finish(
     balance typed in before and after the run; when both are known their difference is the
     session's CU (``cu``, ``cu_source='balance'``), since rate x hours misses interrupted
     sessions (19 Nov) and the rate differs by GPU (24 Nov: notebook 15 ran on a T4). The end
-    balance can be added later with :func:`record_balance`."""
+    balance can be added later with :func:`with_balance`."""
     hours = (time.time() - t0) / 3600
     rate = cu_rate(gpu) if gpu is not None else None
     if rate is None:
@@ -144,22 +144,22 @@ def finish(
     return info
 
 
-def record_balance(path: Path, balance_end: float) -> dict[str, Any]:
-    """Add the balance read after the run to a ``compute.json``; the measured CU then replaces the
-    rate estimate."""
-    path = Path(path)
-    info = json.loads(path.read_text())
+def with_balance(info: Mapping[str, Any], balance_end: float) -> dict[str, Any]:
+    """A copy of a compute record (as :func:`finish` returns it) with the balance read after the
+    run: the measured CU then replaces the rate estimate. No file is read or written."""
     _, measured, cu, source = _cu_fields(
         info.get("wall_time_h", 0.0), None, info.get("cu_balance_start"), balance_end
     )
     if measured is None:
-        raise ValueError(f"{path} has no cu_balance_start; the session's CU cannot be measured")
-    info.update(
-        cu_balance_end=balance_end, cu_measured=measured, cu=cu, cu_source=source, compute_units=cu
-    )
-    path.write_text(json.dumps(info, indent=1, default=str))
-    print(f"compute: balance {info['cu_balance_start']} -> {balance_end}: {measured} CU measured")
-    return info
+        raise ValueError("the record has no cu_balance_start; the session's CU cannot be measured")
+    return {
+        **info,
+        "cu_balance_end": balance_end,
+        "cu_measured": measured,
+        "cu": cu,
+        "cu_source": source,
+        "compute_units": cu,
+    }
 
 
 def release(dry: bool) -> str:

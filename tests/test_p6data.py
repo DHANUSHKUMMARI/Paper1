@@ -275,3 +275,14 @@ def test_the_cache_keeps_the_aligned_mask(tmp_path):
     (back,) = p6data.cached_items(["sid/t"], man, tmp_path / "out")
     assert np.array_equal(back.mask, items[0].mask)
     assert back.meta["mask_resized_from"] == [20, 30]
+
+
+def test_the_as_run_variant_keeps_the_flagged_records():
+    recs = [
+        {"uid": "a", "mask_aspect_mismatch": True},
+        {"uid": "b"},
+        {"uid": "c", "mask_aspect_mismatch": False},
+    ]
+    v = p6data.record_variants(recs)
+    assert [r["uid"] for r in v["as_run"]] == ["a", "b", "c"]
+    assert [r["uid"] for r in v["excl_mismatched"]] == ["b", "c"]

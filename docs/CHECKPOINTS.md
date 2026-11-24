@@ -581,5 +581,6 @@ was reused (a pipeline check, not a seed one). Values are on validation crops, a
   - **P6 randomization, last step:** Grad-CAM++ SSIM 0.260 (Spearman 0.011), decoder 0.289 (0.002).
   - **Outcome:** neither map passes all three criteria, so **CP5 stays FAIL** and the decoder stays primary (Dhanush, 24 Nov). Both maps are faithful by token deletion where the test can measure. The decoder's validation SSIM 0.546 is between near-flat maps; its Spearman 0.130 shows the ranking is lost, which is reported beside the failed criterion, not instead of it.
   - **Compute:** 1.71 CU by balance (28.19 → 26.48).
+- **SID-Set aspect-ratio rule (decided 24 Nov, after CP5 and notebook 15; applies prospectively):** SID-Set masks whose aspect ratio differs from the image's by more than 2% are excluded from mask-based metrics in runs not yet done (CP6 HR-GT, Phase C CC, any later EPG), with the included variant as a sensitivity check (spec card). **The CP5 as-run numbers above are unchanged and remain the record:** notebooks 14 and 15 ran with the 26 masks resized and included. The exclusion variant for CP5 is reported beside them as a sensitivity check only.
 - **Compute:** notebook 14 about 7 CU by balance (28.19 left); notebook 15 1.71 CU (26.48 left).
 - **Verified by Dhanush:** ☐

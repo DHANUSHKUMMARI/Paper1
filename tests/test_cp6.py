@@ -284,3 +284,29 @@ def test_hr_gt_summary_counts_images_and_verdicts():
     assert s["checkable_claims"] == 3
     assert s["wrong_claims"] == 1
     assert s["verdict_accuracy"] == 0.5
+
+
+def test_a_verdict_that_overrules_the_evidence_is_retried_then_replaced():
+    rec = _record()
+    (res,) = verifier.run_grounded(llm.MockLLM({0: "bad_verdict"}), [("u", rec)])
+    assert res["first_checks"]["verdict_error"]
+    assert res["retries"] == 1
+    assert res["final_report"]["verdict"] == "locally_edited"
+    assert not res["verdict_replaced"]
+    assert verifier.first_pass_metrics([res])["verdict_mismatch_first_answers"] == 1
+    (stuck,) = verifier.run_grounded(llm.MockLLM({0: "bad_verdict"}, repair=False), [("u", rec)])
+    assert stuck["verdict_replaced"]
+    assert stuck["final_report"]["verdict"] == "locally_edited"
+    assert stuck["final_report"]["confidence"] == rec["prediction"]["locally_edited"]
+
+
+def test_attribution_claims_are_not_scored_against_an_edit_mask():
+    rec = _record("fully_generated")
+    rep = variants.template_report(rec)
+    assert verifier.hr_gt_counts(rep, "generated", None, rec) == {"checkable": 1, "wrong": 0}
+
+
+def test_off_image_box_area_counts_as_outside():
+    mask = np.ones((100, 100), bool)
+    assert verifier.box_inside_fraction([90, 0, 100, 10], mask) == pytest.approx(0.1)
+    assert verifier.box_inside_fraction([0, 0, 10, 10], mask) == 1.0

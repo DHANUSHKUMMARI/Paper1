@@ -24,7 +24,7 @@ from typing import Any, Protocol
 QWEN25_AWQ = ("Qwen/Qwen2.5-7B-Instruct-AWQ", "b25037543e9394b818fdfca67ab2a00ecc7dd641")
 QWEN2VL_AWQ = ("Qwen/Qwen2-VL-7B-Instruct-AWQ", "6ec2560b0afc3a618d4acc9b8e2967d1642f463d")
 MAX_TOKENS = 768
-FAULTS = ("bad_id", "bad_number", "weak_region", "a_edited", "bad_json")
+FAULTS = ("bad_id", "bad_number", "weak_region", "a_edited", "bad_json", "bad_verdict")
 EVIDENCE_TAG = "EVIDENCE:"
 
 
@@ -48,6 +48,7 @@ class MockLLM:
         self.repair = repair
         self.calls: list[list[str]] = []
         self._first = 0
+        self._last_fault: str | None = None
 
     def generate(self, prompts: Sequence[str]) -> list[str]:
         self.calls.append(list(prompts))
@@ -57,9 +58,10 @@ class MockLLM:
             fault = None
             if not retry:
                 fault = self.faults.get(self._first)
+                self._last_fault = fault or self._last_fault
                 self._first += 1
             elif not self.repair:
-                fault = "bad_id"
+                fault = self._last_fault  # repeat the mistake on every retry
             out.append(self._report(evidence_from_prompt(p), fault))
         return out
 
@@ -114,6 +116,8 @@ class MockLLM:
             claims.append(
                 {"claim_type": "edited_region", "text": "A1 was edited.", "evidence_ids": ["A1"]}
             )
+        if fault == "bad_verdict":
+            top = "real" if top != "real" else "fully_generated"
         report = {
             "verdict": top,
             "confidence": pred[top],

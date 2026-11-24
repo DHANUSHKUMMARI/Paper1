@@ -24,6 +24,10 @@ are read from the result files the notebooks write to Drive.
   - `run_grounded` runs a batched first pass, then at most 2 retry rounds. Claims still failing are dropped, and the first pass and the final report are both kept.
   - `first_pass_metrics` gives GR and HR-E with rejections per rule and region type.
   - `hr_gt_counts` / `hr_gt_summary` score HR-GT: the verdict, plus region boxes with < 10% inside the mask counted as wrong. They also give verdict accuracy.
+- **Review fixes (Codex, PR #56):**
+  - P1: attribution claims (A regions of a fully generated verdict) are not scored against an edit mask, because they have no ground truth. Only edited-region claims are checkable for HR-GT.
+  - P2: the report's top-level verdict must equal the evidence verdict. It is returned on retry, and still-wrong verdicts are replaced by the evidence verdict (`verdict_replaced`, counted in notebook 18).
+  - P2: any part of a box outside the image counts as outside the mask.
 - **`explain/variants.py`:** the fixed template (it passes the verifier by construction, which the tests check) and the image baseline.
 - **`eval/p6cache.py`:** the P6 cache reader and the aspect check, moved out of `p6data` so that the CP6 session never imports the detector code. `p6data` re-exports them.
 - **Notebook 18** (`make_nb18.py`; T4, fp16; about 1.5 CU paid, 0 on a free account; estimate):

@@ -123,13 +123,25 @@ def _region_kind(claim: Mapping[str, Any]) -> str:
 
 
 def verify(report: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
-    """Per-claim errors of a parsed report, and its passing claims."""
+    """Per-claim errors of a parsed report, its passing claims, and whether its top-level
+    verdict differs from the evidence record's (the report may not overrule the detector)."""
     checked = [{"claim": dict(c), "errors": check_claim(c, record)} for c in report["claims"]]
+    mismatch = report.get("verdict") != record.get("verdict")
     return {
         "checked": checked,
         "passed": [c["claim"] for c in checked if not c["errors"]],
         "failed": [c for c in checked if c["errors"]],
+        "verdict_error": (
+            f"the report's verdict {report.get('verdict')!r} differs from the evidence verdict "
+            f"{record.get('verdict')!r}"
+            if mismatch
+            else None
+        ),
     }
+
+
+def _needs_retry(current: Mapping[str, Any] | None) -> bool:
+    return current is None or bool(current["failed"]) or current["verdict_error"] is not None
 
 
 def _parse(text: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -178,14 +190,22 @@ def _retry_round(llm: LLM, todo: list[dict[str, Any]], by_uid: Mapping[str, Any]
             r["current_report"] = rep
 
 
-def _finalize(r: dict[str, Any]) -> None:
+def _finalize(r: dict[str, Any], record: Mapping[str, Any]) -> None:
+    """The final report: the passing claims only; a verdict that still differs from the
+    evidence after the retries is replaced by the evidence verdict (and flagged)."""
     rep = r.pop("current_report", None) or r["first_report"]
     current = r.pop("current")
     r.pop("current_text")
-    r["final_report"] = (
-        None if rep is None else {**rep, "claims": current["passed"] if current else []}
-    )
     r["dropped_claims"] = len(current["failed"]) if current else None
+    r["verdict_replaced"] = bool(current and current["verdict_error"])
+    if rep is None:
+        r["final_report"] = None
+        return
+    final = {**rep, "claims": current["passed"] if current else []}
+    if r["verdict_replaced"]:
+        final["verdict"] = record["verdict"]
+        final["confidence"] = record["prediction"][record["verdict"]]
+    r["final_report"] = final
 
 
 def run_grounded(
@@ -198,12 +218,12 @@ def run_grounded(
     results = [_first_result(uid, rec, t) for (uid, rec), t in zip(records, texts, strict=True)]
     by_uid = dict(records)
     for _ in range(max_retries):
-        todo = [r for r in results if r["current"] is None or r["current"]["failed"]]
+        todo = [r for r in results if _needs_retry(r["current"])]
         if not todo:
             break
         _retry_round(llm, todo, by_uid)
     for r in results:
-        _finalize(r)
+        _finalize(r, by_uid[r["uid"]])
     return results
 
 
@@ -214,9 +234,10 @@ def first_pass_metrics(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     total = passed = 0
     by_rule: Counter[str] = Counter()
     by_kind: Counter[str] = Counter()
-    unparsed = 0
+    unparsed = verdict_mismatch = 0
     for r in results:
         checks = r["first_checks"]
+        verdict_mismatch += int(bool(checks and checks.get("verdict_error")))
         if checks is None:
             unparsed += 1
             total += 1
@@ -236,24 +257,30 @@ def first_pass_metrics(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "gr": gr,
         "hr_e": None if gr is None else 1 - gr,
         "unparsed_first_answers": unparsed,
+        "verdict_mismatch_first_answers": verdict_mismatch,
         "rejections_by_rule": dict(by_rule),
         "rejections_by_rule_and_region": dict(by_kind),
     }
 
 
 def box_inside_fraction(box: Sequence[float], mask: np.ndarray) -> float:
-    """Share of a pixel box [x, y, w, h] that lies inside a boolean mask (0 if empty)."""
+    """Share of a pixel box [x, y, w, h] that lies inside a boolean mask, over the **whole**
+    box: any part of the box outside the image counts as outside the mask (0 if empty)."""
     h, w = mask.shape[:2]
-    x0, y0 = max(0, int(round(box[0]))), max(0, int(round(box[1])))
-    x1, y1 = min(w, int(round(box[0] + box[2]))), min(h, int(round(box[1] + box[3])))
-    if x1 <= x0 or y1 <= y0:
+    bx0, by0 = int(round(box[0])), int(round(box[1]))
+    bx1, by1 = int(round(box[0] + box[2])), int(round(box[1] + box[3]))
+    area = (bx1 - bx0) * (by1 - by0)
+    x0, y0, x1, y1 = max(0, bx0), max(0, by0), min(w, bx1), min(h, by1)
+    if area <= 0 or x1 <= x0 or y1 <= y0:
         return 0.0
-    return float(np.asarray(mask[y0:y1, x0:x1], dtype=bool).mean())
+    return float(np.asarray(mask[y0:y1, x0:x1], dtype=bool).sum()) / area
 
 
 def _claim_boxes(claim: Mapping[str, Any], known: Mapping[str, Mapping[str, Any]]) -> list:
-    """The pixel boxes a region claim is scored on (none for claims that are not checkable)."""
-    if claim.get("claim_type") not in ("edited_region", "attribution", None):
+    """The pixel boxes an edited-region claim is scored on. Attribution claims (A regions of a
+    fully generated verdict) state where the model's evidence lies, not where an edit is, and
+    have no ground truth, so they are not checkable; neither are global claims."""
+    if claim.get("claim_type") not in ("edited_region", None):
         return []
     if claim.get("box") is not None:
         return [claim["box"]]
@@ -267,8 +294,9 @@ def hr_gt_counts(
     record: Mapping[str, Any] | None = None,
 ) -> dict[str, int]:
     """Checkable and wrong claims of one report against the ground truth: the verdict (wrong
-    when it differs from the true class) and every region claim (wrong when < 10% of its box is
-    inside the true edit mask; no mask = nothing inside). EviGround's region boxes come from the
+    when it differs from the true class) and every edited-region claim (wrong when < 10% of its
+    box is inside the true edit mask; no mask = nothing inside; attribution claims are not
+    checkable). EviGround's region boxes come from the
     cited E/A entries of ``record``; the image baseline gives a ``box`` per claim. Claims about a
     property with no ground truth (global evidence) are not checkable."""
     if report is None:

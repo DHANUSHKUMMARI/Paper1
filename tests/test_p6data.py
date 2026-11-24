@@ -171,7 +171,8 @@ def test_align_mask_matches_the_notebook_14_rule():
     m = rng.random((20, 30)) > 0.7
     out, orig = p6data.align_mask(m, (40, 60))
     assert orig == [20, 30]
-    assert out.shape == (40, 60) and out.dtype == bool
+    assert out.shape == (40, 60)
+    assert out.dtype == bool
     assert np.array_equal(out, _dhanush_rule(m, (40, 60)))
 
 
@@ -182,7 +183,8 @@ def test_align_mask_refuses_another_aspect_ratio():
 
 def test_align_mask_accepts_a_rounding_difference():
     out, orig = p6data.align_mask(np.zeros((33, 50), bool), (40, 60))  # 1.515 vs 1.5: 1%
-    assert orig == [33, 50] and out.shape == (40, 60)
+    assert orig == [33, 50]
+    assert out.shape == (40, 60)
 
 
 def test_every_edited_part_aligns_a_half_size_mask(tmp_path):

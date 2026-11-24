@@ -5,6 +5,29 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## PR W — compute record per GPU type; SID-Set aspect-ratio exclusion pre-registered — 2026-11-24
+
+- **Compute record (`utils/session.py`):**
+  - `CU_RATES` gives the rate per runtime type: L4 2.2 and T4 1.28 CU/h, both measured from Dhanush's balance (notebook 13; notebook 15: 1.71 CU over 1.3405 h), plus CPU 0.08.
+  - `finish(..., gpu=...)` takes the rate of the GPU the session ran on and writes `gpu_type`, `cu_estimate`, `cu_balance_start`, `cu_balance_end`, `cu_measured` and `cu`.
+  - `cu` is the balance drop when both balances are known (`cu_source: balance`), otherwise the rate estimate. `compute_units` stays as an alias.
+  - `with_balance(info, balance_end)` returns the record with the balance read after the run (no file I/O).
+  - Notebooks 14 and 15 pass the GPU name.
+  - **Why:** notebook 15 ran on a T4 and its record priced it at the L4 rate (2.949 CU against 1.71 by balance).
+- **SID-Set aspect-ratio exclusion (`eval/p6data.py`; spec card `sg_nj9cpnxxvd`, decided after CP5, prospective):**
+  - A SID-Set mask whose aspect ratio differs from its image's by more than 2% is resized (the notebook 14 rule) and flagged `mask_aspect_mismatch`; it no longer stops the run.
+  - Any other part still stops on such a mask (none was found).
+  - `mask_metric_items` is the one filter for EPG, HR-GT and CC: flagged masks are left out unless `include_mismatched=True` (the sensitivity check).
+  - Items from the notebook 15 P6 tar, cached before the flag existed, are recognised from their recorded mask size (`is_aspect_mismatched`).
+  - **Review fixes (PR #54):**
+    - SonarCloud S2083 (blocker): the balance helper that read and rewrote a JSON file is replaced by the pure `with_balance(info, balance_end)`.
+    - Codex P1: notebook 14 writes `mask_aspect_mismatch` into each P6 record. `faithfulness_by_part` stays the as-run CP5 record (all masks); `faithfulness_by_part_excl_mismatched` is the sensitivity check (`p6data.record_variants`). Records resumed from before the flag count as not flagged, and their number is saved.
+    - The rule applies prospectively (CP6 HR-GT, Phase C CC, later EPG); the CP5 as-run numbers are unchanged (Dhanush, 24 Nov).
+  - `resize_summary` counts the flagged masks per part.
+- **Checks (sandbox):**
+  - ruff clean; `pytest` 497 passed; `repo_audit --history` ok; notebook 14 and 15 dry runs passed.
+  - New tests: rate per GPU, balance preferred, `with_balance`, unknown GPU; SID-Set flagged not raised, DiffSeg still raises, the filter's default and sensitivity modes, old cache entries recognised.
+
 ## Notebook 15 run: CP5 token deletion and randomization rerun (Colab, **T4**) — 2026-11-24
 
 Run on main at `1050c24`, files written 13:18 UTC: `cp5_token_deletion_seed42.json`, `p6_token_deletion_seed42.csv`, `p6_token_deletion_records_seed42.jsonl`, `cp5_token_curves.png`, `compute_cp5_token.json`, and the P6 cache `runs/cache/p6_images.tar` (1,500 images, SHA-256 `1ae27a38fce2…`) with its manifest.

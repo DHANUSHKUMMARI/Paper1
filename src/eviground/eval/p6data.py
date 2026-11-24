@@ -11,8 +11,11 @@
 - ``generated``: the manifest file.
 
 Real and generated images carry no mask. An edit mask whose size differs from its image is resized
-to the image by :func:`align_mask` (Dhanush's notebook 14 rule, 24 Nov 2026); a mask whose aspect
-ratio differs by more than 2% stops the run.
+to the image by :func:`align_mask` (Dhanush's notebook 14 rule, 24 Nov 2026). A mask whose aspect
+ratio differs from its image's by more than 2% stops the run, except in SID-Set: there such a mask
+is resized as well and flagged ``meta['mask_aspect_mismatch']``, and the mask-based metrics (EPG,
+HR-GT, CC) leave it out (:func:`mask_metric_items`; pre-registered 24 Nov 2026, before CP6). The
+results with them included are reported as a sensitivity check.
 """
 
 from __future__ import annotations
@@ -36,6 +39,9 @@ from eviground.eval.tiled import Item
 EDITED_PARTS = ("diffseg_heldout", "sidset_tampered", "brgen")
 MASK_CUT = 127
 ASPECT_TOLERANCE = 0.02
+# Parts whose aspect-mismatched masks are kept (flagged) instead of stopping the run: notebook 15
+# found 26 of 400 SID-Set tampered masks so (24 Nov 2026), and none in the other parts.
+FLAG_ASPECT_PARTS = ("sidset_tampered",)
 
 
 class P6DataError(RuntimeError):
@@ -53,6 +59,16 @@ def binary_mask(path: Path, cut: int = MASK_CUT) -> np.ndarray:
         return np.asarray(m.convert("L")) > cut
 
 
+def aspect_mismatch(
+    mask_shape: Sequence[int], image_shape: Sequence[int], tolerance: float = ASPECT_TOLERANCE
+) -> bool:
+    """True when the mask's width/height ratio differs from the image's by more than
+    ``tolerance`` (relative)."""
+    h, w = int(mask_shape[0]), int(mask_shape[1])
+    H, W = int(image_shape[0]), int(image_shape[1])
+    return abs(w / h - W / H) / (W / H) > tolerance
+
+
 def align_mask(
     mask: np.ndarray, image_shape: Sequence[int], *, tolerance: float = ASPECT_TOLERANCE
 ) -> tuple[np.ndarray, list[int] | None]:
@@ -66,8 +82,7 @@ def align_mask(
     H, W = int(image_shape[0]), int(image_shape[1])
     if (h, w) == (H, W):
         return mask.astype(bool), None
-    ratio_mask, ratio_image = w / h, W / H
-    if abs(ratio_mask - ratio_image) / ratio_image > tolerance:
+    if aspect_mismatch((h, w), (H, W), tolerance):
         raise P6DataError(
             f"mask {h}x{w} and image {H}x{W} differ in aspect ratio by more than "
             f"{tolerance:.0%}; stop and ask"
@@ -82,7 +97,12 @@ def _aligned(item: Item) -> Item:
     is recorded in ``meta['mask_resized_from']``."""
     if item.mask is None:
         return item
-    mask, orig = align_mask(item.mask, item.image.shape[:2])
+    flag = item.meta.get("part") in FLAG_ASPECT_PARTS and aspect_mismatch(
+        item.mask.shape, item.image.shape
+    )
+    mask, orig = align_mask(
+        item.mask, item.image.shape[:2], tolerance=np.inf if flag else ASPECT_TOLERANCE
+    )
     if orig is None:
         return item
     editors = item.editors
@@ -92,7 +112,43 @@ def _aligned(item: Item) -> Item:
         editors = np.where(mask, e, 0).astype(np.asarray(item.editors).dtype)
     meta = dict(item.meta)
     meta["mask_resized_from"] = orig
+    if flag:
+        meta["mask_aspect_mismatch"] = True
     return Item(item.uid, item.image, mask, editors, meta)
+
+
+def is_aspect_mismatched(meta: Mapping[str, Any], image_shape: Sequence[int]) -> bool:
+    """The flag, or (for items cached before it existed, e.g. notebook 15's P6 tar) the same test
+    on the recorded original mask size."""
+    if meta.get("mask_aspect_mismatch"):
+        return True
+    orig = meta.get("mask_resized_from")
+    return bool(orig) and aspect_mismatch(orig, image_shape)
+
+
+def mask_metric_items(items: Iterable[Item], *, include_mismatched: bool = False) -> Iterator[Item]:
+    """The items that enter mask-based metrics (EPG, HR-GT, CC): edited items with a mask,
+    without the aspect-mismatched SID-Set masks unless ``include_mismatched`` (the sensitivity
+    check). Pre-registered 24 Nov 2026."""
+    for it in items:
+        if it.mask is None:
+            continue
+        if not include_mismatched and is_aspect_mismatched(it.meta, it.image.shape[:2]):
+            continue
+        yield it
+
+
+def record_variants(records: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    """Per-image metric records in their two reporting variants: ``as_run`` keeps every record
+    (CP5 was run, and is recorded, with the aspect-mismatched SID-Set masks resized and
+    included); ``excl_mismatched`` drops the flagged ones (the sensitivity check for CP5; the
+    pre-registered rule for CP6 HR-GT, Phase C CC and later EPG). A record without the flag
+    counts as not flagged."""
+    rows = list(records)
+    return {
+        "as_run": rows,
+        "excl_mismatched": [r for r in rows if not r.get("mask_aspect_mismatch")],
+    }
 
 
 def resize_summary(items_meta: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -100,8 +156,11 @@ def resize_summary(items_meta: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for meta in items_meta:
         part = meta.get("part", "?")
-        rec = out.setdefault(part, {"items": 0, "resized": 0, "from_sizes": {}})
+        rec = out.setdefault(
+            part, {"items": 0, "resized": 0, "aspect_mismatch": 0, "from_sizes": {}}
+        )
         rec["items"] += 1
+        rec["aspect_mismatch"] += int(bool(meta.get("mask_aspect_mismatch")))
         orig = meta.get("mask_resized_from")
         if orig:
             rec["resized"] += 1

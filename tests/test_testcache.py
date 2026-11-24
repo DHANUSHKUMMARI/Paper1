@@ -30,8 +30,8 @@ def _rows(tmp_path, n=3):
 
 def _published(tmp_path):
     rows = _rows(tmp_path)
-    testcache.build(rows, "p2", tmp_path / "local")
-    man = testcache.publish(tmp_path / "local", "p2", tmp_path / "drive", seed=1)
+    built = testcache.build(rows, "p2", tmp_path / "local")
+    man = testcache.publish(built, tmp_path / "local", tmp_path / "drive", seed=1)
     return rows, man
 
 
@@ -94,9 +94,9 @@ def test_an_unpublished_set_is_not_ready(tmp_path):
 def test_publish_refuses_an_undecodable_member(tmp_path):
     src = tmp_path / "bad.png"
     src.write_bytes(b"not an image")
-    testcache.build([{"uid": "x", "path": str(src)}], "bad", tmp_path / "local")
+    built = testcache.build([{"uid": "x", "path": str(src)}], "bad", tmp_path / "local")
     with pytest.raises(testcache.CacheError, match="does not decode"):
-        testcache.publish(tmp_path / "local", "bad", tmp_path / "drive")
+        testcache.publish(built, tmp_path / "local", tmp_path / "drive")
     assert not (tmp_path / "drive" / "bad_manifest.json").exists()
 
 

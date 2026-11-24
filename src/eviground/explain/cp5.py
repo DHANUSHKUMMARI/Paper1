@@ -450,6 +450,27 @@ def _num(v: Any) -> float | None:
     return float(v)
 
 
+def _sensitivity_row(
+    edited: Sequence[Mapping[str, Any]], token_records: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    area = [_num(r["area_fraction"]) for r in edited]
+    mean_area = float(np.mean(area)) if edited else 0.0
+    epg = {
+        name: float(np.mean([_num(r[f"epg_{name}"]) for r in edited])) / mean_area
+        if mean_area > 0
+        else None
+        for name in MAPS
+    }
+    verdict = token_deletion_verdict(token_records) if token_records else None
+    return {
+        "edited_images": len(edited),
+        "epg_ratio": epg,
+        "token_images": len(token_records),
+        "token_valid": verdict["validity"]["valid"] if verdict else None,
+        "token_maps": {k: v["verdict"] for k, v in verdict["maps"].items()} if verdict else None,
+    }
+
+
 def aspect_sensitivity(
     p6_records: Sequence[Mapping[str, Any]],
     token_records: Sequence[Mapping[str, Any]],
@@ -464,31 +485,13 @@ def aspect_sensitivity(
     edited = [r for r in p6_records if _num(r.get("epg_gradcam")) is not None]
     out: dict[str, Any] = {"excluded": len(drop), "parts": {}}
     for part in parts:
-        row: dict[str, Any] = {}
-        for variant, keep in (
-            ("as_run", lambda u: True),
-            ("excl_mismatched", lambda u: u not in drop),
-        ):
-            recs = [r for r in edited if keep(r["uid"]) and part in ("all", r.get("part"))]
-            area = [_num(r["area_fraction"]) for r in recs]
-            epg = {
-                name: (
-                    float(np.mean([_num(r[f"epg_{name}"]) for r in recs])) / float(np.mean(area))
-                )
-                if recs and np.mean(area) > 0
-                else None
-                for name in MAPS
-            }
-            tok = [r for r in token_records if keep(r["uid"]) and part in ("all", r.get("part"))]
-            verdict = token_deletion_verdict(tok) if tok else None
-            row[variant] = {
-                "edited_images": len(recs),
-                "epg_ratio": epg,
-                "token_images": len(tok),
-                "token_valid": verdict["validity"]["valid"] if verdict else None,
-                "token_maps": {k: v["verdict"] for k, v in verdict["maps"].items()}
-                if verdict
-                else None,
-            }
-        out["parts"][part] = row
+        in_part = [r for r in edited if part in ("all", r.get("part"))]
+        tok = [r for r in token_records if part in ("all", r.get("part"))]
+        out["parts"][part] = {
+            "as_run": _sensitivity_row(in_part, tok),
+            "excl_mismatched": _sensitivity_row(
+                [r for r in in_part if r["uid"] not in drop],
+                [r for r in tok if r["uid"] not in drop],
+            ),
+        }
     return out

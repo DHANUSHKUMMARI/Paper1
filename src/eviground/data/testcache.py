@@ -98,30 +98,35 @@ def _decode_member(tar_path: Path, member: str) -> list[int]:
         return [img.height, img.width]
 
 
-def publish(out_dir: Path, name: str, drive_dir: Path, *, seed: int = 0) -> dict[str, Any]:
-    """Copy test set ``name`` from ``out_dir`` to ``drive_dir``; re-hash the tar from Drive and
-    decode one seeded random member of the Drive copy (Dhanush, 24 Nov). Either check failing
-    raises :class:`CacheError` and the manifest is not written to Drive."""
+def publish(
+    manifest: Mapping[str, Any], out_dir: Path, drive_dir: Path, *, seed: int = 0
+) -> dict[str, Any]:
+    """Copy the test set that :func:`build` just wrote (its returned ``manifest``) from
+    ``out_dir`` to ``drive_dir``; re-hash the tar from Drive and decode one seeded random member
+    of the Drive copy (Dhanush, 24 Nov). Either check failing raises :class:`CacheError` and no
+    manifest is written to Drive. The manifest is taken from memory, never re-read from disk."""
+    name = str(manifest["name"])
     src_tar, src_man = paths(out_dir, name)
     dst_tar, dst_man = paths(drive_dir, name)
-    manifest = json.loads(src_man.read_text())
+    out = dict(manifest)
     dst_tar.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src_tar, dst_tar)
     drive_sha = sha256_file(dst_tar)
-    if drive_sha != manifest["tar_sha256"]:
+    if drive_sha != out["tar_sha256"]:
         raise CacheError(f"{name}: the Drive copy hashes to {drive_sha[:12]}, not the tar's")
-    uid = random.Random(seed).choice(sorted(manifest["entries"]))
-    member = manifest["entries"][uid]["image"]
+    uid = random.Random(seed).choice(sorted(out["entries"]))
+    member = out["entries"][uid]["image"]
     try:
         shape = _decode_member(dst_tar, member)
     except Exception as e:  # noqa: BLE001 - any decode failure stops
         msg = f"{name}: {member} ({uid}) does not decode from the Drive copy: {e}"
         raise CacheError(msg) from e
-    manifest["drive_sha256_ok"] = True
-    manifest["decode_check"] = {"uid": uid, "member": member, "shape": shape}
-    src_man.write_text(json.dumps(manifest, indent=1, default=str))
-    dst_man.write_text(json.dumps(manifest, indent=1, default=str))
-    return manifest
+    out["drive_sha256_ok"] = True
+    out["decode_check"] = {"uid": uid, "member": member, "shape": shape}
+    text = json.dumps(out, indent=1, default=str)
+    src_man.write_text(text)
+    dst_man.write_text(text)
+    return out
 
 
 def is_ready(drive_dir: Path, name: str) -> bool:

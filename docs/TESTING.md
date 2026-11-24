@@ -5,6 +5,62 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## PR Y — CP6 code: grounded reports, the verifier, the A5 variants (notebook 18, MockLLM) — 2026-11-24
+
+- **Pre-registered (spec card `sg_8niham6bui`, waiting for Dhanush; decided 24 Nov before CP6):**
+  - **Claim schema:** each claim has a `claim_type` (`verdict`, `edited_region`, `attribution`, `global`, `limitation`).
+  - **Rule (b), numbers:** a quoted number matches if |quoted − value| ≤ max(0.01, 2% of |value|); a percentage is compared with value × 100 for values in 0–1, and with `area_pct` directly, within 1 point.
+  - **Rule (c), E regions:** mask_conf ≥ 0.6.
+  - **Rule (c′), A regions:** attribution claims only, never "edited". Rejections are reported per rule and per region type.
+- **`explain/llm.py`:**
+  - `MockLLM` is deterministic and schema-valid. Its faults can be injected: a missing ID, a wrong number, a weak region, an A region called edited, broken JSON. It repairs the fault on a retry.
+  - `VLLMBackend` runs vLLM with the official AWQ checkpoints at revisions pinned by commit (`Qwen/Qwen2.5-7B-Instruct-AWQ` `b2503754…`, `Qwen/Qwen2-VL-7B-Instruct-AWQ` `6ec2560b…`): float16, temperature 0, batched, with `close()` between models. vLLM is imported only when the backend is built.
+  - `MockVL` stands in for the image baseline.
+- **`explain/prompts.py`:**
+  - The grounded prompt is built from the evidence record's own keys only: no uid, no path, no pixels.
+  - It also holds the retry prompt, the image-baseline prompt (the same schema plus a box per region claim) and `parse_report`.
+- **`explain/verifier.py`:**
+  - `check_claim` applies the schema check and rules (a), (b), (c) and (c′).
+  - `run_grounded` runs a batched first pass, then at most 2 retry rounds. Claims still failing are dropped, and the first pass and the final report are both kept.
+  - `first_pass_metrics` gives GR and HR-E with rejections per rule and region type.
+  - `hr_gt_counts` / `hr_gt_summary` score HR-GT: the verdict, plus region boxes with < 10% inside the mask counted as wrong. They also give verdict accuracy.
+- **Review fixes (Codex, PR #56):**
+  - P1: attribution claims (A regions of a fully generated verdict) are not scored against an edit mask, because they have no ground truth. Only edited-region claims are checkable for HR-GT.
+  - P2: the report's top-level verdict must equal the evidence verdict. It is returned on retry, and still-wrong verdicts are replaced by the evidence verdict (`verdict_replaced`, counted in notebook 18).
+  - P2: any part of a box outside the image counts as outside the mask.
+- **Review fixes (Dhanush, 24 Nov; spec card `sg_987rukk5z8` for the additions):**
+  1. **Image-baseline boxes:** Qwen2-VL is asked for its native format, (x1, y1, x2, y2) on a 0–1000 grid. `variants.grid_box_to_pixels` converts each box to a pixel [x, y, w, h] with that image's width and height; `to_pixel_boxes` counts boxes that are ok, partly off the image, fully off it, or unparseable. An unparseable box counts as a wrong region.
+  2. **Retry edge case:** an unparseable retry now keeps the last parsed report and its checks, and the final report is built from those. The verdict is replaced whenever it differs from the evidence verdict.
+  3. **Rule additions:**
+     - rule (b) accepts region counts;
+     - `limitation` claims are exempt from rule (a), may not cite E/A, and are left out of GR/HR-E (counted apart);
+     - the top-level confidence is checked against PRED[verdict], with a retry, then replaced and flagged.
+  4. **Notebook 18 pins `vllm==0.33.0`**, after reading its source: CUDA arch 7.5 is in its build list, AWQ needs capability ≥ 7.5, there is a float16 path for Turing, Triton/FlashInfer/SDPA fallbacks below sm80, and abi3 wheels for Python 3.11–3.14. Smoke cells run 4 grounded prompts and 2 images on the GPU, and stop if any answer does not parse.
+  5. **Notebook 18 cell 6** keeps only each image's size, mask and metadata, not the images.
+  - **Tests:** the grid-to-pixel conversion on a 640×480 image, box counts, the unparseable-retry case, region counts, limitation claims, confidence.
+- **`explain/variants.py`:** the fixed template (it passes the verifier by construction, which the tests check) and the image baseline.
+- **`eval/p6cache.py`:** the P6 cache reader and the aspect check, moved out of `p6data` so that the CP6 session never imports the detector code. `p6data` re-exports them.
+- **Notebook 18** (`make_nb18.py`; T4, fp16; about 1.5 CU paid, 0 on a free account; estimate):
+  - grounded reports for all P6 images, with resume;
+  - the image baseline on P6_mllm, with resume;
+  - HR-GT and verdict accuracy for every variant, without and with the flagged SID-Set masks;
+  - 30 reports saved for reading beside their evidence;
+  - the result file, then the compute record (balance), then `release()`.
+  - A CI dry run with MockLLM and MockVL is added.
+- **Rule added 25 Nov (Dhanush; spec card `sg_24pyjd64if`): edited-region claims without a region.**
+  - **The rule:** an `edited_region` claim is checkable in HR-GT and counts as wrong when it gives no box (image baseline) or cites no existing E region (EviGround, first pass or final). That includes a claim citing only A or G entries, or an unknown E id.
+  - **Reporting:** `hr_gt_counts` returns `no_region`, and `hr_gt_summary` reports `claims_without_region` per variant. The image baseline's box counts gain `missing`, which used to be counted as `unparseable`.
+  - **Smoke cell:** notebook 18's Qwen2-VL smoke cell (2 images) prints the raw boxes and stops unless every numeric box lies in 0–1000 (`variants.raw_grid_boxes`, `boxes_on_grid`), so the native-format assumption is checked before the 500-image run.
+  - **Tests:**
+    - an empty citation, an unknown E, A only and G only each count as wrong and as no-region;
+    - an image claim with no box counts the same way;
+    - the per-variant totals;
+    - global claims are still not checkable;
+    - the grid check rejects pixel-sized and negative boxes.
+- **SonarCloud fix (S3776, critical):** the claim count in `verifier.first_pass_metrics` moved into a helper, `_tally_claims`, which brings the cognitive complexity from 17 to under 15. The output is unchanged: checked equal to the previous version on 2,000 random sets of results.
+- **Checks (sandbox, after the review and Sonar fixes and the 25 Nov rule):** ruff clean; pytest 543 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed.
+- **Not run here:** vLLM, the real Qwen models, GPU timing. Notebook 18 pins `vllm==0.33.0` and records the installed version at run time.
+
 ## PR X — Drive test-set tars and the P5 freeze (notebook 16, CPU) — 2026-11-24
 
 - **`data/testcache.py`:** one tar per test set, holding the **original file bytes** (images and masks, not re-encoded) and a manifest. The manifest records the SHA-256 of each member and of the tar, and each image's row with the paths left out.

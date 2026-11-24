@@ -165,9 +165,30 @@ def randomization(
         cur = _batch_maps(work, tiles_x, amp, batch)
         for name in MAPS:
             values = [faithfulness.ssim(base[name][i], cur[name][i]) for i in range(len(tiles_x))]
-            out[name].append({"step": step, "ssim_mean": float(np.mean(values)), "ssim": values})
+            rho = [spearman(base[name][i], cur[name][i]) for i in range(len(tiles_x))]
+            out[name].append(
+                {
+                    "step": step,
+                    "ssim_mean": float(np.mean(values)),
+                    "ssim": values,
+                    # reported beside SSIM, never instead of it (Dhanush, 24 Nov 2026)
+                    "spearman_mean": float(np.nanmean(rho)) if np.isfinite(rho).any() else None,
+                    "spearman": rho,
+                }
+            )
     del work
     return out
+
+
+def spearman(a: torch.Tensor | np.ndarray, b: torch.Tensor | np.ndarray) -> float:
+    """Spearman rank correlation of two maps (NaN when one of them is constant)."""
+    from scipy import stats
+
+    x = np.asarray(a, dtype=np.float64).ravel()
+    y = np.asarray(b, dtype=np.float64).ravel()
+    if x.std() == 0 or y.std() == 0:
+        return float("nan")
+    return float(stats.spearmanr(x, y).statistic)
 
 
 def _wilcoxon(a: Sequence[float], b: Sequence[float], alternative: str) -> float:
@@ -295,3 +316,129 @@ def overlay_figure(panels: Sequence[Mapping[str, Any]], path: Path) -> Path:
     fig.savefig(path, dpi=110)
     plt.close(fig)
     return path
+
+
+# --------------------------------------------------------------------------------------
+# Token-level deletion (pre-registered repair of the test, Dhanush 24 Nov 2026)
+# --------------------------------------------------------------------------------------
+
+TOKEN_GRID = 16
+N_RANDOM = 10
+TOKEN_ORDERS = ("oracle", "decoder", "gradcam")
+
+
+def token_scores(map_tile: np.ndarray, grid: int = TOKEN_GRID) -> np.ndarray:
+    """A tile's map averaged over each token's cell: (grid * grid,), row-major like the tokens."""
+    m = np.asarray(map_tile, dtype=np.float64)
+    h, w = m.shape[0] // grid * grid, m.shape[1] // grid * grid
+    m = m[:h, :w]
+    return m.reshape(grid, h // grid, grid, w // grid).mean(axis=(1, 3)).ravel()
+
+
+def _token_curve(
+    model: torch.nn.Module,
+    s: torch.Tensor,
+    t: torch.Tensor,
+    order: np.ndarray,
+    steps: int,
+    amp: Amp,
+) -> np.ndarray:
+    """P(edited) after removing the first k/steps of ``order``: at the removed grid positions
+    both the semantic patch token and the trace token become the tile's mean token; the class
+    token is kept. Fusion, gate and class head are re-run; CLIP and the trace CNN are not."""
+    n = t.shape[1]
+    s_mean = s[:, 1:].mean(dim=1, keepdim=True)
+    t_mean = t.mean(dim=1, keepdim=True)
+    ss = s.repeat(steps + 1, 1, 1)
+    tt = t.repeat(steps + 1, 1, 1)
+    for k in range(1, steps + 1):
+        gone = torch.as_tensor(order[: round(n * k / steps)], device=s.device, dtype=torch.long)
+        ss[k, 1 + gone] = s_mean[0]
+        tt[k, gone] = t_mean[0]
+    with torch.no_grad(), amp():
+        logits = model.logits_from_tokens(ss, tt)
+    return torch.softmax(logits.float(), dim=-1)[:, EDITED].cpu().numpy()
+
+
+def token_deletion(
+    model: torch.nn.Module,
+    tile: torch.Tensor,
+    scores: Mapping[str, np.ndarray],
+    *,
+    steps: int = faithfulness.STEPS,
+    n_random: int = N_RANDOM,
+    seed: int = 0,
+    amp: Amp = _no_amp,
+) -> dict[str, Any]:
+    """Token deletion on one tile (3, 256, 256) for each named token ranking in ``scores``
+    (highest first) and for ``n_random`` seeded random orders (their mean AUC is the baseline)."""
+    with torch.no_grad(), amp():
+        s, t = model.branch_tokens(tile[None])
+    s, t = s.float(), t.float()
+    n = t.shape[1]
+    rec: dict[str, Any] = {}
+    for name, sc in scores.items():
+        order = np.argsort(-np.asarray(sc, dtype=np.float64), kind="stable")
+        curve = _token_curve(model, s, t, order, steps, amp)
+        rec[f"token_{name}"] = faithfulness._auc(curve)
+        rec[f"token_{name}_curve"] = curve.tolist()
+    rng = np.random.default_rng(seed)
+    rand = [
+        faithfulness._auc(_token_curve(model, s, t, rng.permutation(n), steps, amp))
+        for _ in range(n_random)
+    ]
+    rec["token_random"] = float(np.mean(rand))
+    rec["token_random_sd"] = float(np.std(rand))
+    rec["token_p_full"] = float(curve[0]) if scores else None
+    return rec
+
+
+def token_deletion_verdict(
+    records: Sequence[Mapping[str, Any]], maps: Sequence[str] = MAPS
+) -> dict[str, Any]:
+    """Validity first: the oracle order must beat random (mean AUC lower, one-sided paired
+    Wilcoxon p < 0.01). If it does not, the test is uninformative for every map. Otherwise a
+    map passes when its AUC is below random with p < 0.01."""
+    rnd = [r["token_random"] for r in records]
+    orc = [r["token_oracle"] for r in records]
+    p_orc = _wilcoxon(orc, rnd, "less")
+    valid = bool(records) and float(np.mean(orc)) < float(np.mean(rnd)) and p_orc < P_MAX
+    out: dict[str, Any] = {
+        "images": len(records),
+        "rule": {"p_max": P_MAX, "random_orders": N_RANDOM},
+        "validity": {
+            "mean_oracle_auc": float(np.mean(orc)) if orc else None,
+            "mean_random_auc": float(np.mean(rnd)) if rnd else None,
+            "wilcoxon_p": p_orc,
+            "valid": valid,
+        },
+        "maps": {},
+    }
+    for name in maps:
+        vals = [r[f"token_{name}"] for r in records]
+        p = _wilcoxon(vals, rnd, "less")
+        ok = bool(vals) and float(np.mean(vals)) < float(np.mean(rnd)) and p < P_MAX
+        verdict = "UNINFORMATIVE"
+        if valid:
+            verdict = "PASS" if ok else "FAIL"
+        out["maps"][name] = {
+            "mean_auc": float(np.mean(vals)) if vals else None,
+            "mean_random_auc": float(np.mean(rnd)) if rnd else None,
+            "wilcoxon_p": p,
+            "verdict": verdict,
+        }
+    return out
+
+
+def bundle_tile(
+    map_small: np.ndarray, box: Sequence[int], k: int = evidence.DOWNSCALE
+) -> np.ndarray:
+    """The window ``box`` (left, top, right, bottom; full-resolution pixels) of a bundle map
+    saved at 1/k resolution, back at full size (each cell repeated k x k, edge-padded)."""
+    left, top, right, bottom = (int(v) for v in box)
+    m = np.asarray(map_small, dtype=np.float64)
+    sub = m[top // k : -(-bottom // k), left // k : -(-right // k)]
+    up = np.repeat(np.repeat(sub, k, axis=0), k, axis=1)
+    up = up[top % k : top % k + (bottom - top), left % k : left % k + (right - left)]
+    pad = ((0, bottom - top - up.shape[0]), (0, right - left - up.shape[1]))
+    return np.pad(up, pad, mode="edge") if any(p[1] for p in pad) else up

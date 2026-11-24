@@ -70,10 +70,7 @@ class EviGround(nn.Module):
             s = self.semantic(v["rgb"])  # (B, 1 + g*g, d)
         grid = int(round((s.shape[1] - 1) ** 0.5))
         tr = self.trace(v["trace"])
-        t16 = tr["t16"]
-        if t16.shape[-2:] != (grid, grid):  # inputs other than 256: align with CLIP's grid
-            t16 = F.adaptive_avg_pool2d(t16, (grid, grid))
-        t = t16.flatten(2).transpose(1, 2)
+        t = _trace_tokens(tr["t16"], grid)
         f = self.fusion(s, t)
         logits, alpha = self.cls_head(f["s"][:, 0], f["z"])
         z_map = f["z"].transpose(1, 2).reshape(b, self.d, grid, grid)
@@ -87,6 +84,19 @@ class EviGround(nn.Module):
             "z": f["z"],
             **extra,
         }
+
+    def branch_tokens(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The two branches' tokens before fusion: semantic ``s`` (B, 1 + N, d; class token
+        first) and trace ``t`` (B, N, d) on the same grid (CP5 token deletion, 24 Nov 2026)."""
+        v = self.views(images)
+        s = self.semantic(v["rgb"])
+        grid = int(round((s.shape[1] - 1) ** 0.5))
+        return s, _trace_tokens(self.trace(v["trace"])["t16"], grid)
+
+    def logits_from_tokens(self, s: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Fusion, gate and class head on given branch tokens: the class logits (B, 3)."""
+        f = self.fusion(s, t)
+        return self.cls_head(f["s"][:, 0], f["z"])[0]
 
     @torch.no_grad()
     def predict_tiled(
@@ -130,6 +140,14 @@ class EviGround(nn.Module):
             },
             {"params": rest, "lr": lr, "weight_decay": weight_decay},
         ]
+
+
+def _trace_tokens(t16: torch.Tensor, grid: int) -> torch.Tensor:
+    """The stride-16 trace map as tokens (B, grid*grid, d); inputs other than 256 are pooled to
+    CLIP's grid."""
+    if t16.shape[-2:] != (grid, grid):
+        t16 = F.adaptive_avg_pool2d(t16, (grid, grid))
+    return t16.flatten(2).transpose(1, 2)
 
 
 def aggregate_tiles(p: torch.Tensor) -> dict[str, float]:

@@ -5,6 +5,73 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 14 run: CP5 on validation and the P6 explanation pass (Colab L4) — 2026-11-19
+
+Run on main at `1973329`; the result files were written at 18:56 UTC. Results are read from Drive: `cp5_evidence_faithfulness_seed42.json`, `compute_cp5.json`, `p6_randomization_seed42.json`, `p6_faithfulness_seed42.csv` and the bundles in `runs/explain/p6_unified_ctx_seed42/`.
+
+**CP5 on validation: FAIL** under the agreed rule (200 edited validation images; randomization on 30 best tiles):
+
+| Map | EPG / area (bar 1.5×, p < 0.01) | Randomization, last-step SSIM (bar < 0.5) | Deletion AUC vs random (must be lower) | Insertion AUC vs random |
+|---|---|---|---|---|
+| Grad-CAM++ | 0.4060 / 0.2952 = **1.38×** (p 2.3e-7): fail | **0.455**: pass | 0.919 vs 0.832: fail | 0.922 vs 0.832 |
+| Mask decoder | 0.5910 / 0.2952 = **2.00×** (p 4.1e-33): pass | **0.545**: fail | 0.921 vs 0.832: fail | 0.936 vs 0.832 |
+
+- **The deletion test was confounded.** Removed pixels are replaced by a blurred copy, and a blurred patch inside a sharp image is itself a local edit. So P(edited) stayed near 0.9 in every order, and deletion and insertion AUCs came out almost equal (0.919 / 0.922).
+- **The decoder's randomization SSIM** falls to 0.21 once the decoder is randomized, then rises to 0.54 when the trace branch is randomized too. That is SSIM between two near-flat maps.
+- **Decision (Dhanush, 24 Nov):**
+  - CP5 recorded as FAIL;
+  - the spec's fallback applied (the mask decoder is primary, Grad-CAM++ secondary; CP6 uses the decoder map);
+  - one pre-registered repair of the test (PR U, notebook 15).
+- **P6 (1,500 images, all written as bundles):**
+  - **EPG ratio, Grad-CAM++ / decoder:** all 1.16× / 1.65×; DiffSeg30k held-out 1.29× / 1.78×; SID-Set tampered 1.42× / 3.04×; BR-Gen 1.00× (p 0.52) / 1.20×.
+  - **Randomization last step (50 tiles):** Grad-CAM++ 0.507, decoder 0.290.
+  - **Deletion (300):** 0.890 / 0.912 vs random 0.730; insertion 0.878 / 0.919 vs 0.732.
+- **P6 masks of another size:** some real P6 masks are not the size of their image, and cell 7 crashed on them. Dhanush patched cell 7 in Colab: such a mask is resized to the image with `F.interpolate(mode='nearest')`, then > 0. The P6 numbers here were computed with that patch. The loaders now do the same (PR U), and notebook 15 reports how many masks were resized, per part.
+- **P6 verdicts:**
+  - edited images → 1,040 edited, 150 real, 10 generated;
+  - generated → 79 generated, 45 edited, 26 real;
+  - real → 108 real, 31 edited, 11 generated.
+- **Compute:**
+  - the record covers only the last session (0.639 h, 1.405 CU at 2.2 CU/h; staging 9.28 min, the P6 pass 5.1 min in that session);
+  - Dhanush's balance after the run: **28.19 CU**, about **7 CU** spent against an estimate of 3.0. The difference was an earlier, slower or restarted session that the notebook did not record.
+
+## PR U — CP5 repair: token-level deletion before fusion, the P6 cache (notebook 15) — 2026-11-24
+
+- **Rules pre-registered in the spec** (cards `sg_jrepjxk8bs`, `sg_rdyd3wa8x3`, waiting for Dhanush) before notebook 15 runs:
+  - **Removal:** fused-grid positions in attribution order; at each removed position the semantic patch token **and** the trace token become their per-tile mean token; fusion + gate + class head are re-run. The CLIP class token is kept.
+  - **Orders:** oracle, decoder, Grad-CAM++, and the mean of 10 seeded random orders.
+  - **Validity first:** the oracle must beat random with p < 0.01, else the test is uninformative.
+  - **Per-map pass:** below random with p < 0.01.
+  - **Randomization:** SSIM < 0.5 stays the criterion; Spearman is reported beside it.
+- **`EviGround.branch_tokens` / `logits_from_tokens`:** the branch tokens before fusion, then fusion → class head. `forward` now shares `_trace_tokens`.
+- **`explain/cp5.py`:** `token_scores`, `token_deletion`, `token_deletion_verdict`, `bundle_tile`, `spearman`. `randomization` also reports Spearman per step.
+- **`eval/p6data.py`:** `write_cache` / `read_cache` / `cached_items`, a tar of the decoded P6 images and masks with a SHA-256 manifest. Any changed member stops the run.
+- **`p6data.align_mask`:** the notebook 14 cell 7 patch moved into the loaders. An edit mask of another size is resized to its image with `torch.nn.functional.interpolate(mode='nearest')`, then > 0, for all three edited parts (DiffSeg30k's editor map too). The original size goes to `meta['mask_resized_from']`, and the cache stores the aligned mask. A mask whose aspect ratio differs from its image's by more than 2% stops the run (Dhanush, 24 Nov). `resize_summary` gives the count per part, which notebook 15 prints and saves as `p6_mask_resize`.
+  - **My miss:** the loaders never compared mask and image sizes, and the fake world had only same-size masks, so no dry run could catch it. The dry world now has half-size SID-Set and DiffSeg30k masks.
+- **`session.finish(..., balance_start=)`:** records `cu_balance_start`.
+- **Notebook 15** (`make_nb15.py`, L4, estimate 1.5 CU):
+  - `CU_BALANCE_START` is required;
+  - the P6 cache is reused if present, else built from staging;
+  - token deletion on the 300 `P6_deletion` images, with resume;
+  - randomization reruns on the 30 validation and 50 P6 tiles;
+  - result file, CSV, curves and compute record, then `release()`.
+  - A CI step runs its dry run.
+
+### Checks (sandbox, CPU)
+- **New tests:**
+  - `test_token_hooks_reproduce_the_forward_logits`;
+  - token deletion with a synthetic head: the oracle beats random, a good map passes, a random map fails, and a flat head is flagged uninformative;
+  - `token_scores` and Spearman;
+  - `bundle_tile`;
+  - the cache round trip, and a changed member refused;
+  - `align_mask`: unchanged at the same size, equal to the notebook 14 rule on a half-size mask, a 1% rounding difference accepted, another aspect ratio refused; each edited part aligned from a half-size mask (DiffSeg30k editor values kept), the loader stopping on a misshaped mask, and the cache keeping the aligned mask.
+- **Notebook 15 dry run:** passed.
+  - **One-off check** (`/tmp/claude-0/-home-user-Paper1/d56e2aef-4c2a-5b25-a13a-a24272263c08/scratchpad/nb15chk/run.py`): running the cache and token cells a second time reported "P6 cache reused" and "3 images done earlier, 0 to go".
+  - The dry verdict was UNINFORMATIVE, as expected for an untrained tiny model.
+- Notebook 14 regenerated unchanged before the mask alignment; it now carries the half-size dry-run masks.
+- **After the mask alignment (24 Nov):** `ruff` clean, `pytest` 488 passed, `repo_audit --history` ok; the dry runs of notebooks 14 and 15 passed, with half-size SID-Set and DiffSeg30k masks resized in both.
+- **Not run here:** the real model, the real data, and L4 timing.
+
 ## PR T — notebook 14: CP5 evidence faithfulness and the P6 explanation pass (code, CPU-tested) — 2026-11-19
 
 The code and notebook for CP5. Nothing has run on real data yet: notebook 14 runs on an L4 (Dhanush, 19 Nov 2026: L4 only, one session).

@@ -136,7 +136,8 @@ class VLLMBackend:
         download_dir: str | None = None,
         limit_mm_per_prompt: Mapping[str, int] | None = None,
     ):
-        import vllm  # noqa: PLC0415 - GPU-only dependency, imported on use
+        # vLLM is a GPU-only dependency, imported on use
+        import vllm  # noqa: PLC0415
 
         self.repo, self.revision = model
         self._vllm = vllm
@@ -227,6 +228,8 @@ class MockVL:
         self.calls = 0
 
     def generate_with_images(self, prompts: Sequence[str], images: Sequence[Any]) -> list[str]:
+        if len(prompts) != len(images):
+            raise ValueError("one prompt per image")
         self.calls += 1
         out = []
         for img in images:

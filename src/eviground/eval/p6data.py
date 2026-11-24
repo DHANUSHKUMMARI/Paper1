@@ -34,7 +34,9 @@ import torch.nn.functional as F
 from PIL import Image
 
 from eviground.eval import testsets
-from eviground.eval.p6cache import (  # noqa: F401 (light module, shared with the CP6 session)
+
+# re-exported from the light module that the CP6 session uses without the detector stack
+from eviground.eval.p6cache import (  # noqa: F401
     ASPECT_TOLERANCE,
     P6CacheError,
     aspect_mismatch,

@@ -139,60 +139,71 @@ def _parse(text: str) -> tuple[dict[str, Any] | None, str | None]:
         return None, str(e)
 
 
+def _first_result(uid: str, rec: Mapping[str, Any], text: str) -> dict[str, Any]:
+    rep, err = _parse(text)
+    checks = verify(rep, rec) if rep else None
+    return {
+        "uid": uid,
+        "first_text": text,
+        "first_report": rep,
+        "first_parse_error": err,
+        "first_checks": checks,
+        "retries": 0,
+        "rejections": [],
+        "current_text": text,
+        "current": checks,
+    }
+
+
+def _errors_to_return(current: Mapping[str, Any] | None) -> list[str]:
+    if current is None:
+        return ["the answer is not valid JSON in the schema"]
+    return [
+        f"claim {c['claim'].get('text')!r}: {m}" for c in current["failed"] for _, m in c["errors"]
+    ]
+
+
+def _retry_round(llm: LLM, todo: list[dict[str, Any]], by_uid: Mapping[str, Any]) -> None:
+    retry = []
+    for r in todo:
+        errs = _errors_to_return(r["current"])
+        r["rejections"].append(errs)
+        retry.append(prompts.retry_prompt(by_uid[r["uid"]], r["current_text"], errs))
+    for r, text in zip(todo, llm.generate(retry), strict=True):
+        rep, _ = _parse(text)
+        r["retries"] += 1
+        r["current_text"] = text
+        r["current"] = verify(rep, by_uid[r["uid"]]) if rep else None
+        if rep:
+            r["current_report"] = rep
+
+
+def _finalize(r: dict[str, Any]) -> None:
+    rep = r.pop("current_report", None) or r["first_report"]
+    current = r.pop("current")
+    r.pop("current_text")
+    r["final_report"] = (
+        None if rep is None else {**rep, "claims": current["passed"] if current else []}
+    )
+    r["dropped_claims"] = len(current["failed"]) if current else None
+
+
 def run_grounded(
     llm: LLM, records: Sequence[tuple[str, Mapping[str, Any]]], *, max_retries: int = MAX_RETRIES
 ) -> list[dict[str, Any]]:
     """The grounded reports of ``records`` ((uid, evidence) pairs), batched: one first-pass call
     for all, then up to ``max_retries`` rounds for the reports with failing claims or no valid
     JSON. Each result keeps the first pass (text, report, checks) and the final report."""
-    prompts_1 = [prompts.grounded_prompt(r) for _, r in records]
-    texts = llm.generate(prompts_1)
-    results = []
-    for (uid, rec), text in zip(records, texts, strict=True):
-        rep, err = _parse(text)
-        res: dict[str, Any] = {
-            "uid": uid,
-            "first_text": text,
-            "first_report": rep,
-            "first_parse_error": err,
-            "first_checks": verify(rep, rec) if rep else None,
-            "retries": 0,
-            "rejections": [],
-        }
-        res["current_text"], res["current"] = text, res["first_checks"]
-        results.append(res)
-    by_uid = {uid: rec for uid, rec in records}
+    texts = llm.generate([prompts.grounded_prompt(r) for _, r in records])
+    results = [_first_result(uid, rec, t) for (uid, rec), t in zip(records, texts, strict=True)]
+    by_uid = dict(records)
     for _ in range(max_retries):
         todo = [r for r in results if r["current"] is None or r["current"]["failed"]]
         if not todo:
             break
-        retry = []
-        for r in todo:
-            errs = (
-                ["the answer is not valid JSON in the schema"]
-                if r["current"] is None
-                else [
-                    f"claim {c['claim'].get('text')!r}: {m}"
-                    for c in r["current"]["failed"]
-                    for _, m in c["errors"]
-                ]
-            )
-            r["rejections"].append(errs)
-            retry.append(prompts.retry_prompt(by_uid[r["uid"]], r["current_text"], errs))
-        for r, text in zip(todo, llm.generate(retry), strict=True):
-            rep, _ = _parse(text)
-            r["retries"] += 1
-            r["current_text"] = text
-            r["current"] = verify(rep, by_uid[r["uid"]]) if rep else None
-            if rep:
-                r["current_report"] = rep
+        _retry_round(llm, todo, by_uid)
     for r in results:
-        rep = r.get("current_report") or r["first_report"]
-        final_claims = r["current"]["passed"] if r["current"] else []
-        r["final_report"] = None if rep is None else {**rep, "claims": final_claims}
-        r["dropped_claims"] = len(r["current"]["failed"]) if r["current"] else None
-        del r["current"], r["current_text"]
-        r.pop("current_report", None)
+        _finalize(r)
     return results
 
 
@@ -240,6 +251,15 @@ def box_inside_fraction(box: Sequence[float], mask: np.ndarray) -> float:
     return float(np.asarray(mask[y0:y1, x0:x1], dtype=bool).mean())
 
 
+def _claim_boxes(claim: Mapping[str, Any], known: Mapping[str, Mapping[str, Any]]) -> list:
+    """The pixel boxes a region claim is scored on (none for claims that are not checkable)."""
+    if claim.get("claim_type") not in ("edited_region", "attribution", None):
+        return []
+    if claim.get("box") is not None:
+        return [claim["box"]]
+    return [known[i]["bbox"] for i in claim.get("evidence_ids") or [] if "bbox" in known.get(i, {})]
+
+
 def hr_gt_counts(
     report: Mapping[str, Any] | None,
     true_label: str,
@@ -253,25 +273,14 @@ def hr_gt_counts(
     property with no ground truth (global evidence) are not checkable."""
     if report is None:
         return {"checkable": 1, "wrong": 1}
-    checkable, wrong = 1, int(report.get("verdict") != TRUE_VERDICT[true_label])
     known = entries(record) if record else {}
-    for c in report.get("claims", []):
-        boxes = []
-        if c.get("box") is not None:
-            boxes = [c["box"]]
-        else:
-            boxes = [
-                known[i]["bbox"]
-                for i in c.get("evidence_ids") or []
-                if i in known and "bbox" in known[i]
-            ]
-        if not boxes or c.get("claim_type") not in ("edited_region", "attribution", None):
-            continue
-        for box in boxes:
-            checkable += 1
-            inside = 0.0 if gt_mask is None else box_inside_fraction(box, gt_mask)
-            wrong += int(inside < BOX_INSIDE_MIN)
-    return {"checkable": checkable, "wrong": wrong}
+    boxes = [b for c in report.get("claims", []) for b in _claim_boxes(c, known)]
+    inside = [0.0 if gt_mask is None else box_inside_fraction(b, gt_mask) for b in boxes]
+    verdict_wrong = int(report.get("verdict") != TRUE_VERDICT[true_label])
+    return {
+        "checkable": 1 + len(boxes),
+        "wrong": verdict_wrong + sum(f < BOX_INSIDE_MIN for f in inside),
+    }
 
 
 def hr_gt_summary(

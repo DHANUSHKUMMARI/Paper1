@@ -68,7 +68,8 @@ Run on main at `1973329`; the result files were written at 18:56 UTC. Results ar
 - **Notebook 15 dry run:** passed.
   - **One-off check** (`/tmp/claude-0/-home-user-Paper1/d56e2aef-4c2a-5b25-a13a-a24272263c08/scratchpad/nb15chk/run.py`): running the cache and token cells a second time reported "P6 cache reused" and "3 images done earlier, 0 to go".
   - The dry verdict was UNINFORMATIVE, as expected for an untrained tiny model.
-- Notebook 14 regenerates unchanged.
+- Notebook 14 regenerated unchanged before the mask alignment; it now carries the half-size dry-run masks.
+- **After the mask alignment (24 Nov):** `ruff` clean, `pytest` 488 passed, `repo_audit --history` ok; the dry runs of notebooks 14 and 15 passed, with half-size SID-Set and DiffSeg30k masks resized in both.
 - **Not run here:** the real model, the real data, and L4 timing.
 
 ## PR T — notebook 14: CP5 evidence faithfulness and the P6 explanation pass (code, CPU-tested) — 2026-11-19

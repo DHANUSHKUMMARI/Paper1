@@ -7,7 +7,7 @@ are read from the result files the notebooks write to Drive.
 
 ## PR Y — CP6 code: grounded reports, the verifier, the A5 variants (notebook 18, MockLLM) — 2026-11-24
 
-- **Pre-registered (spec card `sg_p6vc69mdyc`, waiting for Dhanush; decided 24 Nov before CP6):**
+- **Pre-registered (spec card `sg_8niham6bui`, waiting for Dhanush; decided 24 Nov before CP6):**
   - **Claim schema:** each claim has a `claim_type` (`verdict`, `edited_region`, `attribution`, `global`, `limitation`).
   - **Rule (b), numbers:** a quoted number matches if |quoted − value| ≤ max(0.01, 2% of |value|); a percentage is compared with value × 100 for values in 0–1, and with `area_pct` directly, within 1 point.
   - **Rule (c), E regions:** mask_conf ≥ 0.6.

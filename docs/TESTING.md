@@ -31,7 +31,7 @@ Sandbox only. Phase C needs Dhanush's go-ahead and a `CU_CAP`.
   - Perturbations: each one's effect and determinism; resize keeps the mask aligned.
   - Blocks: run, reuse, stop at the cap, and skip everything after the stop.
   - Mask reading by source, and the P3/P3b/P4/P5 summaries.
-- **Checks (sandbox):** see the end of this entry.
+- **Checks (sandbox):** ruff clean; pytest 564 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed.
 - **Not run here:** real models and data, GPU timing.
 
 ## Notebook 16 run (test-set tar cache, CPU) and its COCO staging fix — 2026-11-24

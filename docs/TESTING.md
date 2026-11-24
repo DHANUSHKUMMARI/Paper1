@@ -47,8 +47,9 @@ are read from the result files the notebooks write to Drive.
   - 30 reports saved for reading beside their evidence;
   - the result file, then the compute record (balance), then `release()`.
   - A CI dry run with MockLLM and MockVL is added.
-- **Checks (sandbox):** ruff clean; pytest 530 passed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed (p6data was split).
-- **Not run here:** vLLM, the real Qwen models, GPU timing. The vLLM version is recorded at run time, not pinned yet.
+- **SonarCloud fix (S3776, critical):** the claim count in `verifier.first_pass_metrics` moved into a helper, `_tally_claims`, which brings the cognitive complexity from 17 to under 15. The output is unchanged: checked equal to the previous version on 2,000 random sets of results.
+- **Checks (sandbox, after the review and Sonar fixes):** ruff clean; pytest 540 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed.
+- **Not run here:** vLLM, the real Qwen models, GPU timing. Notebook 18 pins `vllm==0.33.0` and records the installed version at run time.
 
 ## PR X — Drive test-set tars and the P5 freeze (notebook 16, CPU) — 2026-11-24
 

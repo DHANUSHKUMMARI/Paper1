@@ -295,44 +295,54 @@ def run_grounded(
     return results
 
 
+def _tally_claims(checked: Iterable[Mapping[str, Any]], tally: Counter[str]) -> None:
+    """Add one report's checked claims to ``tally``: ``claims`` / ``passed`` for the claims GR
+    counts, ``limitation:passed|failed`` for limitation claims, and ``rule:<r>`` /
+    ``kind:<r>:<E|A|...>`` per rejection."""
+    for c in checked:
+        ok = not c["errors"]
+        if c["claim"].get("claim_type") == "limitation":
+            tally["limitation:" + ("passed" if ok else "failed")] += 1
+            continue
+        tally["claims"] += 1
+        tally["passed"] += int(ok)
+        for rule in {e[0] for e in c["errors"]}:
+            tally["rule:" + rule] += 1
+            tally[f"kind:{rule}:{_region_kind(c['claim'])}"] += 1
+
+
+def _sub(tally: Counter[str], prefix: str) -> dict[str, int]:
+    return {k[len(prefix) :]: v for k, v in tally.items() if k.startswith(prefix)}
+
+
 def first_pass_metrics(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """GR and HR-E on the first pass (before the verifier removes anything), with rejections
     counted per rule and per region kind (rule (c) for E regions, (c') for A regions). A first
     answer that is not valid JSON counts as one failed claim. ``limitation`` claims are left out
     of GR / HR-E and counted separately (spec card, 24 Nov)."""
-    total = passed = unparsed = verdict_mismatch = confidence_mismatch = 0
-    limitations = Counter()
-    by_rule: Counter[str] = Counter()
-    by_kind: Counter[str] = Counter()
+    tally: Counter[str] = Counter()
     for r in results:
         checks = r["first_checks"]
         if checks is None:
-            unparsed += 1
-            total += 1
+            tally["unparsed"] += 1
+            tally["claims"] += 1
             continue
-        verdict_mismatch += int(checks["verdict_error"] is not None)
-        confidence_mismatch += int(checks["confidence_error"] is not None)
-        for c in checks["checked"]:
-            if c["claim"].get("claim_type") == "limitation":
-                limitations["passed" if not c["errors"] else "failed"] += 1
-                continue
-            total += 1
-            passed += int(not c["errors"])
-            for rule in {e[0] for e in c["errors"]}:
-                by_rule[rule] += 1
-                by_kind[f"{rule}:{_region_kind(c['claim'])}"] += 1
+        tally["verdict_mismatch"] += int(checks["verdict_error"] is not None)
+        tally["confidence_mismatch"] += int(checks["confidence_error"] is not None)
+        _tally_claims(checks["checked"], tally)
+    total, passed = tally["claims"], tally["passed"]
     gr = passed / total if total else None
     return {
         "claims": total,
         "passed": passed,
         "gr": gr,
         "hr_e": None if gr is None else 1 - gr,
-        "unparsed_first_answers": unparsed,
-        "verdict_mismatch_first_answers": verdict_mismatch,
-        "confidence_mismatch_first_answers": confidence_mismatch,
-        "limitation_claims": dict(limitations),
-        "rejections_by_rule": dict(by_rule),
-        "rejections_by_rule_and_region": dict(by_kind),
+        "unparsed_first_answers": tally["unparsed"],
+        "verdict_mismatch_first_answers": tally["verdict_mismatch"],
+        "confidence_mismatch_first_answers": tally["confidence_mismatch"],
+        "limitation_claims": _sub(tally, "limitation:"),
+        "rejections_by_rule": _sub(tally, "rule:"),
+        "rejections_by_rule_and_region": _sub(tally, "kind:"),
     }
 
 

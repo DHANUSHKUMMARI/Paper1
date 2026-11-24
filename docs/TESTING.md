@@ -5,6 +5,36 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 16 run (test-set tar cache, CPU) and its COCO staging fix — 2026-11-24
+
+- **Run:** CPU runtime, commit `ac15b6e`, 1.4031 h wall. **0.11 CU by balance** (26.48 → 26.37); the record says 0.112 (0.08 CU/h × wall).
+  - Every tar was re-hashed from its Drive copy (`drive_sha256_ok` true) and one seeded member decoded from it.
+
+| Set | Images | Masks | Tar size | Tar SHA-256 | Build minutes |
+|---|---|---|---|---|---|
+| `p1_subset` | 20,000 | 0 | 5,120,768,000 B | `b9d659ed5f4e6db0d62386d3be3597eb22f648bcd325fe59290dd11a65e5af61` | 14.22 |
+| `p2` | 2,434 | 2,434 | 1,687,879,680 B | `03da7010357d49c4a4609be43bedeb5a828ad4480228c126d61be20be3e25977` | 12.2 (DiffSeg30k staged in 10.8) |
+| `p3_brgen` | 6,000 | 6,000 | 2,717,265,920 B | `7521bef5e9b39f4c68a93b56188f63210a3038d47ec77116658b5aa93e73424b` | 19.16 |
+| `p3b` | 6,000 | 2,000 | 3,402,178,560 B | `471f7e09ed1079ca829541b005b029908daca8a66a549e9eb6a17215709a6cdc` | 28.57 (SID-Set staged in 25.6, 21.1 GB) |
+| `p4` | 5,000 | 0 | 520,243,200 B | `a7563ddb51a74fcab4acce1eb678b1ea8a1e4a308e6709be7dbe5dadbd0805d8` | 2.35 |
+| `claims_edit_src` | 150 | 0 | 21,913,600 B | `e69840a2912cb1d8c6308ce79791a0877ada3d44a75c9232bdc59d69c5b9b02f` | 0.02 |
+
+  - The build minutes of the first five come from the cell output. After the restart (below) the record file shows those sets as "reused", at about 0 min.
+- **P5 frozen** (before any model saw it): 4,500 images (250 + 250 per generator from the P1 subset, plus 500 DiffSeg30k held-out); seed 42, salt `p5_half_v1`; SHA-256 `7d62dd00a4a919b59f12f83e5d86b22f18faadaf773362e0d2e5b8100c716c8d`.
+- **Stage round trip (`p2`):** 2,434 rows, and the first 2 items decoded.
+- **CP5 sensitivity (cell 6; the CP5 record stays as run):** 26 aspect-mismatched SID-Set uids were left out.
+  - EPG ratio, Grad-CAM++ / decoder, as run → without them:
+    - all parts: 1.162 / 1.654 → 1.161 / 1.652 (1,200 → 1,174 images);
+    - SID-Set: 1.420 / 3.041 → 1.424 / 3.123 (400 → 374);
+    - DiffSeg30k held-out (1.292 / 1.782) and BR-Gen (1.002 / 1.197): unchanged.
+  - Token deletion: valid with both maps PASS for all parts, DiffSeg30k and BR-Gen; SID-Set uninformative in both variants (100 → 91 images).
+- **Bug (cell 5, `claims_edit_src`):** `FileNotFoundError` on `/content/data/coco_val2017/val2017/….jpg`.
+  - The manifest's `test_P7` paths point at the local staged COCO copy, but only the DiffSeg30k and SID-Set sets called `_ensure`.
+  - The dry run did not catch it, because its fake world had staged COCO in cell 3.
+  - **In Colab:** one cell ran `ensure_data(datasets=['coco_val2017'], stage_local=True)`, then cell 5 was re-run. The five finished sets were reused after a size check, and `claims_edit_src` was built.
+  - **Fix:** `rows_claims` calls `_ensure(['coco_val2017'])`. In the dry run, `_ensure` now also runs `ensure_data` (fake sources), and cell 3 deletes the local COCO copy. Without the fix the dry run fails with the same `FileNotFoundError`, and with it the run passes (both checked).
+- **Checks (sandbox):** ruff clean; pytest 543 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed. A copy of notebook 16 without the fix fails its dry run with the Colab error.
+
 ## PR Y — CP6 code: grounded reports, the verifier, the A5 variants (notebook 18, MockLLM) — 2026-11-24
 
 - **Pre-registered (spec card `sg_8niham6bui`, waiting for Dhanush; decided 24 Nov before CP6):**

@@ -79,30 +79,39 @@ def number_matches(quoted: float, percent: bool, values: Iterable[tuple[str, flo
     return False
 
 
-def check_claim(claim: Mapping[str, Any], record: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """The (rule, message) errors of one claim; empty when it passes."""
-    errors: list[tuple[str, str]] = []
-    ctype, text = claim.get("claim_type"), str(claim.get("text", ""))
-    ids = [str(i) for i in claim.get("evidence_ids") or []]
-    if ctype not in prompts.CLAIM_TYPES:
-        errors.append(("schema", f"claim_type {ctype!r} is not one of {list(prompts.CLAIM_TYPES)}"))
-    known = entries(record)
-    missing = [i for i in ids if i not in known]
-    if not ids:
-        errors.append(("a", "the claim cites no evidence ID"))
-    if missing:
-        errors.append(("a", f"cited IDs not in the evidence: {missing}"))
-    cited = [known[i] for i in ids if i in known]
+def _region_ids(ids: Sequence[str]) -> list[str]:
+    return [i for i in ids if i[:1] in ("E", "A")]
+
+
+def _count_matches(q: float, ids: Sequence[str], record: Mapping[str, Any]) -> bool:
+    """An integer equal to the number of regions cited, or of regions in the record, is a
+    count ("2 edited regions") and matches (spec card, 24 Nov)."""
+    return float(q).is_integer() and int(q) in {
+        len(_region_ids(ids)),
+        len(record.get("regions", [])),
+    }
+
+
+def _check_numbers(text: str, ids: Sequence[str], cited, record) -> list[tuple[str, str]]:
     scrubbed = re.sub(r"\b[PGEA]\w*\d+\b", " ", text)  # IDs like E1, G2, PRED are not numbers
     values = [kv for e in cited for kv in _values(e)]
+    errors = []
     for m in NUMBER.finditer(scrubbed):
         q, pct = float(m.group(1)), bool(m.group(2))
-        if not number_matches(q, pct, values):
-            errors.append(("b", f"the number {m.group(0).strip()} matches no value of {ids}"))
+        if number_matches(q, pct, values) or (not pct and _count_matches(q, ids, record)):
+            continue
+        errors.append(("b", f"the number {m.group(0).strip()} matches no value of {list(ids)}"))
+    return errors
+
+
+def _check_regions(ctype, text: str, ids: Sequence[str], known) -> list[tuple[str, str]]:
+    errors = []
     for i in ids:
-        if i.startswith("E") and i in known and float(known[i].get("mask_conf", 0.0)) < TAU_E:
+        if i not in known:
+            continue
+        if i.startswith("E") and float(known[i].get("mask_conf", 0.0)) < TAU_E:
             errors.append(("c", f"{i} has mask_conf {known[i].get('mask_conf')} < {TAU_E}"))
-        if i.startswith("A") and i in known and (ctype != "attribution" or EDIT_WORDS.search(text)):
+        if i.startswith("A") and (ctype != "attribution" or EDIT_WORDS.search(text)):
             errors.append(
                 (
                     "c_prime",
@@ -110,6 +119,28 @@ def check_claim(claim: Mapping[str, Any], record: Mapping[str, Any]) -> list[tup
                     "where the model's evidence concentrates, never as edited",
                 )
             )
+    return errors
+
+
+def check_claim(claim: Mapping[str, Any], record: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The (rule, message) errors of one claim; empty when it passes. A ``limitation`` claim
+    is exempt from rule (a) but may not cite an E or A region (spec card, 24 Nov)."""
+    errors: list[tuple[str, str]] = []
+    ctype, text = claim.get("claim_type"), str(claim.get("text", ""))
+    ids = [str(i) for i in claim.get("evidence_ids") or []]
+    if ctype not in prompts.CLAIM_TYPES:
+        errors.append(("schema", f"claim_type {ctype!r} is not one of {list(prompts.CLAIM_TYPES)}"))
+    known = entries(record)
+    missing = [i for i in ids if i not in known]
+    if ctype == "limitation" and _region_ids(ids):
+        errors.append(("limitation", f"a limitation may not cite regions: {_region_ids(ids)}"))
+    if not ids and ctype != "limitation":
+        errors.append(("a", "the claim cites no evidence ID"))
+    if missing:
+        errors.append(("a", f"cited IDs not in the evidence: {missing}"))
+    cited = [known[i] for i in ids if i in known]
+    errors += _check_numbers(text, ids, cited, record)
+    errors += _check_regions(ctype, text, ids, known)
     return errors
 
 
@@ -122,9 +153,26 @@ def _region_kind(claim: Mapping[str, Any]) -> str:
     return "other"
 
 
+def _confidence_error(report: Mapping[str, Any], record: Mapping[str, Any]) -> str | None:
+    """The top-level confidence must equal PRED[verdict] within the rule (b) tolerance (a
+    percentage within 1 point)."""
+    pred = record.get("prediction", {})
+    verdict = report.get("verdict")
+    conf = report.get("confidence")
+    if verdict not in pred:
+        return None  # the verdict error already covers it
+    if isinstance(conf, bool) or not isinstance(conf, int | float):
+        return f"the confidence {conf!r} is not a number"
+    value = [(verdict, float(pred[verdict]))]
+    if number_matches(float(conf), False, value) or number_matches(float(conf), True, value):
+        return None
+    return f"the confidence {conf} differs from the prediction for {verdict!r} ({pred[verdict]})"
+
+
 def verify(report: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
-    """Per-claim errors of a parsed report, its passing claims, and whether its top-level
-    verdict differs from the evidence record's (the report may not overrule the detector)."""
+    """Per-claim errors of a parsed report, its passing claims, and the report-level errors:
+    a verdict that differs from the evidence record's (the report may not overrule the
+    detector) and a confidence that differs from PRED[verdict]."""
     checked = [{"claim": dict(c), "errors": check_claim(c, record)} for c in report["claims"]]
     mismatch = report.get("verdict") != record.get("verdict")
     return {
@@ -137,11 +185,19 @@ def verify(report: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, An
             if mismatch
             else None
         ),
+        "confidence_error": _confidence_error(report, record),
     }
 
 
-def _needs_retry(current: Mapping[str, Any] | None) -> bool:
-    return current is None or bool(current["failed"]) or current["verdict_error"] is not None
+def _needs_retry(r: Mapping[str, Any]) -> bool:
+    cur = r["current"]
+    return (
+        r["parse_failed"]
+        or cur is None
+        or bool(cur["failed"])
+        or cur["verdict_error"] is not None
+        or cur["confidence_error"] is not None
+    )
 
 
 def _parse(text: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -163,48 +219,60 @@ def _first_result(uid: str, rec: Mapping[str, Any], text: str) -> dict[str, Any]
         "retries": 0,
         "rejections": [],
         "current_text": text,
+        "current_report": rep,  # the last PARSED report and its checks
         "current": checks,
+        "parse_failed": rep is None,
     }
 
 
-def _errors_to_return(current: Mapping[str, Any] | None) -> list[str]:
-    if current is None:
-        return ["the answer is not valid JSON in the schema"]
-    return [
-        f"claim {c['claim'].get('text')!r}: {m}" for c in current["failed"] for _, m in c["errors"]
-    ]
+def _errors_to_return(r: Mapping[str, Any]) -> list[str]:
+    cur = r["current"]
+    errs = ["the answer is not valid JSON in the schema"] if r["parse_failed"] else []
+    if cur is not None:
+        errs += [
+            f"claim {c['claim'].get('text')!r}: {m}" for c in cur["failed"] for _, m in c["errors"]
+        ]
+        errs += [e for e in (cur["verdict_error"], cur["confidence_error"]) if e]
+    return errs
 
 
 def _retry_round(llm: LLM, todo: list[dict[str, Any]], by_uid: Mapping[str, Any]) -> None:
     retry = []
     for r in todo:
-        errs = _errors_to_return(r["current"])
+        errs = _errors_to_return(r)
         r["rejections"].append(errs)
         retry.append(prompts.retry_prompt(by_uid[r["uid"]], r["current_text"], errs))
     for r, text in zip(todo, llm.generate(retry), strict=True):
         rep, _ = _parse(text)
         r["retries"] += 1
         r["current_text"] = text
-        r["current"] = verify(rep, by_uid[r["uid"]]) if rep else None
-        if rep:
+        r["parse_failed"] = rep is None
+        if rep is not None:  # an unparseable retry keeps the last parsed report and its checks
             r["current_report"] = rep
+            r["current"] = verify(rep, by_uid[r["uid"]])
 
 
 def _finalize(r: dict[str, Any], record: Mapping[str, Any]) -> None:
-    """The final report: the passing claims only; a verdict that still differs from the
-    evidence after the retries is replaced by the evidence verdict (and flagged)."""
-    rep = r.pop("current_report", None) or r["first_report"]
+    """The final report, from the last parsed report: its passing claims only. Whenever its
+    verdict differs from the evidence verdict it is replaced (flagged ``verdict_replaced``); a
+    confidence that still differs from PRED[verdict] is replaced too (``confidence_replaced``).
+    No parsed report at all leaves ``final_report`` None."""
+    rep = r.pop("current_report")
     current = r.pop("current")
     r.pop("current_text")
+    r.pop("parse_failed")
     r["dropped_claims"] = len(current["failed"]) if current else None
-    r["verdict_replaced"] = bool(current and current["verdict_error"])
     if rep is None:
-        r["final_report"] = None
+        r.update(final_report=None, verdict_replaced=False, confidence_replaced=False)
         return
-    final = {**rep, "claims": current["passed"] if current else []}
+    final = {**rep, "claims": current["passed"]}
+    r["verdict_replaced"] = final.get("verdict") != record["verdict"]
     if r["verdict_replaced"]:
         final["verdict"] = record["verdict"]
-        final["confidence"] = record["prediction"][record["verdict"]]
+    expected = record["prediction"][final["verdict"]]
+    r["confidence_replaced"] = r["verdict_replaced"] or current["confidence_error"] is not None
+    if r["confidence_replaced"]:
+        final["confidence"] = expected
     r["final_report"] = final
 
 
@@ -218,7 +286,7 @@ def run_grounded(
     results = [_first_result(uid, rec, t) for (uid, rec), t in zip(records, texts, strict=True)]
     by_uid = dict(records)
     for _ in range(max_retries):
-        todo = [r for r in results if _needs_retry(r["current"])]
+        todo = [r for r in results if _needs_retry(r)]
         if not todo:
             break
         _retry_round(llm, todo, by_uid)
@@ -230,23 +298,26 @@ def run_grounded(
 def first_pass_metrics(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """GR and HR-E on the first pass (before the verifier removes anything), with rejections
     counted per rule and per region kind (rule (c) for E regions, (c') for A regions). A first
-    answer that is not valid JSON counts as one failed claim."""
-    total = passed = 0
+    answer that is not valid JSON counts as one failed claim. ``limitation`` claims are left out
+    of GR / HR-E and counted separately (spec card, 24 Nov)."""
+    total = passed = unparsed = verdict_mismatch = confidence_mismatch = 0
+    limitations = Counter()
     by_rule: Counter[str] = Counter()
     by_kind: Counter[str] = Counter()
-    unparsed = verdict_mismatch = 0
     for r in results:
         checks = r["first_checks"]
-        verdict_mismatch += int(bool(checks and checks.get("verdict_error")))
         if checks is None:
             unparsed += 1
             total += 1
             continue
+        verdict_mismatch += int(checks["verdict_error"] is not None)
+        confidence_mismatch += int(checks["confidence_error"] is not None)
         for c in checks["checked"]:
-            total += 1
-            if not c["errors"]:
-                passed += 1
+            if c["claim"].get("claim_type") == "limitation":
+                limitations["passed" if not c["errors"] else "failed"] += 1
                 continue
+            total += 1
+            passed += int(not c["errors"])
             for rule in {e[0] for e in c["errors"]}:
                 by_rule[rule] += 1
                 by_kind[f"{rule}:{_region_kind(c['claim'])}"] += 1
@@ -258,6 +329,8 @@ def first_pass_metrics(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "hr_e": None if gr is None else 1 - gr,
         "unparsed_first_answers": unparsed,
         "verdict_mismatch_first_answers": verdict_mismatch,
+        "confidence_mismatch_first_answers": confidence_mismatch,
+        "limitation_claims": dict(limitations),
         "rejections_by_rule": dict(by_rule),
         "rejections_by_rule_and_region": dict(by_kind),
     }

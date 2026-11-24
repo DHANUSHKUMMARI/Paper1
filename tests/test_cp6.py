@@ -253,7 +253,7 @@ def test_image_baseline_uses_the_same_schema():
             assert all("box" in p for p in prompts_)
             return [json.dumps({"verdict": "real", "claims": [], "limitations": ""}), "garbage"]
 
-    out = variants.image_reports(FakeVL(), [object(), object()])
+    out = variants.image_reports(FakeVL(), [np.zeros((8, 8, 3), np.uint8)] * 2)
     assert out[0]["report"]["verdict"] == "real"
     assert out[1]["report"] is None
 
@@ -310,3 +310,109 @@ def test_off_image_box_area_counts_as_outside():
     mask = np.ones((100, 100), bool)
     assert verifier.box_inside_fraction([90, 0, 100, 10], mask) == pytest.approx(0.1)
     assert verifier.box_inside_fraction([0, 0, 10, 10], mask) == 1.0
+
+
+# ---- review fixes (Dhanush, 24 Nov) ------------------------------------------------------
+
+
+def test_grid_box_converts_to_pixels_on_a_non_square_image():
+    assert variants.grid_box_to_pixels([100, 250, 600, 750], 640, 480) == pytest.approx(
+        [64.0, 120.0, 320.0, 240.0]
+    )
+    assert variants.grid_box_to_pixels([600, 750, 100, 250], 640, 480) == pytest.approx(
+        [64.0, 120.0, 320.0, 240.0]
+    )
+
+
+def test_image_box_counts_and_unparseable_boxes():
+    rep = {
+        "verdict": "locally_edited",
+        "claims": [
+            {
+                "claim_type": "edited_region",
+                "text": "a",
+                "evidence_ids": [],
+                "box": [0, 0, 500, 500],
+            },
+            {
+                "claim_type": "edited_region",
+                "text": "b",
+                "evidence_ids": [],
+                "box": [900, 900, 1100, 1100],
+            },
+            {
+                "claim_type": "edited_region",
+                "text": "c",
+                "evidence_ids": [],
+                "box": [1100, 0, 1200, 50],
+            },
+            {"claim_type": "edited_region", "text": "d", "evidence_ids": [], "box": "upper left"},
+            {"claim_type": "edited_region", "text": "e", "evidence_ids": []},
+        ],
+    }
+    pixel, counts = variants.to_pixel_boxes(rep, 200, 100)
+    assert counts == {"ok": 1, "partly_off": 1, "fully_off": 1, "unparseable": 2}
+    assert pixel["claims"][0]["box"] == pytest.approx([0, 0, 100, 50])
+    mask = np.zeros((100, 200), bool)
+    mask[:50, :100] = True
+    s = verifier.hr_gt_counts(pixel, "edited", mask)
+    assert s == {
+        "checkable": 6,
+        "wrong": 4,
+    }  # only the first box is inside; unparseable boxes are wrong
+
+
+def test_image_reports_give_pixel_boxes_per_image_size():
+    out = variants.image_reports(llm.MockVL(), [np.zeros((100, 300, 3), np.uint8)])
+    assert out[0]["image_size"] == [100, 300]
+    assert out[0]["pixel_report"]["claims"][0]["box"] == pytest.approx([0, 0, 150, 50])
+
+
+def test_unparseable_retries_keep_the_last_parsed_report_and_replace_the_verdict():
+    rec = _record()
+    mock = llm.MockLLM({0: "bad_verdict"}, retry_fault="bad_json")
+    (res,) = verifier.run_grounded(mock, [("u", rec)])
+    assert res["first_report"]["verdict"] == "real"
+    assert res["retries"] == verifier.MAX_RETRIES
+    assert res["verdict_replaced"] is True
+    assert res["final_report"]["verdict"] == "locally_edited"
+    assert res["final_report"]["confidence"] == rec["prediction"]["locally_edited"]
+    assert res["final_report"]["claims"]  # the last parsed report's passing claims are kept
+
+
+def test_rule_b_accepts_region_counts():
+    rec = _record()
+    assert "b" not in _rules(_claim("edited_region", "There is 1 edited region, E1.", ["E1"]), rec)
+    assert "b" in _rules(_claim("edited_region", "There are 3 edited regions, E1.", ["E1"]), rec)
+
+
+def test_limitation_claims_are_exempt_from_rule_a_and_counted_apart():
+    rec = _record()
+    assert not _rules(_claim("limitation", "Only the detector's evidence was used.", []), rec)
+    assert "limitation" in _rules(_claim("limitation", "E1 may be wrong.", ["E1"]), rec)
+    rep = variants.template_report(rec)
+    rep["claims"].append(_claim("limitation", "Only the evidence record was read.", []))
+    (res,) = verifier.run_grounded(_FixedLLM(rep), [("u", rec)])
+    m = verifier.first_pass_metrics([res])
+    assert m["claims"] == len(rep["claims"]) - 1
+    assert m["limitation_claims"] == {"passed": 1}
+    assert m["gr"] == 1.0
+
+
+def test_confidence_is_checked_against_the_prediction():
+    rec = _record()
+    rep = variants.template_report(rec)
+    assert verifier.verify(rep, rec)["confidence_error"] is None
+    assert verifier.verify({**rep, "confidence": 92}, rec)["confidence_error"] is None  # percent
+    assert verifier.verify({**rep, "confidence": 0.5}, rec)["confidence_error"]
+    (res,) = verifier.run_grounded(_FixedLLM({**rep, "confidence": 0.5}), [("u", rec)])
+    assert res["confidence_replaced"] is True
+    assert res["final_report"]["confidence"] == rec["prediction"]["locally_edited"]
+
+
+class _FixedLLM:
+    def __init__(self, report):
+        self.text = json.dumps(report)
+
+    def generate(self, prompts_):
+        return [self.text] * len(prompts_)

@@ -28,6 +28,16 @@ are read from the result files the notebooks write to Drive.
   - P1: attribution claims (A regions of a fully generated verdict) are not scored against an edit mask, because they have no ground truth. Only edited-region claims are checkable for HR-GT.
   - P2: the report's top-level verdict must equal the evidence verdict. It is returned on retry, and still-wrong verdicts are replaced by the evidence verdict (`verdict_replaced`, counted in notebook 18).
   - P2: any part of a box outside the image counts as outside the mask.
+- **Review fixes (Dhanush, 24 Nov; spec card `sg_987rukk5z8` for the additions):**
+  1. **Image-baseline boxes:** Qwen2-VL is asked for its native format, (x1, y1, x2, y2) on a 0–1000 grid. `variants.grid_box_to_pixels` converts each box to a pixel [x, y, w, h] with that image's width and height; `to_pixel_boxes` counts boxes that are ok, partly off the image, fully off it, or unparseable. An unparseable box counts as a wrong region.
+  2. **Retry edge case:** an unparseable retry now keeps the last parsed report and its checks, and the final report is built from those. The verdict is replaced whenever it differs from the evidence verdict.
+  3. **Rule additions:**
+     - rule (b) accepts region counts;
+     - `limitation` claims are exempt from rule (a), may not cite E/A, and are left out of GR/HR-E (counted apart);
+     - the top-level confidence is checked against PRED[verdict], with a retry, then replaced and flagged.
+  4. **Notebook 18 pins `vllm==0.33.0`**, after reading its source: CUDA arch 7.5 is in its build list, AWQ needs capability ≥ 7.5, there is a float16 path for Turing, Triton/FlashInfer/SDPA fallbacks below sm80, and abi3 wheels for Python 3.11–3.14. Smoke cells run 4 grounded prompts and 2 images on the GPU, and stop if any answer does not parse.
+  5. **Notebook 18 cell 6** keeps only each image's size, mask and metadata, not the images.
+  - **Tests:** the grid-to-pixel conversion on a 640×480 image, box counts, the unparseable-retry case, region counts, limitation claims, confidence.
 - **`explain/variants.py`:** the fixed template (it passes the verifier by construction, which the tests check) and the image baseline.
 - **`eval/p6cache.py`:** the P6 cache reader and the aspect check, moved out of `p6data` so that the CP6 session never imports the detector code. `p6data` re-exports them.
 - **Notebook 18** (`make_nb18.py`; T4, fp16; about 1.5 CU paid, 0 on a free account; estimate):

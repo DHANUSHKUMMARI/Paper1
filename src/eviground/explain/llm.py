@@ -43,9 +43,16 @@ class MockLLM:
     call order) to a fault name; a retry prompt that quotes the verifier's error for that fault
     gets a repaired report."""
 
-    def __init__(self, faults: Mapping[int, str] | None = None, *, repair: bool = True):
+    def __init__(
+        self,
+        faults: Mapping[int, str] | None = None,
+        *,
+        repair: bool = True,
+        retry_fault: str | None = None,
+    ):
         self.faults = dict(faults or {})
         self.repair = repair
+        self.retry_fault = retry_fault  # a fault every retry answer has (e.g. "bad_json")
         self.calls: list[list[str]] = []
         self._first = 0
         self._last_fault: str | None = None
@@ -60,6 +67,8 @@ class MockLLM:
                 fault = self.faults.get(self._first)
                 self._last_fault = fault or self._last_fault
                 self._first += 1
+            elif self.retry_fault:
+                fault = self.retry_fault
             elif not self.repair:
                 fault = self._last_fault  # repeat the mistake on every retry
             out.append(self._report(evidence_from_prompt(p), fault))
@@ -236,10 +245,7 @@ class MockVL:
             raise ValueError("one prompt per image")
         self.calls += 1
         out = []
-        for img in images:
-            h, w = (getattr(img, "height", None), getattr(img, "width", None))
-            if h is None:
-                h, w = img.shape[:2]
+        for _ in images:
             rep = {
                 "verdict": "locally_edited",
                 "confidence": 0.7,
@@ -248,7 +254,7 @@ class MockVL:
                         "claim_type": "edited_region",
                         "text": "The upper left looks altered.",
                         "evidence_ids": [],
-                        "box": [0, 0, w // 2, h // 2],
+                        "box": [0, 0, 500, 500],  # Qwen2-VL's 0-1000 grid
                     }
                 ],
                 "limitations": "",

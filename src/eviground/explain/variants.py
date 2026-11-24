@@ -61,16 +61,82 @@ def template_report(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def grid_box_to_pixels(box: Sequence[float], width: int, height: int) -> list[float]:
+    """A Qwen2-VL box (x1, y1, x2, y2) on the 0-1000 grid as a pixel box [x, y, w, h] on an
+    image of ``width`` x ``height`` (the corners may be given in either order)."""
+    x1, y1, x2, y2 = (float(v) for v in box)
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    sx, sy = width / prompts.BOX_GRID, height / prompts.BOX_GRID
+    return [x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy]
+
+
+def _box_status(box: Any) -> str:
+    """'ok', 'partly_off' or 'fully_off' (relative to the 0-1000 grid), or 'unparseable'."""
+    if not isinstance(box, list | tuple) or len(box) != 4:
+        return "unparseable"
+    if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in box):
+        return "unparseable"
+    lo, hi = 0, prompts.BOX_GRID
+    x1, x2 = sorted((box[0], box[2]))
+    y1, y2 = sorted((box[1], box[3]))
+    if x2 <= lo or x1 >= hi or y2 <= lo or y1 >= hi:
+        return "fully_off"
+    if x1 < lo or y1 < lo or x2 > hi or y2 > hi:
+        return "partly_off"
+    return "ok"
+
+
+def to_pixel_boxes(report: Mapping[str, Any] | None, width: int, height: int):
+    """The image-baseline report with each region box converted to pixel [x, y, w, h], and the
+    box counts by status. An unparseable box becomes an empty box [0, 0, 0, 0], so its claim
+    still counts as a wrong region in HR-GT (it is not dropped)."""
+    counts = {"ok": 0, "partly_off": 0, "fully_off": 0, "unparseable": 0}
+    if report is None:
+        return None, counts
+    claims = []
+    for c in report.get("claims", []):
+        c = dict(c)
+        if "box" in c or c.get("claim_type") == "edited_region":
+            status = _box_status(c.get("box"))
+            counts[status] += 1
+            c["box"] = (
+                [0, 0, 0, 0]
+                if status == "unparseable"
+                else grid_box_to_pixels(c["box"], width, height)
+            )
+        claims.append(c)
+    return {**report, "claims": claims}, counts
+
+
 def image_reports(llm: Any, images: Sequence[Any]) -> list[dict[str, Any]]:
-    """The image baseline: one prompt per image (the same schema, a box per region claim), run
-    through ``llm.generate_with_images``. Unparseable answers are kept as text with
-    ``report=None`` (they count as a wrong verdict in HR-GT)."""
+    """The image baseline: one prompt per image (the same schema, a 0-1000 grid box per region
+    claim), run through ``llm.generate_with_images``. Each result keeps the raw report and the
+    report with pixel boxes for HR-GT, with its box counts. Unparseable answers keep
+    ``report=None`` (a wrong verdict in HR-GT)."""
     texts = llm.generate_with_images([prompts.IMAGE_PROMPT] * len(images), images)
     out = []
-    for text in texts:
+    for text, img in zip(texts, images, strict=True):
+        h, w = _size(img)
         try:
             rep, err = prompts.parse_report(text), None
         except prompts.ReportError as e:
             rep, err = None, str(e)
-        out.append({"text": text, "report": rep, "parse_error": err})
+        pixel, counts = to_pixel_boxes(rep, w, h)
+        out.append(
+            {
+                "text": text,
+                "report": rep,
+                "pixel_report": pixel,
+                "box_counts": counts,
+                "image_size": [h, w],
+                "parse_error": err,
+            }
+        )
     return out
+
+
+def _size(img: Any) -> tuple[int, int]:
+    if hasattr(img, "height") and hasattr(img, "width"):
+        return int(img.height), int(img.width)
+    return int(img.shape[0]), int(img.shape[1])

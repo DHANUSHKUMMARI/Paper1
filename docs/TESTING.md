@@ -5,6 +5,35 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## PR Z — Phase C code: CC, P5 perturbations, notebook 17 under a CU cap — 2026-11-25
+
+Sandbox only. Phase C needs Dhanush's go-ahead and a `CU_CAP`.
+
+- **`explain/cc.py` (the CC rule fixed by Dhanush on 24 Nov; spec card `sg_a9hzcfnc3m`):**
+  - each tile runs once through CLIP and the trace CNN (`branch_tokens`);
+  - a token belongs to a region at ≥ 25% of its pixels;
+  - the region's tokens are replaced by the tile's mean token in every tile it covers, with the class token kept, and fusion, gate and head re-run;
+  - the image level is re-aggregated (mean of P(real) and P(generated), max of P(edited));
+  - a region passes at a drop of P(predicted class) ≥ 0.2 **and** above the mean drop of 10 equal-size random token sets, drawn per tile and seeded per image and region;
+  - a region with no token at 25% is counted apart.
+- **`eval/perturb.py` (P5):** JPEG 95/75/50 (4:2:0), resize ×0.5/0.75/1.5 (bicubic, masks nearest), blur σ 1/2/3, Gaussian noise σ 5/10/20 (seeded per uid and level). That makes 13 conditions with the clean image. The levels are proposed in card `sg_a9hzcfnc3m`.
+- **`eval/phasec.py`:**
+  - `run_block`: before each block, the CU used (2.2 CU/h × wall) plus the estimate is checked against `CU_CAP`. The first block over the cap stops the session cleanly: it and every later block are logged as skipped. A saved block is reused.
+  - Items from staged test-set rows: DiffSeg30k masks as in training, BR-Gen and SID-Set masks at L > 127.
+  - Generic tiled scoring, and summaries for P3 (BR-Gen per method, region, source and edited-share bin, SDXL apart), P3b (3-class accuracy, per-class F1, pixels on tampered images), P4 (accuracy, real and fake recall, AP) and P5 (per condition).
+- **Notebook 17 (`make_nb17.py`; L4, bf16; estimate 8.9 CU for every block):**
+  - The inputs are the test-set tars of notebook 16, the P6 tar and bundles, the four checkpoints and the cached probes.
+  - The blocks run in priority order: P1/P2/P3 for seed 42, the detection model on P1, P1/P2/P3 for seeds 123 and 2026, then CC, P3b, P4, P5 and the timings.
+  - The result goes to `runs/phase_c/phase_c_seed42.json`, followed by the compute record (balance) and `release()`.
+  - A CI dry run uses tiny checkpoints and fake tars.
+- **Tests:**
+  - CC: the 25% membership, including small tiles; mean-token removal with the class token kept; random sets matching the per-tile counts; a region carrying the evidence passes while a dark region does not; the tile-aggregated probability; unscored regions; seeding.
+  - Perturbations: each one's effect and determinism; resize keeps the mask aligned.
+  - Blocks: run, reuse, stop at the cap, and skip everything after the stop.
+  - Mask reading by source, and the P3/P3b/P4/P5 summaries.
+- **Checks (sandbox):** see the end of this entry.
+- **Not run here:** real models and data, GPU timing.
+
 ## Notebook 16 run (test-set tar cache, CPU) and its COCO staging fix — 2026-11-24
 
 - **Run:** CPU runtime, commit `ac15b6e`, 1.4031 h wall. **0.11 CU by balance** (26.48 → 26.37); the record says 0.112 (0.08 CU/h × wall).

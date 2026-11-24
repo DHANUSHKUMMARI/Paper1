@@ -108,6 +108,11 @@ jobs:
           EVIGROUND_DRY_RUN: "1"
         run: pytest -q --nbmake notebooks/18_cp6_reports.ipynb
 
+      - name: Notebook 17 dry run (Phase C blocks under a CU cap; tiny models, fake tars)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: pytest -q --nbmake notebooks/17_phase_c_evaluation.ipynb
+
       - name: Notebook 13 dry run (unified seeds 123 and 2026)
         env:
           EVIGROUND_DRY_RUN: "1"

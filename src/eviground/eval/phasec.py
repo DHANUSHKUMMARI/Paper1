@@ -313,8 +313,8 @@ def p5_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for r in records:
         groups[(r["head"], r["condition"])].append(r)
     for (head, cond), rs in sorted(groups.items()):
-        gen = [r for r in rs if r.get("source") == "genimage"]
-        dif = [r for r in rs if r.get("source") == "diffseg30k"]
+        gen = [r for r in rs if str(r.get("source", "")).startswith("genimage")]
+        dif = [r for r in rs if str(r.get("source", "")).startswith("diffseg")]
         row: dict[str, Any] = {}
         if gen:
             fake = [r["label"] == "generated" for r in gen]

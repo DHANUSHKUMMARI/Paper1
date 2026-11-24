@@ -47,8 +47,18 @@ are read from the result files the notebooks write to Drive.
   - 30 reports saved for reading beside their evidence;
   - the result file, then the compute record (balance), then `release()`.
   - A CI dry run with MockLLM and MockVL is added.
+- **Rule added 25 Nov (Dhanush; spec card `sg_24pyjd64if`): edited-region claims without a region.**
+  - **The rule:** an `edited_region` claim is checkable in HR-GT and counts as wrong when it gives no box (image baseline) or cites no existing E region (EviGround, first pass or final). That includes a claim citing only A or G entries, or an unknown E id.
+  - **Reporting:** `hr_gt_counts` returns `no_region`, and `hr_gt_summary` reports `claims_without_region` per variant. The image baseline's box counts gain `missing`, which used to be counted as `unparseable`.
+  - **Smoke cell:** notebook 18's Qwen2-VL smoke cell (2 images) prints the raw boxes and stops unless every numeric box lies in 0–1000 (`variants.raw_grid_boxes`, `boxes_on_grid`), so the native-format assumption is checked before the 500-image run.
+  - **Tests:**
+    - an empty citation, an unknown E, A only and G only each count as wrong and as no-region;
+    - an image claim with no box counts the same way;
+    - the per-variant totals;
+    - global claims are still not checkable;
+    - the grid check rejects pixel-sized and negative boxes.
 - **SonarCloud fix (S3776, critical):** the claim count in `verifier.first_pass_metrics` moved into a helper, `_tally_claims`, which brings the cognitive complexity from 17 to under 15. The output is unchanged: checked equal to the previous version on 2,000 random sets of results.
-- **Checks (sandbox, after the review and Sonar fixes):** ruff clean; pytest 540 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed.
+- **Checks (sandbox, after the review and Sonar fixes and the 25 Nov rule):** ruff clean; pytest 543 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed.
 - **Not run here:** vLLM, the real Qwen models, GPU timing. Notebook 18 pins `vllm==0.33.0` and records the installed version at run time.
 
 ## PR X — Drive test-set tars and the P5 freeze (notebook 16, CPU) — 2026-11-24

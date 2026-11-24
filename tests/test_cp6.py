@@ -224,8 +224,16 @@ def test_hr_gt_verdict_and_region_boxes():
     mask[20:60, 10:40] = True  # E1's box [10, 20, 30, 40] lies inside
     rec = _record()
     rep = variants.template_report(rec)
-    assert verifier.hr_gt_counts(rep, "edited", mask, rec) == {"checkable": 2, "wrong": 0}
-    assert verifier.hr_gt_counts(rep, "real", None, rec) == {"checkable": 2, "wrong": 2}
+    assert verifier.hr_gt_counts(rep, "edited", mask, rec) == {
+        "checkable": 2,
+        "wrong": 0,
+        "no_region": 0,
+    }
+    assert verifier.hr_gt_counts(rep, "real", None, rec) == {
+        "checkable": 2,
+        "wrong": 2,
+        "no_region": 0,
+    }
     img_rep = {
         "verdict": "locally_edited",
         "claims": [
@@ -237,8 +245,16 @@ def test_hr_gt_verdict_and_region_boxes():
             }
         ],
     }
-    assert verifier.hr_gt_counts(img_rep, "edited", mask) == {"checkable": 2, "wrong": 1}
-    assert verifier.hr_gt_counts(None, "edited", mask) == {"checkable": 1, "wrong": 1}
+    assert verifier.hr_gt_counts(img_rep, "edited", mask) == {
+        "checkable": 2,
+        "wrong": 1,
+        "no_region": 0,
+    }
+    assert verifier.hr_gt_counts(None, "edited", mask) == {
+        "checkable": 1,
+        "wrong": 1,
+        "no_region": 0,
+    }
 
 
 def test_template_report_passes_the_verifier():
@@ -303,7 +319,11 @@ def test_a_verdict_that_overrules_the_evidence_is_retried_then_replaced():
 def test_attribution_claims_are_not_scored_against_an_edit_mask():
     rec = _record("fully_generated")
     rep = variants.template_report(rec)
-    assert verifier.hr_gt_counts(rep, "generated", None, rec) == {"checkable": 1, "wrong": 0}
+    assert verifier.hr_gt_counts(rep, "generated", None, rec) == {
+        "checkable": 1,
+        "wrong": 0,
+        "no_region": 0,
+    }
 
 
 def test_off_image_box_area_counts_as_outside():
@@ -351,7 +371,7 @@ def test_image_box_counts_and_unparseable_boxes():
         ],
     }
     pixel, counts = variants.to_pixel_boxes(rep, 200, 100)
-    assert counts == {"ok": 1, "partly_off": 1, "fully_off": 1, "unparseable": 2}
+    assert counts == {"ok": 1, "partly_off": 1, "fully_off": 1, "missing": 1, "unparseable": 1}
     assert pixel["claims"][0]["box"] == pytest.approx([0, 0, 100, 50])
     mask = np.zeros((100, 200), bool)
     mask[:50, :100] = True
@@ -359,7 +379,8 @@ def test_image_box_counts_and_unparseable_boxes():
     assert s == {
         "checkable": 6,
         "wrong": 4,
-    }  # only the first box is inside; unparseable boxes are wrong
+        "no_region": 1,
+    }  # only the first box is inside; unparseable and missing boxes are wrong
 
 
 def test_image_reports_give_pixel_boxes_per_image_size():
@@ -416,3 +437,57 @@ class _FixedLLM:
 
     def generate(self, prompts_):
         return [self.text] * len(prompts_)
+
+
+# ---- edited-region claims without a region (Dhanush, 25 Nov) ----------------------------
+
+
+def test_an_edited_region_claim_without_a_region_is_wrong_and_counted():
+    mask = np.zeros((100, 100), bool)
+    mask[20:60, 10:40] = True
+    rec = _record()
+    base = variants.template_report(rec)
+
+    def claim(ids):
+        return {"claim_type": "edited_region", "text": "edited", "evidence_ids": ids}
+
+    for ids in ([], ["E9"], ["A1"], ["G1"]):  # nothing cited, an unknown E, only A or G
+        rep = {**base, "claims": [*base["claims"], claim(ids)]}
+        assert verifier.hr_gt_counts(rep, "edited", mask, rec) == {
+            "checkable": 3,
+            "wrong": 1,
+            "no_region": 1,
+        }, ids
+    img = {"verdict": "locally_edited", "claims": [claim([])]}
+    pixel, counts = variants.to_pixel_boxes(img, 100, 100)
+    assert counts["missing"] == 1 and pixel["claims"][0]["box"] is None
+    assert verifier.hr_gt_counts(pixel, "edited", mask) == {
+        "checkable": 2,
+        "wrong": 1,
+        "no_region": 1,
+    }
+    s = verifier.hr_gt_summary([(rep, "edited", mask, rec), (pixel, "edited", mask, None)])
+    assert s["claims_without_region"] == 2
+    assert s["checkable_claims"] == 5 and s["wrong_claims"] == 2
+
+
+def test_global_and_attribution_claims_are_still_not_checkable():
+    rec = _record()
+    g = {"claim_type": "global", "text": "x", "evidence_ids": []}
+    rep = {"verdict": "locally_edited", "claims": [g]}
+    assert verifier.hr_gt_counts(rep, "edited", None, rec) == {
+        "checkable": 1,
+        "wrong": 0,
+        "no_region": 0,
+    }
+
+
+def test_smoke_box_check_reads_raw_grid_boxes():
+    out = variants.image_reports(llm.MockVL(), [np.zeros((10, 20, 3), np.uint8)] * 2)
+    boxes = variants.raw_grid_boxes(out)
+    assert boxes == [[0.0, 0.0, 500.0, 500.0]] * 2
+    assert variants.boxes_on_grid(boxes)
+    assert not variants.boxes_on_grid([[0, 0, 1024, 768]])  # pixel boxes, not the grid
+    assert not variants.boxes_on_grid([[-5, 0, 10, 10]])
+    bad = [{"report": {"claims": [{"box": "left"}, {"claim_type": "edited_region"}]}}]
+    assert variants.raw_grid_boxes(bad) == []

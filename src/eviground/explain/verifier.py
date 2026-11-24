@@ -359,15 +359,26 @@ def box_inside_fraction(box: Sequence[float], mask: np.ndarray) -> float:
     return float(np.asarray(mask[y0:y1, x0:x1], dtype=bool).sum()) / area
 
 
-def _claim_boxes(claim: Mapping[str, Any], known: Mapping[str, Mapping[str, Any]]) -> list:
-    """The pixel boxes an edited-region claim is scored on. Attribution claims (A regions of a
-    fully generated verdict) state where the model's evidence lies, not where an edit is, and
-    have no ground truth, so they are not checkable; neither are global claims."""
-    if claim.get("claim_type") not in ("edited_region", None):
-        return []
+NO_REGION_BOX = [0, 0, 0, 0]  # an edited-region claim with no region: checkable, always wrong
+
+
+def _claim_boxes(claim: Mapping[str, Any], known: Mapping[str, Mapping[str, Any]]):
+    """The pixel boxes a claim is scored on in HR-GT, and whether it is an ``edited_region``
+    claim with no region (no box from the image baseline, or no existing E region cited by
+    EviGround); such a claim is scored on an empty box, so it counts as wrong (spec, 25 Nov).
+    Attribution claims (A regions of a fully generated verdict) state where the model's
+    evidence lies, not where an edit is, and have no ground truth, so they are not checkable;
+    neither are global claims."""
+    kind = claim.get("claim_type")
+    if kind not in ("edited_region", None):
+        return [], False
     if claim.get("box") is not None:
-        return [claim["box"]]
-    return [known[i]["bbox"] for i in claim.get("evidence_ids") or [] if "bbox" in known.get(i, {})]
+        return [claim["box"]], False
+    ids = [str(i) for i in claim.get("evidence_ids") or []]
+    if kind is None:  # untyped claim: scored on whatever regions it cites
+        return [known[i]["bbox"] for i in ids if "bbox" in known.get(i, {})], False
+    boxes = [known[i]["bbox"] for i in ids if i.startswith("E") and "bbox" in known.get(i, {})]
+    return (boxes, False) if boxes else ([NO_REGION_BOX], True)
 
 
 def hr_gt_counts(
@@ -379,18 +390,21 @@ def hr_gt_counts(
     """Checkable and wrong claims of one report against the ground truth: the verdict (wrong
     when it differs from the true class) and every edited-region claim (wrong when < 10% of its
     box is inside the true edit mask; no mask = nothing inside; attribution claims are not
-    checkable). EviGround's region boxes come from the
-    cited E/A entries of ``record``; the image baseline gives a ``box`` per claim. Claims about a
-    property with no ground truth (global evidence) are not checkable."""
+    checkable). EviGround's region boxes come from the cited E entries of ``record``; the image
+    baseline gives a ``box`` per claim. An edited-region claim with no region is wrong and is
+    also counted in ``no_region``. Claims about a property with no ground truth (global
+    evidence) are not checkable."""
     if report is None:
-        return {"checkable": 1, "wrong": 1}
+        return {"checkable": 1, "wrong": 1, "no_region": 0}
     known = entries(record) if record else {}
-    boxes = [b for c in report.get("claims", []) for b in _claim_boxes(c, known)]
+    scored = [_claim_boxes(c, known) for c in report.get("claims", [])]
+    boxes = [b for bs, _ in scored for b in bs]
     inside = [0.0 if gt_mask is None else box_inside_fraction(b, gt_mask) for b in boxes]
     verdict_wrong = int(report.get("verdict") != TRUE_VERDICT[true_label])
     return {
         "checkable": 1 + len(boxes),
         "wrong": verdict_wrong + sum(f < BOX_INSIDE_MIN for f in inside),
+        "no_region": sum(missing for _, missing in scored),
     }
 
 
@@ -401,17 +415,19 @@ def hr_gt_summary(
 ) -> dict[str, Any]:
     """HR-GT and verdict accuracy over (report, true_label, gt_mask, record) rows; ``record`` is
     None for the image baseline (its boxes come with the claims)."""
-    checkable = wrong = right_verdicts = images = 0
+    checkable = wrong = no_region = right_verdicts = images = 0
     for report, label, mask, record in rows:
         c = hr_gt_counts(report, label, mask, record)
         checkable += c["checkable"]
         wrong += c["wrong"]
+        no_region += c["no_region"]
         images += 1
         right_verdicts += int(report is not None and report.get("verdict") == TRUE_VERDICT[label])
     return {
         "images": images,
         "checkable_claims": checkable,
         "wrong_claims": wrong,
+        "claims_without_region": no_region,
         "hr_gt": wrong / checkable if checkable else None,
         "verdict_accuracy": right_verdicts / images if images else None,
     }

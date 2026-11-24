@@ -72,7 +72,10 @@ def grid_box_to_pixels(box: Sequence[float], width: int, height: int) -> list[fl
 
 
 def _box_status(box: Any) -> str:
-    """'ok', 'partly_off' or 'fully_off' (relative to the 0-1000 grid), or 'unparseable'."""
+    """'ok', 'partly_off' or 'fully_off' (relative to the 0-1000 grid), 'missing' (no box) or
+    'unparseable'."""
+    if box is None:
+        return "missing"
     if not isinstance(box, list | tuple) or len(box) != 4:
         return "unparseable"
     if not all(isinstance(v, int | float) and not isinstance(v, bool) for v in box):
@@ -90,8 +93,9 @@ def _box_status(box: Any) -> str:
 def to_pixel_boxes(report: Mapping[str, Any] | None, width: int, height: int):
     """The image-baseline report with each region box converted to pixel [x, y, w, h], and the
     box counts by status. An unparseable box becomes an empty box [0, 0, 0, 0], so its claim
-    still counts as a wrong region in HR-GT (it is not dropped)."""
-    counts = {"ok": 0, "partly_off": 0, "fully_off": 0, "unparseable": 0}
+    still counts as a wrong region in HR-GT (it is not dropped). An edited-region claim with no
+    box keeps ``box`` None; HR-GT counts it as wrong and as a claim without a region."""
+    counts = {"ok": 0, "partly_off": 0, "fully_off": 0, "missing": 0, "unparseable": 0}
     if report is None:
         return None, counts
     claims = []
@@ -100,13 +104,29 @@ def to_pixel_boxes(report: Mapping[str, Any] | None, width: int, height: int):
         if "box" in c or c.get("claim_type") == "edited_region":
             status = _box_status(c.get("box"))
             counts[status] += 1
-            c["box"] = (
-                [0, 0, 0, 0]
-                if status == "unparseable"
-                else grid_box_to_pixels(c["box"], width, height)
-            )
+            if status == "missing":
+                c["box"] = None
+            elif status == "unparseable":
+                c["box"] = [0, 0, 0, 0]
+            else:
+                c["box"] = grid_box_to_pixels(c["box"], width, height)
         claims.append(c)
     return {**report, "claims": claims}, counts
+
+
+def raw_grid_boxes(results: Sequence[Mapping[str, Any]]) -> list[list[float]]:
+    """Every numeric 4-value box in the raw (grid) reports of :func:`image_reports` results."""
+    out = []
+    for r in results:
+        for c in (r.get("report") or {}).get("claims", []):
+            if _box_status(c.get("box")) not in ("missing", "unparseable"):
+                out.append([float(v) for v in c["box"]])
+    return out
+
+
+def boxes_on_grid(boxes: Sequence[Sequence[float]]) -> bool:
+    """True if every coordinate lies in 0-1000 (Qwen2-VL's native grid)."""
+    return all(0 <= v <= prompts.BOX_GRID for b in boxes for v in b)
 
 
 def image_reports(llm: Any, images: Sequence[Any]) -> list[dict[str, Any]]:

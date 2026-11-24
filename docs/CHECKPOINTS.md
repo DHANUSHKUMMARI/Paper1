@@ -11,7 +11,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP2 | 4 | Model build | **PASS** (15 Nov 2026, notebook 05 on an L4; script verdict, awaiting Dhanush) |DHANUSH |
 | CP3 | 5 | Training health | **PASS** (seed 42, both models; notebook 06 on an L4, 15–16 Nov 2026; script verdict, awaiting Dhanush) |DHANUSH |
 | CP4 | 6 | Generalization gate | **FAIL** (G1 and G2; RF PASS; one fix used, no second fix; 17–18 Nov 2026; awaiting Dhanush's decision on the narrowed claims) | |
-| CP5 | 7 | Evidence faithfulness | pending | |
+| CP5 | 7 | Evidence faithfulness | **FAIL** (19 Nov, notebook 14; repaired token-deletion test 24 Nov, notebook 15: both maps pass deletion, decoder fails randomization SSIM 0.546, Grad-CAM++ fails EPG 1.38×; fallback: decoder primary) | |
 | CP6 | 8 | Grounded explanations | pending | |
 | CP7 | 10 | Full benchmark | pending | |
 | CP8 | 11 | Claims-Edit case study | pending | |
@@ -568,6 +568,18 @@ was reused (a pipeline check, not a seed one). Values are on validation crops, a
 - **P6 masks:** some real P6 masks differ in size from their images. They were resized to the image (nearest, then > 0) by Dhanush's patch in cell 7; the loaders now apply the same rule (PR U), and notebook 15 reports the count per part.
 - **The pixel deletion test was confounded:** the blur that removes pixels is itself a local edit, so P(edited) stayed near 0.9 in every order (deletion ≈ insertion).
 - **Decision (Dhanush, 24 Nov):** CP5 is FAIL. The spec's fallback applies: **the mask decoder is the primary evidence map**, Grad-CAM++ secondary, and CP6 uses the decoder map.
-- **Repair of the test:** one pre-registered repair (spec cards `sg_jrepjxk8bs`, `sg_rdyd3wa8x3`): token deletion before fusion, oracle validity first, and Spearman beside SSIM, in notebook 15. Its result is added here.
-- **Compute:** about 7 CU by balance (28.19 left).
+- **Repair of the test:** one pre-registered repair (spec cards `sg_jrepjxk8bs`, `sg_rdyd3wa8x3`, accepted 24 Nov before the run): token deletion before fusion, oracle validity first, and Spearman beside SSIM, in notebook 15.
+- **Notebook 15 result (24 Nov, commit `1050c24`; run on a T4, not the planned L4):**
+
+| Map | EPG ratio (validation) | Randomization, last step, validation: SSIM (Spearman) | Token deletion, 300 P6 images, vs random 0.569 | Result under the rules |
+|---|---|---|---|---|
+| Mask decoder (primary) | 2.00× pass | 0.546 fail (0.130) | 0.435, p 2.5e-35, pass | fails randomization only |
+| Grad-CAM++ | 1.38× fail | 0.376 pass (0.043) | 0.503, p 1.7e-17, pass | fails EPG only |
+
+  - **Validity:** the oracle order beat random (0.511 vs 0.569, p 5.3e-6), so the test is informative overall. Per part: DiffSeg30k held-out valid (0.692 vs 0.823, p 2.6e-7), BR-Gen valid (0.510 vs 0.544, p 0.008), **SID-Set tampered not valid** (0.331 vs 0.340, p 0.52; mean P(edited) on the full tile 0.400, against 0.885 on DiffSeg30k).
+  - **SID-Set masks:** 26 of 400 had another aspect ratio than their 1024×1024 image and were stretched to it (the notebook 14 rule); 9 of them are in the deletion set. Without those 9, all-image results are unchanged in substance (oracle 0.512 vs 0.571, p 6.5e-6; decoder 0.436, Grad-CAM++ 0.504, both pass) and SID-Set stays not valid.
+  - **P6 randomization, last step:** Grad-CAM++ SSIM 0.260 (Spearman 0.011), decoder 0.289 (0.002).
+  - **Outcome:** neither map passes all three criteria, so **CP5 stays FAIL** and the decoder stays primary (Dhanush, 24 Nov). Both maps are faithful by token deletion where the test can measure. The decoder's validation SSIM 0.546 is between near-flat maps; its Spearman 0.130 shows the ranking is lost, which is reported beside the failed criterion, not instead of it.
+  - **Compute:** 1.71 CU by balance (28.19 → 26.48).
+- **Compute:** notebook 14 about 7 CU by balance (28.19 left); notebook 15 1.71 CU (26.48 left).
 - **Verified by Dhanush:** ☐

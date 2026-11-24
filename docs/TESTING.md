@@ -5,6 +5,30 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 15 run: CP5 token deletion and randomization rerun (Colab, **T4**) — 2026-11-24
+
+Run on main at `1050c24`, files written 13:18 UTC: `cp5_token_deletion_seed42.json`, `p6_token_deletion_seed42.csv`, `p6_token_deletion_records_seed42.jsonl`, `cp5_token_curves.png`, `compute_cp5_token.json`, and the P6 cache `runs/cache/p6_images.tar` (1,500 images, SHA-256 `1ae27a38fce2…`) with its manifest.
+
+- **GPU:** the record says `Tesla T4`; the run was planned for the L4. Autocast was bf16 as in the L4 notebooks. The notebook 14 maps it reads came from the L4.
+- **Cell 4 stopped once** on the 2% aspect-ratio guard (a 764×1024 mask on a 1024×1024 SID-Set image). With Dhanush's approval a Colab cell resized every mismatched mask to its image (the notebook 14 rule) and listed the aspect mismatches, then built the cache without staging again. Resized: SID-Set tampered 26 of 400 (all aspect mismatches, from sizes such as 764×1024, 1024×683 and 527×1024), DiffSeg30k 0, BR-Gen 0. The list is in the result file under `p6_mask_resize`.
+- **Token deletion (300 `P6_deletion` images, 10 random orders, 12.26 min):**
+
+| | All | DiffSeg30k held-out | BR-Gen | SID-Set tampered |
+|---|---|---|---|---|
+| Oracle vs random (p) | 0.511 vs 0.569 (5.3e-6), **valid** | 0.692 vs 0.823 (2.6e-7), valid | 0.510 vs 0.544 (0.008), valid | 0.331 vs 0.340 (0.52), **not valid** |
+| Decoder | **0.435, PASS** (p 2.5e-35) | 0.630, pass | 0.438, pass | 0.238 (uninformative) |
+| Grad-CAM++ | **0.503, PASS** (p 1.7e-17) | 0.704, pass | 0.494, pass | 0.310 (uninformative) |
+
+  - Without the 9 deletion images whose SID-Set mask was stretched: oracle 0.512 vs 0.571 (p 6.5e-6), decoder 0.436, Grad-CAM++ 0.504, both pass; SID-Set still not valid.
+- **Randomization, SSIM (Spearman) per cumulative step:**
+  - validation Grad-CAM++: heads 0.287 (0.113), fusion 0.287 (0.091), trace 0.243 (0.040), LoRA 0.376 (0.043);
+  - validation decoder: 0.123 (−0.045), 0.122 (−0.044), 0.546 (0.184), **0.546 (0.130)**;
+  - P6 Grad-CAM++: 0.325 (0.129), 0.271 (0.065), 0.117 (0.043), 0.260 (0.011);
+  - P6 decoder: 0.085 (0.017), 0.085 (0.017), 0.289 (0.027), 0.289 (0.002).
+  - Grad-CAM++ on validation ended at 0.376 here and 0.455 in notebook 14 (same tiles); the randomized weights differ between runs.
+- **Verdict:** CP5 stays FAIL (decoder fails randomization SSIM, Grad-CAM++ fails EPG); decoder primary. Recorded in `docs/CHECKPOINTS.md`.
+- **Compute:** 1.3405 h wall. **1.71 CU by balance** (28.19 → 26.48). The record's 2.949 CU uses the L4 rate (2.2 CU/h), which does not apply to a T4; its `cu_balance_start` reads 28.02.
+
 ## Notebook 14 run: CP5 on validation and the P6 explanation pass (Colab L4) — 2026-11-19
 
 Run on main at `1973329`; the result files were written at 18:56 UTC. Results are read from Drive: `cp5_evidence_faithfulness_seed42.json`, `compute_cp5.json`, `p6_randomization_seed42.json`, `p6_faithfulness_seed42.csv` and the bundles in `runs/explain/p6_unified_ctx_seed42/`.

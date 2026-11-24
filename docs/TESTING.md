@@ -5,6 +5,23 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## PR X — Drive test-set tars and the P5 freeze (notebook 16, CPU) — 2026-11-24
+
+- **`data/testcache.py`:** one tar per test set, holding the **original file bytes** (images and masks, not re-encoded) and a manifest. The manifest records the SHA-256 of each member and of the tar, and each image's row with the paths left out.
+  - **`build`:** writes the tar and the manifest.
+  - **`publish`:** copies both to Drive, re-hashes the tar **from Drive**, and decodes one seeded random member of the Drive copy (`drive_sha256_ok`, `decode_check`). If either check fails, nothing is written to Drive.
+  - **`is_ready`:** true when a verified tar of the recorded size is on Drive.
+  - **`stage`:** copies the tar and checks it and every member against the manifest. It refuses unknown or missing members, unpacks, and returns rows that `testsets.file_items` reads unchanged.
+- **`subsets.p5_subset`:** P5 at about half the spec's size (Dhanush, 24 Nov): 250 real + 250 generated per GenImage generator, drawn from the frozen P1 subset, plus 500 DiffSeg30k held-out images from P2. The images are already in the P1 and P2 tars, and the perturbations are applied at run time.
+- **`cp5.aspect_sensitivity`:** CP5 per part, as run and without the 26 aspect-mismatched SID-Set masks: the EPG ratio per map (notebook 14) and the token-deletion verdict (notebook 15). This is a sensitivity check only.
+- **Notebook 16** (`make_nb16.py`, CPU runtime, about 0.2–0.3 CU estimated):
+  - freezes P5 into `eval_subsets.json`, or reuses it if already frozen;
+  - builds and publishes `p1_subset`, `p2`, `p3_brgen`, `p3b`, `p4` and `claims_edit_src`, one at a time, freeing the staged files after each; a set already verified on Drive is skipped;
+  - prints the CP5 sensitivity table if the notebook 14/15 files are on Drive;
+  - does one full staging round trip (`p2`), then writes `test_cache_record.json` and `compute_test_cache.json`.
+- **Checks (sandbox):** ruff clean; pytest 508 passed; repo audit ok; notebook 16 dry run passed (fake world, every set, Drive re-hash and decode check). CI step added.
+- **Not run here:** the real data, sizes and timing on Colab.
+
 ## PR W — compute record per GPU type; SID-Set aspect-ratio exclusion pre-registered — 2026-11-24
 
 - **Compute record (`utils/session.py`):**

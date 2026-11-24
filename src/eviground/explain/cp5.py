@@ -442,3 +442,56 @@ def bundle_tile(
     up = up[top % k : top % k + (bottom - top), left % k : left % k + (right - left)]
     pad = ((0, bottom - top - up.shape[0]), (0, right - left - up.shape[1]))
     return np.pad(up, pad, mode="edge") if any(p[1] for p in pad) else up
+
+
+def _num(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    return float(v)
+
+
+def _sensitivity_row(
+    edited: Sequence[Mapping[str, Any]], token_records: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    area = [_num(r["area_fraction"]) for r in edited]
+    mean_area = float(np.mean(area)) if edited else 0.0
+    epg = {
+        name: float(np.mean([_num(r[f"epg_{name}"]) for r in edited])) / mean_area
+        if mean_area > 0
+        else None
+        for name in MAPS
+    }
+    verdict = token_deletion_verdict(token_records) if token_records else None
+    return {
+        "edited_images": len(edited),
+        "epg_ratio": epg,
+        "token_images": len(token_records),
+        "token_valid": verdict["validity"]["valid"] if verdict else None,
+        "token_maps": {k: v["verdict"] for k, v in verdict["maps"].items()} if verdict else None,
+    }
+
+
+def aspect_sensitivity(
+    p6_records: Sequence[Mapping[str, Any]],
+    token_records: Sequence[Mapping[str, Any]],
+    excluded: Sequence[str],
+    parts: Sequence[str] = ("all", "diffseg_heldout", "sidset_tampered", "brgen"),
+) -> dict[str, Any]:
+    """CP5 per part as run and without ``excluded`` uids (the aspect-mismatched SID-Set masks;
+    a sensitivity check only, Dhanush 24 Nov 2026): EPG ratio per map from notebook 14's P6
+    records (CSV rows are fine: numbers may be strings) and the token-deletion verdict from
+    notebook 15's records."""
+    drop = set(excluded)
+    edited = [r for r in p6_records if _num(r.get("epg_gradcam")) is not None]
+    out: dict[str, Any] = {"excluded": len(drop), "parts": {}}
+    for part in parts:
+        in_part = [r for r in edited if part in ("all", r.get("part"))]
+        tok = [r for r in token_records if part in ("all", r.get("part"))]
+        out["parts"][part] = {
+            "as_run": _sensitivity_row(in_part, tok),
+            "excl_mismatched": _sensitivity_row(
+                [r for r in in_part if r["uid"] not in drop],
+                [r for r in tok if r["uid"] not in drop],
+            ),
+        }
+    return out

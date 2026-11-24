@@ -27,6 +27,9 @@ P1_PER_LABEL = 1250
 P4_TOTAL = 5000
 LABELS = ("generated", "real")
 P1_GENERATORS = 8
+P5_SALT = "p5_half_v1"
+P5_PER_LABEL = 250  # half of the spec's 500 real + 500 generated per generator (Dhanush, 24 Nov)
+P5_DIFFSEG = 500  # half of the spec's 1,000 DiffSeg30k held-out images
 
 
 def take(
@@ -329,3 +332,38 @@ def p6_subset(
         "P6_mllm": _record("P6_mllm", mllm, seed, f"{salt}/mllm", per_part=mllm_counts),
         "P6_deletion": _record("P6_deletion", deletion, seed, f"{salt}/del", per_part=del_counts),
     }
+
+
+def p5_subset(
+    p1_rows: Iterable[Mapping[str, Any]],
+    p2_rows: Iterable[Mapping[str, Any]],
+    *,
+    per_label: int = P5_PER_LABEL,
+    diffseg: int = P5_DIFFSEG,
+    seed: int = SEED,
+    salt: str = P5_SALT,
+) -> dict[str, Any]:
+    """P5 robustness, about half the spec's size (Dhanush, 24 Nov 2026): ``per_label`` real and
+    generated images per GenImage generator, drawn from the frozen P1 subset's rows, plus
+    ``diffseg`` DiffSeg30k held-out-editor images from P2. Both are already in the P1 and P2
+    test tars, so P5 needs no tar of its own; the perturbations are applied at run time."""
+    strata: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for r in p1_rows:
+        strata[f"{r['generator']}/{r['label']}"].append(r)
+    short = {k: len(v) for k, v in strata.items() if len(v) < per_label}
+    p2 = list(p2_rows)
+    if short or len(p2) < diffseg or not strata:
+        raise ValueError(f"P5: too few images (P1 strata {short}, P2 {len(p2)} < {diffseg})")
+    chosen = [r for k in sorted(strata) for r in take(strata[k], per_label, seed, salt)]
+    part_of = {r["uid"]: "genimage" for r in chosen}
+    picked = take(p2, diffseg, seed, salt)
+    part_of.update({r["uid"]: "diffseg_heldout" for r in picked})
+    return _record(
+        "P5",
+        chosen + list(picked),
+        seed,
+        salt,
+        per_stratum=dict.fromkeys(sorted(strata), per_label),
+        diffseg_heldout=len(picked),
+        part_of=part_of,
+    )

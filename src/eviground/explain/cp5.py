@@ -418,11 +418,14 @@ def token_deletion_verdict(
         vals = [r[f"token_{name}"] for r in records]
         p = _wilcoxon(vals, rnd, "less")
         ok = bool(vals) and float(np.mean(vals)) < float(np.mean(rnd)) and p < P_MAX
+        verdict = "UNINFORMATIVE"
+        if valid:
+            verdict = "PASS" if ok else "FAIL"
         out["maps"][name] = {
             "mean_auc": float(np.mean(vals)) if vals else None,
             "mean_random_auc": float(np.mean(rnd)) if rnd else None,
             "wilcoxon_p": p,
-            "verdict": ("PASS" if ok else "FAIL") if valid else "UNINFORMATIVE",
+            "verdict": verdict,
         }
     return out
 

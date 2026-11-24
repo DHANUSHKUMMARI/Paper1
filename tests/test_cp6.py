@@ -460,7 +460,8 @@ def test_an_edited_region_claim_without_a_region_is_wrong_and_counted():
         }, ids
     img = {"verdict": "locally_edited", "claims": [claim([])]}
     pixel, counts = variants.to_pixel_boxes(img, 100, 100)
-    assert counts["missing"] == 1 and pixel["claims"][0]["box"] is None
+    assert counts["missing"] == 1
+    assert pixel["claims"][0]["box"] is None
     assert verifier.hr_gt_counts(pixel, "edited", mask) == {
         "checkable": 2,
         "wrong": 1,
@@ -468,7 +469,8 @@ def test_an_edited_region_claim_without_a_region_is_wrong_and_counted():
     }
     s = verifier.hr_gt_summary([(rep, "edited", mask, rec), (pixel, "edited", mask, None)])
     assert s["claims_without_region"] == 2
-    assert s["checkable_claims"] == 5 and s["wrong_claims"] == 2
+    assert s["checkable_claims"] == 5
+    assert s["wrong_claims"] == 2
 
 
 def test_global_and_attribution_claims_are_still_not_checkable():

@@ -37,7 +37,7 @@ Sandbox only. Phase C needs Dhanush's go-ahead and a `CU_CAP`.
   - **SonarCloud:**
     - S3776: the timing block is split into helpers;
     - S1192: `BEST` replaces the repeated `'best.pt'`;
-    - S7632: a function replaces a lambda that carried a suppression comment;
+    - S7632: a function replaces a lambda that carried a suppression comment (named `amp_ctx`, S1542);
     - S7519: `dict.fromkeys`.
 - **Checks (sandbox, after the review fixes):** ruff clean; pytest 565 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed. The notebook 17 dry run checks both reuse and rerun.
 - **Not run here:** real models and data, GPU timing.

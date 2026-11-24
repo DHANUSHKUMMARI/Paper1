@@ -103,6 +103,11 @@ jobs:
           command -v 7z || (sudo apt-get update -q && sudo apt-get install -y -q p7zip-full)
           pytest -q --nbmake notebooks/16_test_cache.ipynb
 
+      - name: Notebook 18 dry run (CP6 reports with MockLLM; no detector, no vLLM)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: pytest -q --nbmake notebooks/18_cp6_reports.ipynb
+
       - name: Notebook 13 dry run (unified seeds 123 and 2026)
         env:
           EVIGROUND_DRY_RUN: "1"

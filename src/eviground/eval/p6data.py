@@ -34,18 +34,24 @@ import torch.nn.functional as F
 from PIL import Image
 
 from eviground.eval import testsets
+from eviground.eval.p6cache import (  # noqa: F401 (light module, shared with the CP6 session)
+    ASPECT_TOLERANCE,
+    P6CacheError,
+    aspect_mismatch,
+    is_aspect_mismatched,
+    read_cache,
+)
 from eviground.eval.tiled import Item
 
 EDITED_PARTS = ("diffseg_heldout", "sidset_tampered", "brgen")
 MASK_CUT = 127
-ASPECT_TOLERANCE = 0.02
 # Parts whose aspect-mismatched masks are kept (flagged) instead of stopping the run: notebook 15
 # found 26 of 400 SID-Set tampered masks so (24 Nov 2026), and none in the other parts.
 FLAG_ASPECT_PARTS = ("sidset_tampered",)
 
 
-class P6DataError(RuntimeError):
-    """A P6 file is missing or differs from what notebook 12b froze."""
+# A P6 file is missing or differs from what notebook 12b froze (one class with the cache reader).
+P6DataError = P6CacheError
 
 
 def _rgb(path: Path) -> np.ndarray:
@@ -57,16 +63,6 @@ def binary_mask(path: Path, cut: int = MASK_CUT) -> np.ndarray:
     """A grey-level mask file as booleans (value > ``cut``)."""
     with Image.open(path) as m:
         return np.asarray(m.convert("L")) > cut
-
-
-def aspect_mismatch(
-    mask_shape: Sequence[int], image_shape: Sequence[int], tolerance: float = ASPECT_TOLERANCE
-) -> bool:
-    """True when the mask's width/height ratio differs from the image's by more than
-    ``tolerance`` (relative)."""
-    h, w = int(mask_shape[0]), int(mask_shape[1])
-    H, W = int(image_shape[0]), int(image_shape[1])
-    return abs(w / h - W / H) / (W / H) > tolerance
 
 
 def align_mask(
@@ -115,15 +111,6 @@ def _aligned(item: Item) -> Item:
     if flag:
         meta["mask_aspect_mismatch"] = True
     return Item(item.uid, item.image, mask, editors, meta)
-
-
-def is_aspect_mismatched(meta: Mapping[str, Any], image_shape: Sequence[int]) -> bool:
-    """The flag, or (for items cached before it existed, e.g. notebook 15's P6 tar) the same test
-    on the recorded original mask size."""
-    if meta.get("mask_aspect_mismatch"):
-        return True
-    orig = meta.get("mask_resized_from")
-    return bool(orig) and aspect_mismatch(orig, image_shape)
 
 
 def mask_metric_items(items: Iterable[Item], *, include_mismatched: bool = False) -> Iterator[Item]:
@@ -295,31 +282,6 @@ def write_cache(items: Iterable[Item], tar_path: Path, manifest_path: Path) -> d
         "entries": entries,
     }
     manifest_path.write_text(json.dumps(manifest, indent=1, default=str))
-    return manifest
-
-
-def read_cache(tar_path: Path, manifest_path: Path, out_dir: Path) -> dict[str, Any]:
-    """Unpack the cache to ``out_dir`` and check the tar's and every member's SHA-256 against
-    the manifest; any difference stops (:class:`P6DataError`). Returns the manifest."""
-    tar_path, out_dir = Path(tar_path), Path(out_dir)
-    manifest = json.loads(Path(manifest_path).read_text())
-    if hashlib.sha256(tar_path.read_bytes()).hexdigest() != manifest["tar_sha256"]:
-        raise P6DataError(f"{tar_path} differs from its manifest")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    allowed = {
-        rec[k] for rec in manifest["entries"].values() for k in ("image", "mask") if k in rec
-    }
-    with tarfile.open(tar_path) as tf:
-        for member in tf.getmembers():
-            if member.name not in allowed or not member.isfile():
-                raise P6DataError(f"unexpected member in {tar_path}: {member.name}")
-            (out_dir / member.name).write_bytes(tf.extractfile(member).read())
-    for uid, rec in manifest["entries"].items():
-        for key in ("image", "mask"):
-            if key in rec:
-                data = (out_dir / rec[key]).read_bytes()
-                if hashlib.sha256(data).hexdigest() != rec[f"{key}_sha256"]:
-                    raise P6DataError(f"{uid}: cached {key} differs from the manifest")
     return manifest
 
 

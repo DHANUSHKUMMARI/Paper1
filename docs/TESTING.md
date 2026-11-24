@@ -5,6 +5,37 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## PR Y — CP6 code: grounded reports, the verifier, the A5 variants (notebook 18, MockLLM) — 2026-11-24
+
+- **Pre-registered (spec card `sg_p6vc69mdyc`, waiting for Dhanush; decided 24 Nov before CP6):**
+  - **Claim schema:** each claim has a `claim_type` (`verdict`, `edited_region`, `attribution`, `global`, `limitation`).
+  - **Rule (b), numbers:** a quoted number matches if |quoted − value| ≤ max(0.01, 2% of |value|); a percentage is compared with value × 100 for values in 0–1, and with `area_pct` directly, within 1 point.
+  - **Rule (c), E regions:** mask_conf ≥ 0.6.
+  - **Rule (c′), A regions:** attribution claims only, never "edited". Rejections are reported per rule and per region type.
+- **`explain/llm.py`:**
+  - `MockLLM` is deterministic and schema-valid. Its faults can be injected: a missing ID, a wrong number, a weak region, an A region called edited, broken JSON. It repairs the fault on a retry.
+  - `VLLMBackend` runs vLLM with the official AWQ checkpoints at revisions pinned by commit (`Qwen/Qwen2.5-7B-Instruct-AWQ` `b2503754…`, `Qwen/Qwen2-VL-7B-Instruct-AWQ` `6ec2560b…`): float16, temperature 0, batched, with `close()` between models. vLLM is imported only when the backend is built.
+  - `MockVL` stands in for the image baseline.
+- **`explain/prompts.py`:**
+  - The grounded prompt is built from the evidence record's own keys only: no uid, no path, no pixels.
+  - It also holds the retry prompt, the image-baseline prompt (the same schema plus a box per region claim) and `parse_report`.
+- **`explain/verifier.py`:**
+  - `check_claim` applies the schema check and rules (a), (b), (c) and (c′).
+  - `run_grounded` runs a batched first pass, then at most 2 retry rounds. Claims still failing are dropped, and the first pass and the final report are both kept.
+  - `first_pass_metrics` gives GR and HR-E with rejections per rule and region type.
+  - `hr_gt_counts` / `hr_gt_summary` score HR-GT: the verdict, plus region boxes with < 10% inside the mask counted as wrong. They also give verdict accuracy.
+- **`explain/variants.py`:** the fixed template (it passes the verifier by construction, which the tests check) and the image baseline.
+- **`eval/p6cache.py`:** the P6 cache reader and the aspect check, moved out of `p6data` so that the CP6 session never imports the detector code. `p6data` re-exports them.
+- **Notebook 18** (`make_nb18.py`; T4, fp16; about 1.5 CU paid, 0 on a free account; estimate):
+  - grounded reports for all P6 images, with resume;
+  - the image baseline on P6_mllm, with resume;
+  - HR-GT and verdict accuracy for every variant, without and with the flagged SID-Set masks;
+  - 30 reports saved for reading beside their evidence;
+  - the result file, then the compute record (balance), then `release()`.
+  - A CI dry run with MockLLM and MockVL is added.
+- **Checks (sandbox):** ruff clean; pytest 530 passed; repo audit ok; dry runs of notebooks 14, 15, 16 and 18 passed (p6data was split).
+- **Not run here:** vLLM, the real Qwen models, GPU timing. The vLLM version is recorded at run time, not pinned yet.
+
 ## PR X — Drive test-set tars and the P5 freeze (notebook 16, CPU) — 2026-11-24
 
 - **`data/testcache.py`:** one tar per test set, holding the **original file bytes** (images and masks, not re-encoded) and a manifest. The manifest records the SHA-256 of each member and of the tar, and each image's row with the paths left out.

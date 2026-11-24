@@ -58,14 +58,26 @@ def run_block(
     cu_cap: float,
     rate: float = L4_RATE,
     clock: Callable[[], float] = time.time,
+    provenance: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any] | None:
     """Run one block, or reuse its saved result, or skip it (and stop the session) when the cap
     would be passed. ``log`` collects a status per block; once one block is skipped for the cap,
-    ``log['stopped']`` is set and every later block is skipped too."""
+    ``log['stopped']`` is set and every later block is skipped too.
+
+    ``provenance`` names the block's inputs (code commit, checkpoint and tar hashes, rules). It is
+    saved with the result, and a saved result is reused only when it was made from exactly the
+    same inputs; otherwise the block runs again (logged as ``rerun``), so a report never mixes
+    results of different code or inputs."""
     path = Path(out_dir) / f"block_{name}.json"
+    prov = json.loads(json.dumps(dict(provenance or {}), default=_json_default))
+    rerun = None
     if path.is_file():
-        log.setdefault("blocks", {})[name] = {"status": "reused"}
-        return json.loads(path.read_text())
+        saved = json.loads(path.read_text())
+        if saved.get("_provenance") == prov:
+            log.setdefault("blocks", {})[name] = {"status": "reused"}
+            return saved
+        old = saved.get("_provenance") or {}
+        rerun = sorted(k for k in set(old) | set(prov) if old.get(k) != prov.get(k))
     used = cu_used(t0, rate, clock())
     if log.get("stopped") or used + est_cu > cu_cap:
         log.setdefault("blocks", {})[name] = {
@@ -80,9 +92,13 @@ def run_block(
     result = dict(fn())
     minutes = round((clock() - start) / 60, 2)
     result["_block"] = {"name": name, "minutes": minutes, "est_cu": est_cu, "cu_before": used}
+    result["_provenance"] = prov
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=1, default=_json_default))
-    log.setdefault("blocks", {})[name] = {"status": "done", "minutes": minutes}
+    entry: dict[str, Any] = {"status": "done", "minutes": minutes}
+    if rerun is not None:
+        entry.update(status="rerun", changed_inputs=rerun)
+    log.setdefault("blocks", {})[name] = entry
     return result
 
 
@@ -271,7 +287,7 @@ def p3b_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     truth = {"real": "real", "full_synthetic": "generated", "generated": "generated",
              "tampered": "edited", "edited": "edited"}  # fmt: skip
     pairs = [(truth.get(str(r["label"]), str(r["label"])), r["label_pred"]) for r in records]
-    conf = {t: {p: 0 for p in CLASSES} for t in CLASSES}
+    conf = {t: dict.fromkeys(CLASSES, 0) for t in CLASSES}
     for t, p in pairs:
         if t in conf:
             conf[t][p] += 1

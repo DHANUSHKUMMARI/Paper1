@@ -31,7 +31,15 @@ Sandbox only. Phase C needs Dhanush's go-ahead and a `CU_CAP`.
   - Perturbations: each one's effect and determinism; resize keeps the mask aligned.
   - Blocks: run, reuse, stop at the cap, and skip everything after the stop.
   - Mask reading by source, and the P3/P3b/P4/P5 summaries.
-- **Checks (sandbox):** ruff clean; pytest 564 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed.
+- **Review fixes (PR #58):**
+  - **Codex P1:** a saved block is reused only when its recorded inputs match exactly: the git commit, the hashes of the checkpoints, probes, test tars and P6 tar, the subsets, the P5 levels and the CC rule. Otherwise it runs again, logged as `rerun` with the changed inputs.
+  - **Codex P2** (the cap is checked between blocks, not inside them): answered on the thread; Dhanush decides whether to add a check inside blocks.
+  - **SonarCloud:**
+    - S3776: the timing block is split into helpers;
+    - S1192: `BEST` replaces the repeated `'best.pt'`;
+    - S7632: a function replaces a lambda that carried a suppression comment;
+    - S7519: `dict.fromkeys`.
+- **Checks (sandbox, after the review fixes):** ruff clean; pytest 565 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed. The notebook 17 dry run checks both reuse and rerun.
 - **Not run here:** real models and data, GPU timing.
 
 ## Notebook 16 run (test-set tar cache, CPU) and its COCO staging fix — 2026-11-24

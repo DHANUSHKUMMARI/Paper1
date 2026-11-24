@@ -50,6 +50,32 @@ def test_blocks_run_reuse_and_stop_at_the_cap(tmp_path):
     assert calls == ["a", "b"]
 
 
+def test_a_saved_block_is_reused_only_with_the_same_inputs(tmp_path):
+    clock, calls = Clock(0.0), []
+
+    def fn():
+        calls.append(1)
+        return {"x": len(calls)}
+
+    def run(prov, log):
+        return phasec.run_block("a", 0.1, fn, out_dir=tmp_path, log=log, t0=0.0, cu_cap=9.0,
+                                clock=clock, provenance=prov)  # fmt: skip
+
+    prov = {"git_commit": "abc", "checkpoint": "s1", "tars": {"p2": "t1"}}
+    assert run(prov, {})["x"] == 1
+    log = {}
+    assert run(dict(prov), log)["x"] == 1
+    assert log["blocks"]["a"]["status"] == "reused"
+    log = {}
+    assert run({**prov, "checkpoint": "s2"}, log)["x"] == 2  # another checkpoint: run again
+    assert log["blocks"]["a"]["status"] == "rerun"
+    assert log["blocks"]["a"]["changed_inputs"] == ["checkpoint"]
+    log = {}
+    assert run({**prov, "checkpoint": "s2"}, log)["x"] == 2
+    assert log["blocks"]["a"]["status"] == "reused"
+    assert calls == [1, 1]
+
+
 def _png(path, arr):
     Image.fromarray(arr).save(path)
     return str(path)

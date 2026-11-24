@@ -71,13 +71,17 @@ def finish(
     *,
     name: str = "compute.json",
     extra: Mapping[str, Any] | None = None,
+    balance_start: float | None = None,
 ) -> dict[str, Any]:
-    """Write the session's ``compute.json`` (wall hours x rate) into ``folder``."""
+    """Write the session's ``compute.json`` (wall hours x rate) into ``folder``. ``balance_start``:
+    the Colab balance typed in before Run all; the real cost is the drop to the next balance
+    (the rate x hours figure misses earlier, interrupted sessions; 19 Nov 2026)."""
     hours = (time.time() - t0) / 3600
     info = {
         "wall_time_h": round(hours, 4),
         "cu_per_hour": cu_per_hour,
         "compute_units": round(hours * cu_per_hour, 3),
+        "cu_balance_start": balance_start,
         "utc": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         **(dict(extra) if extra else {}),
     }

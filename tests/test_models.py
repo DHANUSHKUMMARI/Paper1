@@ -366,3 +366,12 @@ def test_tiled_prediction_runs_fixed_size_batches(monkeypatch, model):
     assert res["tiles"] == 16
     assert res["coverage"] == pytest.approx(1.0)
     assert sizes == [5, 5, 5, 1]
+
+
+def test_token_hooks_reproduce_the_forward_logits(model):
+    model.eval()
+    x = torch.rand(2, 3, 256, 256)
+    with torch.no_grad():
+        s, t = model.branch_tokens(x)
+        assert s.shape[1] == t.shape[1] + 1
+        assert torch.allclose(model.logits_from_tokens(s, t), model(x)["logits"], atol=1e-5)

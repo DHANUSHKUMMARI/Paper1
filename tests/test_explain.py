@@ -306,3 +306,94 @@ def test_cp5_on_the_tiny_model(model):
     rnd = cp5.randomization(model, tiles_x)
     assert [s["step"] for s in rnd["gradcam"]] == ["heads", "fusion", "trace", "semantic_lora"]
     assert len(rnd["decoder"][-1]["ssim"]) == 2
+
+
+# --------------------------------------------------------------------------------------
+# Token-level deletion (notebook 15)
+# --------------------------------------------------------------------------------------
+
+
+class _TokenModel(torch.nn.Module):
+    """P(edited) rises with the number of untouched 'edited' trace tokens (value 1.0)."""
+
+    def __init__(self, edited, flat=False):
+        super().__init__()
+        self.edited, self.flat = edited, flat
+
+    def branch_tokens(self, x):
+        t = torch.zeros(x.shape[0], 256, 4)
+        t[:, self.edited, 0] = 1.0
+        return torch.zeros(x.shape[0], 257, 4), t
+
+    def logits_from_tokens(self, s, t):
+        if self.flat:
+            return torch.zeros(s.shape[0], 3)
+        k = (t[:, :, 0] > 0.99).float().sum(dim=1)
+        return torch.stack([torch.zeros_like(k), torch.zeros_like(k), k / 10.0], dim=1)
+
+
+def test_token_deletion_oracle_beats_random_and_flat_head_is_uninformative():
+    from eviground.explain import cp5
+
+    edited = np.arange(100)  # the first 100 tokens hold the edit
+    oracle = np.zeros(256)
+    oracle[edited] = 1.0
+    recs = []
+    for seed in range(12):
+        recs.append(
+            cp5.token_deletion(
+                _TokenModel(edited),
+                torch.zeros(3, 256, 256),
+                {
+                    "oracle": oracle,
+                    "decoder": oracle + np.random.default_rng(seed).random(256) * 0.1,
+                    "gradcam": np.random.default_rng(seed).random(256),
+                },
+                steps=10,
+                seed=seed,
+            )
+        )
+    assert recs[0]["token_oracle"] < recs[0]["token_random"]
+    v = cp5.token_deletion_verdict(recs)
+    assert v["validity"]["valid"]
+    assert v["maps"]["decoder"]["verdict"] == "PASS"
+    assert v["maps"]["gradcam"]["verdict"] == "FAIL"
+    flat = [
+        cp5.token_deletion(
+            _TokenModel(edited, flat=True),
+            torch.zeros(3, 256, 256),
+            {"oracle": oracle, "decoder": oracle, "gradcam": oracle},
+            steps=4,
+            seed=s,
+        )
+        for s in range(5)
+    ]
+    vf = cp5.token_deletion_verdict(flat)
+    assert not vf["validity"]["valid"]
+    assert {m["verdict"] for m in vf["maps"].values()} == {"UNINFORMATIVE"}
+
+
+def test_token_scores_and_spearman():
+    from eviground.explain import cp5
+
+    m = np.zeros((256, 256))
+    m[:16, :16] = 1.0
+    sc = cp5.token_scores(m)
+    assert sc.shape == (256,)
+    assert sc[0] == 1.0
+    assert sc[1:].sum() == 0.0
+    a = np.random.default_rng(0).random((32, 32))
+    assert cp5.spearman(a, a) == pytest.approx(1.0)
+    assert np.isnan(cp5.spearman(a, np.ones((32, 32))))
+
+
+def test_bundle_tile_restores_the_window():
+    from eviground.explain import cp5
+
+    full = np.zeros((300, 520))
+    full[:, 300:] = 1.0
+    small = full[:300, :520].reshape(75, 4, 130, 4).mean(axis=(1, 3))
+    tile = cp5.bundle_tile(small, (264, 44, 520, 300))
+    assert tile.shape == (256, 256)
+    assert tile[:, :36].max() == 0.0
+    assert tile[:, 36:].min() == 1.0

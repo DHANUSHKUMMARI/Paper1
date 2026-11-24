@@ -549,3 +549,24 @@ was reused (a pipeline check, not a seed one). Values are on validation crops, a
 - **Compute:** the session ran 5.77 h on an L4. Dhanush's Colab balance fell from about 44.3 to about 31–32 CU, so
   about 12.5–13 CU. The notebook's own record (1.7 CU/h) says 9.805; the real rate is about 2.2 CU/h.
 - **Verified by Dhanush:** ☐
+
+### CP5 — Evidence faithfulness, seed 42 — 2026-11-19 — **FAIL** (fallback applied; the deletion test is repaired, notebook 15)
+
+- **Run:** notebook 14 (L4, commit `1973329`), on the unified final configuration, seed 42.
+  - The go/no-go uses 200 edited validation images (training editors) and 30 randomization tiles.
+  - P6 (1,500 images) is reported only.
+- **Rule** (Dhanush, 19 Nov):
+  - EPG ≥ 1.5 × the mean area fraction with a one-sided paired Wilcoxon p < 0.01;
+  - last-step randomization SSIM < 0.5;
+  - deletion AUC below random-order deletion.
+
+| Map | EPG ratio (p) | SSIM, last step | Deletion vs random | Result |
+|---|---|---|---|---|
+| Grad-CAM++ | 1.38× (2.3e-7) | 0.455 | 0.919 vs 0.832 | fail (EPG, deletion) |
+| Mask decoder | 2.00× (4.1e-33) | 0.545 | 0.921 vs 0.832 | fail (SSIM, deletion) |
+
+- **The pixel deletion test was confounded:** the blur that removes pixels is itself a local edit, so P(edited) stayed near 0.9 in every order (deletion ≈ insertion).
+- **Decision (Dhanush, 24 Nov):** CP5 is FAIL. The spec's fallback applies: **the mask decoder is the primary evidence map**, Grad-CAM++ secondary, and CP6 uses the decoder map.
+- **Repair of the test:** one pre-registered repair (spec cards `sg_jrepjxk8bs`, `sg_rdyd3wa8x3`): token deletion before fusion, oracle validity first, and Spearman beside SSIM, in notebook 15. Its result is added here.
+- **Compute:** about 7 CU by balance (28.19 left).
+- **Verified by Dhanush:** ☐

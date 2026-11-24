@@ -110,3 +110,36 @@ def test_brgen_hash_check_and_missing_files(tmp_path):
 def test_manifest_rows_keeps_only_p6():
     rows = [{"uid": "a"}, {"uid": "b"}]
     assert list(p6data.manifest_rows({"uids": ["b", "z"]}, rows)) == ["b"]
+
+
+def test_cache_round_trip_and_refuses_a_changed_member(tmp_path):
+    import tarfile
+
+    from eviground.eval.tiled import Item
+
+    img = np.random.default_rng(0).integers(0, 255, (20, 30, 3)).astype(np.uint8)
+    mask = np.zeros((20, 30), bool)
+    mask[2:8, 3:9] = True
+    items = [
+        Item("a/1", img, mask, None, {"part": "brgen", "label": "edited"}),
+        Item("b/2", img, None, None, {"part": "real", "label": "real"}),
+    ]
+    man = p6data.write_cache(items, tmp_path / "c.tar", tmp_path / "c.json")
+    assert man["images"] == 2
+    got = p6data.read_cache(tmp_path / "c.tar", tmp_path / "c.json", tmp_path / "out")
+    back = {it.uid: it for it in p6data.cached_items(["a/1", "b/2"], got, tmp_path / "out")}
+    assert (back["a/1"].image == img).all()
+    assert (back["a/1"].mask == mask).all()
+    assert back["b/2"].mask is None
+    assert back["a/1"].meta == {"part": "brgen", "label": "edited"}
+    # a tar rewritten with a changed member is refused
+    with tarfile.open(tmp_path / "c.tar", "w") as tf:
+        name = man["entries"]["a/1"]["image"]
+        data = p6data.png_bytes(img + 1)
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        import io
+
+        tf.addfile(info, io.BytesIO(data))
+    with pytest.raises(p6data.P6DataError):
+        p6data.read_cache(tmp_path / "c.tar", tmp_path / "c.json", tmp_path / "out2")

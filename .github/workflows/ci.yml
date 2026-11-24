@@ -89,6 +89,13 @@ jobs:
           command -v 7z || (sudo apt-get update -q && sudo apt-get install -y -q p7zip-full)
           pytest -q --nbmake notebooks/14_cp5_explanations.ipynb
 
+      - name: Notebook 15 dry run (CP5 token-level deletion, P6 cache; 7z for BR-Gen)
+        env:
+          EVIGROUND_DRY_RUN: "1"
+        run: |
+          command -v 7z || (sudo apt-get update -q && sudo apt-get install -y -q p7zip-full)
+          pytest -q --nbmake notebooks/15_cp5_token_deletion.ipynb
+
       - name: Notebook 13 dry run (unified seeds 123 and 2026)
         env:
           EVIGROUND_DRY_RUN: "1"

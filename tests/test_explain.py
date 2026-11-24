@@ -397,3 +397,39 @@ def test_bundle_tile_restores_the_window():
     assert tile.shape == (256, 256)
     assert tile[:, :36].max() == 0.0
     assert tile[:, 36:].min() == 1.0
+
+
+def test_aspect_sensitivity_reports_as_run_and_without_the_excluded():
+    rng = np.random.default_rng(0)
+    p6 = [
+        {
+            "uid": f"u{i}",
+            "part": "sidset_tampered" if i < 4 else "brgen",
+            "area_fraction": "0.2",
+            "epg_gradcam": str(0.6 if i else 0.0),
+            "epg_decoder": "0.4",
+        }
+        for i in range(8)
+    ] + [{"uid": "real", "part": "real", "area_fraction": "", "epg_gradcam": ""}]
+    tok = [
+        {
+            "uid": f"u{i}",
+            "part": "sidset_tampered" if i < 4 else "brgen",
+            "token_oracle": 0.3 + 0.01 * rng.random(),
+            "token_random": 0.6,
+            "token_gradcam": 0.4,
+            "token_decoder": 0.5,
+        }
+        for i in range(8)
+    ]
+    from eviground.explain import cp5
+
+    out = cp5.aspect_sensitivity(p6, tok, ["u0"])
+    sid = out["parts"]["sidset_tampered"]
+    assert sid["as_run"]["edited_images"] == 4
+    assert sid["excl_mismatched"]["edited_images"] == 3
+    assert sid["as_run"]["epg_ratio"]["gradcam"] == pytest.approx(0.45 / 0.2)
+    assert sid["excl_mismatched"]["epg_ratio"]["gradcam"] == pytest.approx(3.0)
+    assert out["parts"]["brgen"]["as_run"] == out["parts"]["brgen"]["excl_mismatched"]
+    assert out["parts"]["all"]["as_run"]["token_images"] == 8
+    assert out["parts"]["all"]["excl_mismatched"]["token_images"] == 7

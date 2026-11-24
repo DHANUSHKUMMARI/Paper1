@@ -231,3 +231,37 @@ def test_hashing_only_the_chameleon_head_gives_the_same_pick():
     head = subsets.chameleon_candidates(cham, 76)
     assert subsets.p6_subset(pools, brgen, head, index)["P6"]["sha256"] == full["sha256"]
     assert full["skipped_near_training"]["chameleon"] > 0
+
+
+def _p5_rows():
+    p1 = [
+        {"uid": f"gi/{g}/{lab}/{i}", "generator": g, "label": lab}
+        for g in ("adm", "sd14")
+        for lab in ("real", "generated")
+        for i in range(6)
+    ]
+    p2 = [{"uid": f"ds/{i}", "role": "test_P2"} for i in range(9)]
+    return p1, p2
+
+
+def test_p5_takes_per_label_from_p1_and_diffseg_from_p2():
+    p1, p2 = _p5_rows()
+    rec = subsets.p5_subset(p1, p2, per_label=3, diffseg=4)
+    assert rec["images"] == 2 * 2 * 3 + 4
+    assert sum(v == "diffseg_heldout" for v in rec["part_of"].values()) == 4
+    assert rec["per_stratum"] == {
+        "adm/generated": 3,
+        "adm/real": 3,
+        "sd14/generated": 3,
+        "sd14/real": 3,
+    }
+    assert subsets.intact(rec)
+    assert subsets.p5_subset(p1, p2, per_label=3, diffseg=4)["sha256"] == rec["sha256"]
+
+
+def test_p5_refuses_too_few_images():
+    p1, p2 = _p5_rows()
+    with pytest.raises(ValueError, match="too few"):
+        subsets.p5_subset(p1, p2, per_label=7, diffseg=4)
+    with pytest.raises(ValueError, match="too few"):
+        subsets.p5_subset(p1, p2, per_label=3, diffseg=10)

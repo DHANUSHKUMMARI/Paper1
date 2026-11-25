@@ -17,10 +17,16 @@ are read from the result files the notebooks write to Drive.
   2. **Estimates:** `EST['p5_det']` = 1.7 (52k image passes, with resize ×1.5), so the total estimate is 9.45 CU. The 8.9 I quoted before was off; the old sum was 9.05.
   3. **Codex #58 P2:** no check inside a block, since a block-level resume would discard partial work. The check between blocks stays, and the thread is answered and resolved.
   4. **`CU_CAP` = 9.7** is prefilled (the hard limit is 11; the largest block, about 1.7 CU, cannot push past it).
+- **Notebook 18 image baseline (T4 smoke test, 25 Nov):** cell 5 stopped on its smoke test; 1 of the 2 answers had no JSON object.
+  - **Raw text:** Qwen2-VL filled `evidence_ids` with 1, 2, 3, … and never closed the JSON. This happened at both 768 and 2048 tokens, so it is a loop, not truncation.
+  - **Fix:** the image baseline has no evidence record, so `IMAGE_SCHEMA` drops `evidence_ids`; `parse_report` still adds an empty list, so the report shape is unchanged. The prompt also asks for at most 5 claims and no other fields.
+  - **Unchanged:** the grounded prompt; a looping answer in the full run still counts as unparseable, which is a wrong verdict in HR-GT.
+  - **Tests:** the image prompt has no `evidence_ids` and has the claim limit; a looping answer raises `ReportError`.
+  - **Checked on the T4 in the open session:** with the fixed prompt, both smoke images parse, with boxes [734, 0, 1000, 500] and [0, 0, 1000, 1000] on the 0–1000 grid.
 - **Test:** `test_a_docs_only_commit_keeps_the_code_hashes_and_reuses_blocks` uses a temporary git repo.
   - A docs-only commit changes HEAD but none of the hashes, and the block is reused.
   - A change under `src/`, in `configs/` or in the notebook each reruns the block.
-- **Checks (sandbox):** ruff clean; pytest 566 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed.
+- **Checks (sandbox, after the image-prompt fix):** ruff clean; pytest 568 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed.
 
 ## PR Z — Phase C code: CC, P5 perturbations, notebook 17 under a CU cap — 2026-11-25
 

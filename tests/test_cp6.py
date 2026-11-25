@@ -493,3 +493,21 @@ def test_smoke_box_check_reads_raw_grid_boxes():
     assert not variants.boxes_on_grid([[-5, 0, 10, 10]])
     bad = [{"report": {"claims": [{"box": "left"}, {"claim_type": "edited_region"}]}}]
     assert variants.raw_grid_boxes(bad) == []
+
+
+def test_the_image_prompt_asks_for_no_evidence_ids_and_few_claims():
+    # 25 Nov T4 smoke test: Qwen2-VL looped on evidence_ids (1, 2, 3, ...) and never closed the JSON
+    assert "evidence_ids" not in prompts.IMAGE_PROMPT
+    assert "box" in prompts.IMAGE_PROMPT
+    assert f"at most {prompts.IMAGE_MAX_CLAIMS} claims" in prompts.IMAGE_PROMPT
+    rep = prompts.parse_report(
+        '{"verdict": "real", "confidence": 0.9, "claims": '
+        '[{"claim_type": "edited_region", "text": "x", "box": [0, 0, 10, 10]}]}'
+    )
+    assert rep["claims"][0]["evidence_ids"] == []
+
+
+def test_a_looping_answer_is_unparseable_and_counts_as_wrong():
+    looping = '{"verdict": "real", "claims": [{"evidence_ids": [' + ", ".join(map(str, range(300)))
+    with pytest.raises(prompts.ReportError):
+        prompts.parse_report(looping)

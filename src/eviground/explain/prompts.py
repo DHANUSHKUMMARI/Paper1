@@ -44,17 +44,21 @@ Rules:
 # Qwen2-VL's native grounding format: (x1, y1, x2, y2) on a 0-1000 grid over the image
 # (Dhanush, 24 Nov); converted to pixel [x, y, w, h] per image before HR-GT (variants.py).
 BOX_GRID = 1000
+# The image baseline has no evidence record, so its claims carry no evidence_ids: on the T4 smoke
+# test (25 Nov) Qwen2-VL filled that field with 1, 2, 3, ... until the token limit and never
+# closed the JSON. parse_report still adds an empty list, so the report shape is unchanged.
 IMAGE_SCHEMA = SCHEMA.replace(
     '"evidence_ids": [string, ...]}',
-    '"evidence_ids": [], "box": [x1, y1, x2, y2] (region claims only)}',
+    '"box": [x1, y1, x2, y2] (region claims only)}',
 )
+IMAGE_MAX_CLAIMS = 5
 
 IMAGE_PROMPT = f"""You are a forensic analyst writing a short report for a non-expert.
 Look at the image. Decide whether it is a real photograph, fully AI-generated, or a real or
 generated image with a locally edited region. For every claim about a region, give its box as
 [x1, y1, x2, y2]: the top-left and bottom-right corners on a 0-{BOX_GRID} grid over the image
-(0 = left or top edge, {BOX_GRID} = right or bottom edge). Answer with one JSON object and
-nothing else, in this schema:
+(0 = left or top edge, {BOX_GRID} = right or bottom edge). Give at most {IMAGE_MAX_CLAIMS} claims
+and no other fields. Answer with one JSON object and nothing else, in this schema:
 {IMAGE_SCHEMA}
 """
 

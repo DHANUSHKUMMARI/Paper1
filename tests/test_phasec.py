@@ -2,6 +2,7 @@
 per-protocol summaries."""
 
 import json
+import subprocess
 
 import numpy as np
 import pytest
@@ -74,6 +75,60 @@ def test_a_saved_block_is_reused_only_with_the_same_inputs(tmp_path):
     assert run({**prov, "checkpoint": "s2"}, log)["x"] == 2
     assert log["blocks"]["a"]["status"] == "reused"
     assert calls == [1, 1]
+
+
+def test_a_docs_only_commit_keeps_the_code_hashes_and_reuses_blocks(tmp_path):
+    repo = tmp_path / "repo"
+    for d in ("src", "configs", "notebooks", "docs"):
+        (repo / d).mkdir(parents=True)
+    paths = ("src", "configs", "notebooks/17.ipynb")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        )
+
+    def commit(path, text, msg):
+        (repo / path).write_text(text)
+        git("add", "-A")
+        git("commit", "-q", "-m", msg)
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    (repo / "configs" / "base.yaml").write_text("a: 1\n")
+    (repo / "notebooks" / "17.ipynb").write_text("{}\n")
+    commit("src/a.py", "x = 1\n", "code")
+    code1, head1 = phasec.code_tree(repo, paths), git("rev-parse", "HEAD").stdout
+    commit("docs/notes.md", "docs only\n", "docs")
+    assert git("rev-parse", "HEAD").stdout != head1
+    assert phasec.code_tree(repo, paths) == code1
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return {}
+
+    out = tmp_path / "out"
+    kw = dict(out_dir=out, t0=0.0, cu_cap=9.0, clock=Clock(0.0))
+
+    def run():
+        log = {}
+        phasec.run_block(
+            "a", 0.1, fn, log=log, provenance={"code": phasec.code_tree(repo, paths)}, **kw
+        )
+        return log["blocks"]["a"]["status"]
+
+    assert run() == "done"
+    assert run() == "reused"  # after the docs-only commit
+    for path, text in (
+        ("src/a.py", "x = 2\n"),
+        ("configs/base.yaml", "a: 2\n"),
+        ("notebooks/17.ipynb", "{ }\n"),
+    ):
+        commit(path, text, f"change {path}")
+        assert run() == "rerun", path
+    assert len(calls) == 4
 
 
 def _png(path, arr):

@@ -5,6 +5,27 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 17 review fixes before Phase C (Dhanush, 25 Nov) — 2026-11-25
+
+1. **Crash safety (`phasec.run_block`):**
+   - An exception from a block is caught. The block is logged as `failed`, with the error, the traceback and its minutes, and nothing is saved for it, so a later session runs it again.
+   - The next block runs, and cell 10 (result file, compute record, release) always runs. Cell 10 prints every failed block with its error.
+   - **Test:** a raising block is logged as failed and the next block runs and is saved. The dry run has a block that raises (`dry_fail`, 1/0); every later block is done and the release is reached.
+2. **Cap across resumes:**
+   - `PHASE_C_BALANCE_START = 23.43` is fixed in cell 2.
+   - `phasec.session_cap` gives this session's cap: `CU_CAP − (PHASE_C_BALANCE_START − CU_BALANCE_START)`. A balance that went up counts as nothing spent, and the function refuses at ≤ 0.
+   - The pre-flight prints the cap and passes it to every block. The result and the compute record keep `cap_cu_session`.
+   - **Tests:** a first session gives 9.7; a session resumed at 19.0 gives 5.27; 13.73 is refused; a block above the session cap is skipped.
+3. **CC:** before `region_cc`, each E region mask must have the image's shape. A mismatch fails the block (via point 1) and is never scored.
+4. **Prefetch:**
+   - `phasec.prefetch(tasks, workers=6, depth=64)` runs each task in a thread pool, at most `depth` ahead, and keeps the order. A task's exception is raised at its turn, and pending work is cancelled when the consumer stops.
+   - The work is split into one task per image: `phasec.item_tasks` / `item_from_row` (decode, P5 perturbation) and `testsets.file_item_tasks` / `file_item` (decode, harmonize). `items_from_rows` and `file_items` are unchanged in output.
+   - It wraps the item streams of the P1, P2, P3, P3b, P4 and P5 blocks. The timings block stays unprefetched, as the reference.
+   - **Speed is measured:** each block logs `images_per_s` from its own stats, and cell 10 prints status, minutes and images/s per block.
+   - **Test:** the prefetched P5 items equal the plain ones (uids and arrays, in order, with 6 workers and depth 4); a worker's error propagates.
+- **Checks (sandbox):** ruff clean; pytest 579 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 18 and 18b passed.
+- **Not measured here:** the real speed-up, which comes from the L4 run's `images_per_s`.
+
 ## Notebook 18 run (Phase D, CP6) and the CP6 analysis code (Dhanush's review) — 2026-11-25
 
 ### Notebook 18 run (T4, paid; commit `f2fd5b9`; result `runs/cp6/cp6_reports_seed42.json`)

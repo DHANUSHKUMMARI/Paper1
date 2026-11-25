@@ -44,16 +44,24 @@ BINARY_SOURCES = ("brgen", "sidset", "sidset_val")  # masks binarized at L > 127
 # ---- blocks under a CU cap -------------------------------------------------------------------
 
 
-def code_tree(repo: Path | str, subdir: str = "src") -> str:
-    """The git tree hash of ``subdir`` at HEAD: it changes only when the code under ``subdir``
-    changes, so a docs-only commit keeps it (block provenance, Dhanush 25 Nov 2026)."""
-    out = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", f"HEAD:{subdir}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return out.stdout.strip()
+CODE_PATHS = ("src", "configs", "notebooks/17_phase_c_evaluation.ipynb")
+
+
+def code_tree(repo: Path | str, paths: Sequence[str] = CODE_PATHS) -> dict[str, str]:
+    """The git object hash at HEAD of each path that decides how a block is computed: the code
+    under ``src/``, the configs and notebook 17 itself. A docs-only commit keeps every hash, so
+    finished blocks are reused; a change to any of these paths reruns them (block provenance,
+    Dhanush and Codex review, 25 Nov 2026)."""
+    out = {}
+    for p in paths:
+        res = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", f"HEAD:{p}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        out[p] = res.stdout.strip()
+    return out
 
 
 def cu_used(t0: float, rate: float = L4_RATE, now: float | None = None) -> float:

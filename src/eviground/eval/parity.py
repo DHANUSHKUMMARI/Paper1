@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import random
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -54,8 +53,12 @@ def sample_parity(
     out: dict[str, Any] = {"seed": seed, "salt": salt, "n_each": n}
     for name, uids in (("edited", edited_uids), ("real", real_uids)):
         pool = sorted(set(uids))
-        rng = random.Random(f"{seed}:{salt}:{name}")
-        chosen = sorted(rng.sample(pool, min(n, len(pool))))
+        # a reproducible draw (not security): numpy's generator seeded from the seed, salt and set
+        digest = hashlib.sha256(f"{seed}:{salt}:{name}".encode()).digest()
+        key = int.from_bytes(digest[:8], "little")
+        rng = np.random.default_rng(key)
+        picks = rng.choice(len(pool), size=min(n, len(pool)), replace=False)
+        chosen = sorted(pool[i] for i in picks)
         out[name] = {"uids": chosen, "images": len(chosen), "pool": len(pool),
                      "sha256": _hash(chosen)}  # fmt: skip
     out["sha256"] = _hash([f"edited:{u}" for u in out["edited"]["uids"]]

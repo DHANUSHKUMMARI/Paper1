@@ -21,8 +21,10 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from collections import defaultdict
+import traceback
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +70,32 @@ def cu_used(t0: float, rate: float = L4_RATE, now: float | None = None) -> float
     return ((time.time() if now is None else now) - t0) / 3600 * rate
 
 
+def session_cap(cu_cap: float, phase_balance_start: float, balance_start: float) -> float:
+    """The cap for this session when Phase C is resumed (Dhanush, 25 Nov): ``cu_cap`` minus what
+    earlier Phase C sessions spent, read from the balance (``phase_balance_start`` - this
+    session's ``balance_start``; a balance that went up counts as nothing spent). Refuses when
+    nothing is left."""
+    spent = max(0.0, float(phase_balance_start) - float(balance_start))
+    cap = round(float(cu_cap) - spent, 4)
+    if cap <= 0:
+        raise ValueError(
+            f"Phase C cap reached: {spent:.2f} CU already spent since the Phase C start balance "
+            f"{phase_balance_start} (cap {cu_cap})"
+        )
+    return cap
+
+
+def _throughput(result: Any) -> tuple[int, float]:
+    """Images and seconds summed over every stats dict (``images`` and ``seconds``) in a block's
+    result, at any depth."""
+    if isinstance(result, Mapping):
+        if isinstance(result.get("images"), int) and isinstance(result.get("seconds"), int | float):
+            return result["images"], float(result["seconds"])
+        pairs = [_throughput(v) for v in result.values()]
+        return sum(p[0] for p in pairs), sum(p[1] for p in pairs)
+    return 0, 0.0
+
+
 def run_block(
     name: str,
     est_cu: float,
@@ -88,7 +116,12 @@ def run_block(
     ``provenance`` names the block's inputs (code commit, checkpoint and tar hashes, rules). It is
     saved with the result, and a saved result is reused only when it was made from exactly the
     same inputs; otherwise the block runs again (logged as ``rerun``), so a report never mixes
-    results of different code or inputs."""
+    results of different code or inputs.
+
+    An exception raised by ``fn`` does not end the session (Dhanush, 25 Nov): the block is logged
+    as ``failed`` with the error, its traceback and its minutes, nothing is saved for it (so a
+    later session runs it again), and the next block runs. ``images_per_s`` is logged from the
+    block's own stats, so a speed-up is measured."""
     path = Path(out_dir) / f"block_{name}.json"
     prov = json.loads(json.dumps(dict(provenance or {}), default=_json_default))
     rerun = None
@@ -110,13 +143,25 @@ def run_block(
         log["stopped"] = True
         return None
     start = clock()
-    result = dict(fn())
+    try:
+        result = dict(fn())
+    except Exception as e:  # noqa: BLE001 - a failed block is logged and the session goes on
+        log.setdefault("blocks", {})[name] = {
+            "status": "failed",
+            "minutes": round((clock() - start) / 60, 2),
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        }
+        return None
     minutes = round((clock() - start) / 60, 2)
-    result["_block"] = {"name": name, "minutes": minutes, "est_cu": est_cu, "cu_before": used}
+    images, seconds = _throughput(result)
+    speed = round(images / seconds, 2) if seconds > 0 else None
+    result["_block"] = {"name": name, "minutes": minutes, "est_cu": est_cu, "cu_before": used,
+                        "images": images, "images_per_s": speed}  # fmt: skip
     result["_provenance"] = prov
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, indent=1, default=_json_default))
-    entry: dict[str, Any] = {"status": "done", "minutes": minutes}
+    entry: dict[str, Any] = {"status": "done", "minutes": minutes, "images_per_s": speed}
     if rerun is not None:
         entry.update(status="rerun", changed_inputs=rerun)
     log.setdefault("blocks", {})[name] = entry
@@ -154,23 +199,80 @@ def _read_mask(r: Mapping[str, Any]) -> tuple[np.ndarray | None, np.ndarray | No
     return mask, np.where(mask, raw, 0)
 
 
+KEEP = ("source", "label", "generator", "base_type", "role", "split")
+
+
+def item_from_row(
+    r: Mapping[str, Any], kind: str | None = None, level: Any = None, keep: Sequence[str] = KEEP
+) -> Item:
+    """One whole image of a staged row, optionally perturbed (P5); a mask is resized with it."""
+    img = _read_rgb(r["path"])
+    mask, editors = _read_mask(r)
+    img, mask2 = perturb.apply(img, kind, level, uid=str(r["uid"]), mask=mask)
+    if mask2 is not None and mask is not None and mask2.shape != mask.shape:
+        editors = None  # per-pixel editors are not resampled
+    meta = {k: r.get(k) for k in keep}
+    meta["condition"] = perturb.condition_name(kind, level)
+    return Item(str(r["uid"]), img, mask2, editors, meta)
+
+
 def items_from_rows(
     rows: Iterable[Mapping[str, Any]],
     *,
     kind: str | None = None,
     level: Any = None,
-    keep: Sequence[str] = ("source", "label", "generator", "base_type", "role", "split"),
+    keep: Sequence[str] = KEEP,
 ) -> Iterator[Item]:
     """Whole images of staged rows, optionally perturbed (P5); a mask is resized with the image."""
     for r in rows:
-        img = _read_rgb(r["path"])
-        mask, editors = _read_mask(r)
-        img, mask2 = perturb.apply(img, kind, level, uid=str(r["uid"]), mask=mask)
-        if mask2 is not None and mask is not None and mask2.shape != mask.shape:
-            editors = None  # per-pixel editors are not resampled
-        meta = {k: r.get(k) for k in keep}
-        meta["condition"] = perturb.condition_name(kind, level)
-        yield Item(str(r["uid"]), img, mask2, editors, meta)
+        yield item_from_row(r, kind, level, keep)
+
+
+def item_tasks(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    kind: str | None = None,
+    level: Any = None,
+    keep: Sequence[str] = KEEP,
+) -> Iterator[Callable[[], Item]]:
+    """The work of :func:`items_from_rows`, one zero-argument task per row, for :func:`prefetch`."""
+    for r in rows:
+        yield lambda r=r: item_from_row(r, kind, level, keep)
+
+
+def prefetch(tasks: Iterable[Any], workers: int = 6, depth: int = 64) -> Iterator[Any]:
+    """Order-preserving prefetch (Dhanush, 25 Nov): each callable in ``tasks`` (decode, harmonize,
+    perturb one image) runs in a pool of ``workers`` background threads, at most ``depth`` ahead of
+    the consumer; results come back in the order of ``tasks``. A non-callable element is passed
+    through. An exception raised in a worker is raised here, at that element's turn; pending work
+    is cancelled when the consumer stops or fails."""
+    it = iter(tasks)
+    pool = ThreadPoolExecutor(max_workers=workers)
+    pending: deque[Future] = deque()
+
+    def submit() -> bool:
+        try:
+            task = next(it)
+        except StopIteration:
+            return False
+        if callable(task):
+            pending.append(pool.submit(task))
+        else:
+            done: Future = Future()
+            done.set_result(task)
+            pending.append(done)
+        return True
+
+    try:
+        for _ in range(max(1, depth)):
+            if not submit():
+                break
+        while pending:
+            result = pending.popleft().result()
+            submit()
+            yield result
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 # ---- scoring ---------------------------------------------------------------------------------

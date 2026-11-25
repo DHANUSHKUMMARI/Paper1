@@ -3,6 +3,7 @@ per-protocol summaries."""
 
 import json
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -232,3 +233,68 @@ def test_p5_summary_per_condition():
     s = phasec.p5_summary(rs)
     assert s["det"]["clean"]["genimage"]["acc"] == 1.0
     assert s["det"]["jpeg_50"]["genimage"]["acc"] == 0.0
+
+
+def test_a_failing_block_is_logged_and_the_next_block_runs(tmp_path):
+    clock, log = Clock(0.0), {}
+
+    def boom():
+        clock.t += 120
+        raise RuntimeError("CUDA out of memory")
+
+    kw = dict(out_dir=tmp_path, log=log, t0=0.0, cu_cap=9.0, clock=clock)
+    assert phasec.run_block("a", 0.1, boom, **kw) is None
+    entry = log["blocks"]["a"]
+    assert entry["status"] == "failed"
+    assert entry["minutes"] == 2.0
+    assert entry["error"] == "RuntimeError: CUDA out of memory"
+    assert "Traceback" in entry["traceback"]
+    assert not (tmp_path / "block_a.json").exists()  # nothing saved: a later session reruns it
+    assert not log.get("stopped")
+    stats = {
+        "stats": {
+            "raw": {"images": 30, "seconds": 10.0},
+            "harmonized": {"images": 10, "seconds": 10},
+        }
+    }
+    assert phasec.run_block("b", 0.1, lambda: stats, **kw)["_block"]["images_per_s"] == 2.0
+    assert log["blocks"]["b"] == {"status": "done", "minutes": 0.0, "images_per_s": 2.0}
+
+
+def test_the_session_cap_subtracts_what_earlier_phase_c_sessions_spent():
+    assert phasec.session_cap(9.7, 23.43, 23.43) == 9.7  # first session
+    assert phasec.session_cap(9.7, 23.43, 19.0) == pytest.approx(5.27)  # resumed after 4.43 CU
+    assert phasec.session_cap(9.7, 23.43, 24.0) == 9.7  # a balance that went up spends nothing
+    with pytest.raises(ValueError, match="cap reached"):
+        phasec.session_cap(9.7, 23.43, 13.73)
+    clock, log = Clock(0.0), {}
+    cap = phasec.session_cap(3.0, 10.0, 8.0)  # 1.0 left this session
+    kw = dict(out_dir=Path("/nonexistent"), log=log, t0=0.0, cu_cap=cap, clock=clock)
+    assert phasec.run_block("x", 1.5, lambda: {}, **kw) is None
+    assert log["blocks"]["x"]["status"] == "skipped"
+
+
+def test_prefetch_keeps_order_and_items_and_raises_worker_errors(tmp_path):
+    rng = np.random.default_rng(0)
+    rows = []
+    for i in range(25):
+        arr = (rng.random((int(rng.integers(8, 40)), 16, 3)) * 255).astype(np.uint8)
+        rows.append(
+            {"uid": f"u{i}", "source": "genimage", "path": _png(tmp_path / f"{i}.png", arr)}
+        )
+    plain = list(phasec.items_from_rows(rows, kind="noise", level=5.0))
+    fetched = list(
+        phasec.prefetch(phasec.item_tasks(rows, kind="noise", level=5.0), workers=6, depth=4)
+    )
+    assert [x.uid for x in fetched] == [x.uid for x in plain]
+    assert all(np.array_equal(a.image, b.image) for a, b in zip(fetched, plain, strict=True))
+    assert list(phasec.prefetch([1, lambda: 2, 3], workers=2, depth=1)) == [1, 2, 3]
+
+    def bad():
+        raise ValueError("cannot decode u3")
+
+    out = phasec.prefetch([lambda: 0, lambda: 1, bad, lambda: 3], workers=3, depth=8)
+    assert next(out) == 0
+    assert next(out) == 1
+    with pytest.raises(ValueError, match="cannot decode u3"):
+        next(out)

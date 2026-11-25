@@ -81,23 +81,44 @@ def file_items(
 ) -> Iterator[Item]:
     """P1 / P2 images from their files. ``version``: 'raw' or 'harmonized' (P1)."""
     for r in rows:
-        data = Path(r["path"]).read_bytes()
-        if version == "harmonized" and r.get("role") == "test_P1":
-            if dist is None:
-                raise ValueError("the harmonized version needs the GenImage quality distribution")
-            data = p1_harmonized_bytes(r, data, dist)
-        img = _decode(data)
-        mask = editors = None
-        if r.get("mask_path"):
-            with Image.open(r["mask_path"]) as m:
-                raw = np.asarray(m.convert("L"))
-            base = r.get("mask_base")
-            base = None if base in (None, "") else int(float(base))
-            mask = diffseg_mask.edit_mask(raw, base) > 0
-            editors = np.where(mask, raw, 0)
-        meta = _meta(r)
-        meta["version"] = version
-        yield Item(r["uid"], img, mask, editors, meta)
+        yield file_item(r, version=version, dist=dist)
+
+
+def file_item(
+    r: Mapping[str, Any],
+    *,
+    version: str = "raw",
+    dist: harmonize.QualityDistribution | None = None,
+) -> Item:
+    """One P1 / P2 image from its file (see :func:`file_items`)."""
+    data = Path(r["path"]).read_bytes()
+    if version == "harmonized" and r.get("role") == "test_P1":
+        if dist is None:
+            raise ValueError("the harmonized version needs the GenImage quality distribution")
+        data = p1_harmonized_bytes(r, data, dist)
+    img = _decode(data)
+    mask = editors = None
+    if r.get("mask_path"):
+        with Image.open(r["mask_path"]) as m:
+            raw = np.asarray(m.convert("L"))
+        base = r.get("mask_base")
+        base = None if base in (None, "") else int(float(base))
+        mask = diffseg_mask.edit_mask(raw, base) > 0
+        editors = np.where(mask, raw, 0)
+    meta = _meta(r)
+    meta["version"] = version
+    return Item(r["uid"], img, mask, editors, meta)
+
+
+def file_item_tasks(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    version: str = "raw",
+    dist: harmonize.QualityDistribution | None = None,
+):
+    """The work of :func:`file_items`, one zero-argument task per row (for ``phasec.prefetch``)."""
+    for r in rows:
+        yield lambda r=r: file_item(r, version=version, dist=dist)
 
 
 def stage_files(

@@ -53,7 +53,7 @@ are read from the result files the notebooks write to Drive.
   - `read_entry` (one report to read, each claim with its verifier errors).
 - **Notebook 18b `18b_cp6_analysis.ipynb` (CPU runtime, about 0.05 CU estimated):**
   - It reads notebook 18's JSONL files, the P6 bundles and the P6 image tar.
-  - It recomputes the as-run HR-GT and **stops unless it matches `cp6_reports_seed42.json` exactly**.
+  - It recomputes the as-run HR-GT and **stops unless it matches `cp6_reports_seed42.json` exactly**; outside the dry run that file is a required pre-flight input (Codex P2), so the check cannot be skipped.
   - It writes `cp6_analysis_seed42.json` (items 1–5 of the review) and `cp6_read30_seed42.json` (the same 30 reports as notebook 18, for Dhanush's read beside the images).
   - Dry run in CI: one dry E region below τ, so the as-run template fails once on rule (c) and the fixed one passes.
 - **Tests:** `tests/test_cp6_analysis.py` (8 tests; composite asserts split, SonarCloud S9073). The older HR-GT tests in `tests/test_cp6.py` now compare the totals only, since the split adds keys.

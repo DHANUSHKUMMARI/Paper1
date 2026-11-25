@@ -5,6 +5,61 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 18 run (Phase D, CP6) and the CP6 analysis code (Dhanush's review) — 2026-11-25
+
+### Notebook 18 run (T4, paid; commit `f2fd5b9`; result `runs/cp6/cp6_reports_seed42.json`)
+- **Sessions:** two.
+  - **Session 1** (from the old main): the grounded loop finished; the image-baseline smoke test stopped the run (Qwen2-VL looped on `evidence_ids`, fixed in #59). No compute record was saved for this session.
+  - **Session 2** (main `f2fd5b9`): the grounded reports were reused (0.0 min), and the image baseline ran in 26.15 min. The session took 0.9228 h of wall time; torch 2.14.0 was unchanged by the vLLM install.
+- **CU:** **2.94 by balance for both sessions** (26.37 → 23.43, Dhanush), against an estimate of 1.5 for one session. The record gives 1.181 for session 2 (the 1.28 CU/h rate × wall time), so session 1 took about 1.76 by difference.
+- **Models:** `Qwen/Qwen2.5-7B-Instruct-AWQ` @ `b25037543e93…` and `Qwen/Qwen2-VL-7B-Instruct-AWQ` @ `6ec2560b0afc…`; vLLM 0.33.0, float16, temperature 0. Verifier rules as pre-registered (τ_E 0.6, tolerances 0.01 / 2% / 1 point, 2 retries).
+- **First pass, P6** (limitation claims are left out of GR / HR-E, per the spec card):
+  - 5,089 claims, 4,849 passed: **GR 0.9528, HR-E 0.0472**.
+  - Rejections by rule: a 102, schema 67, b 57, c′ 31, c 30. A claim breaking two rules counts under both.
+  - Unparsed first answers 0; verdict mismatches 0; confidence mismatches 5.
+  - Limitation claims: 357 passed, 212 failed.
+- **First pass, P6_mllm:** 1,689 claims, **GR 0.9568, HR-E 0.0432**.
+- **Final reports (1,500):** retries 0 / 1 / 2 for 1,088 / 301 / 111 reports; 77 claims dropped; 0 verdicts and 0 confidences replaced.
+- **HR-GT** (wrong / checkable), without the 26 flagged SID-Set masks; the value with them is in brackets:
+
+| Variant | P6 (1,474 images) | P6_mllm (486 images) |
+|---|---|---|
+| Grounded, final | 470/2,707 = 0.1736 [0.1750] | 141/891 = 0.1582 [0.1618] |
+| No verifier (first pass) | 482/2,735 = 0.1762 [0.1776] | 146/899 = 0.1624 [0.1658] |
+| Template (as run, see the bug below) | 907/3,980 = 0.2279 [0.2316] | 283/1,329 = 0.2129 [0.2229] |
+| Image baseline (Qwen2-VL) | — | 355/601 = 0.5907 [0.5939] |
+
+- **Verdict accuracy:** 0.8161 on P6 [0.818] and 0.8189 on P6_mllm [0.822], the same for all three EviGround variants because the verdict is the detector's. The image baseline scores 0.3128 [0.31].
+- **Edited-region claims without a region:** 0 in every variant.
+- **Image-baseline boxes:** 718 ok; 0 partly off, 0 fully off, 0 missing, 0 unparseable. Only 601 claims are checkable, so about 100 boxes sit on claims that HR-GT does not score (types other than `edited_region`).
+- **Smoke tests on the T4:** image verdicts `locally_edited`, `real`; raw boxes [734, 0, 1000, 500] and [0, 0, 1000, 1000].
+
+### Bug: the template failed the verifier on 91 of 1,500 reports (1,409 passed)
+- **What happened:** `variants.template_report` described every E region, including those with mask_conf < τ_E = 0.6. Rule (c) rejects exactly that, so the template claimed what the grounded LLM is not allowed to claim, and its HR-GT counts those claims.
+- **Why the run did not stop:** notebook 18 asserts that every template passes only in the dry run, where every dry E region was above τ.
+- **Diagnosis (sandbox):** evidence numbers are rounded to 2–3 decimals, so rule (b) cannot fail on them, and every other template claim is built from the cited entry. The only rule the template can break is (c). Notebook 18b counts the failing rule on all 1,500 reports to confirm it.
+- **Fix:** `template_report(record, min_mask_conf=τ_E)` skips an E region below τ_E, as the LLM must. `min_mask_conf=None` reproduces the as-run template, and is kept only to report the Phase D numbers beside the fixed ones.
+- **Tests:** the fixed template passes every rule on 90 records built by the real M5 code (`evidence.evidence_record`; all three verdicts, 0–2 E regions with mask confidence 0.5–1.0). The as-run template breaks exactly rule (c) on a 0.55 region and the fixed one drops it.
+
+### CP6 analysis code (Dhanush's review, 25 Nov; 0 GPU)
+- **`verifier.hr_gt_counts` / `hr_gt_summary`:** HR-GT is also split into the verdict (one checkable claim per report) and the region claims, as `verdict_claims` / `region_claims` = {checkable, wrong, rate}. The totals are unchanged.
+- **`score_all_boxes=True`:** a sensitivity check for the image baseline that scores every claim carrying its own box, whatever its type. EviGround claims carry no box, so they are unaffected. The pre-registered rule stays primary.
+- **`verifier.first_pass_metrics`:** adds `limitation_rejections_by_rule` (failed limitation claims by rule); GR / HR-E are unchanged.
+- **New `explain/cp6analysis.py`:**
+  - `rule_counts` (failing claims by rule and by claim type);
+  - `final_check` (CP6 criterion 1: every final claim passes every rule, and the final verdict and confidence match the evidence);
+  - `verdict_confusion` (3 × 3, plus unparsed);
+  - `boxes_by_claim_type`;
+  - `read_entry` (one report to read, each claim with its verifier errors).
+- **Notebook 18b `18b_cp6_analysis.ipynb` (CPU runtime, about 0.05 CU estimated):**
+  - It reads notebook 18's JSONL files, the P6 bundles and the P6 image tar.
+  - It recomputes the as-run HR-GT and **stops unless it matches `cp6_reports_seed42.json` exactly**; outside the dry run that file is a required pre-flight input (Codex P2), so the check cannot be skipped.
+  - It writes `cp6_analysis_seed42.json` (items 1–5 of the review) and `cp6_read30_seed42.json` (the same 30 reports as notebook 18, for Dhanush's read beside the images).
+  - Dry run in CI: one dry E region below τ, so the as-run template fails once on rule (c) and the fixed one passes.
+- **Tests:** `tests/test_cp6_analysis.py` (8 tests; composite asserts split, SonarCloud S9073). The older HR-GT tests in `tests/test_cp6.py` now compare the totals only, since the split adds keys.
+- **Checks (sandbox):** ruff clean; pytest 576 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 18 and 18b passed.
+- **Not run here:** the real analysis (needs the Drive files). Dhanush runs notebook 18b on a CPU runtime.
+
 ## Review fixes for notebooks 17 and 18 (Dhanush, 25 Nov) — 2026-11-25
 
 - **Notebook 18:**

@@ -29,10 +29,23 @@ from eviground.train import checkpoint as ckpt
 from eviground.train.trainer import _collate
 from eviground.utils.seed import seed_everything
 
+AMP_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
+AMP_DTYPE = "bf16"  # as in training (L4); "fp16" on a T4, only after the T4 parity check passed
 
-def autocast(device: torch.device):
+
+def set_amp_dtype(name: str) -> str:
+    """Set the autocast dtype every predictor uses ('bf16' or 'fp16'); returns it."""
+    global AMP_DTYPE
+    if name not in AMP_DTYPES:
+        raise ValueError(f"unknown autocast dtype {name!r}; one of {sorted(AMP_DTYPES)}")
+    AMP_DTYPE = name
+    return name
+
+
+def autocast(device: torch.device, dtype: str | None = None):
+    """Mixed precision on the GPU (``dtype`` or :data:`AMP_DTYPE`); nothing on the CPU."""
     if device.type == "cuda":
-        return torch.autocast("cuda", dtype=torch.bfloat16)
+        return torch.autocast("cuda", dtype=AMP_DTYPES[dtype or AMP_DTYPE])
     return contextlib.nullcontext()
 
 

@@ -5,6 +5,23 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Review fixes for notebooks 17 and 18 (Dhanush, 25 Nov) — 2026-11-25
+
+- **Notebook 18:**
+  - **vLLM is installed in cell 1, before anything imports torch.** `vllm==0.33.0` pins torch, and a torch replaced after it was imported would not match vLLM.
+  - Cell 1 records torch's version before and after the install. If it changed, it prints "Runtime -> Restart session, then Run all" and stops.
+  - A second Run all finds vLLM 0.33.0 already installed and skips the install.
+  - The result file records `torch.before` / `torch.after`. The dry run is unchanged (no install).
+- **Notebook 17:**
+  1. **Block provenance:** the code tree hash of `src/` (`git rev-parse HEAD:src`, `phasec.code_tree`) replaces the commit, so a resume after a docs-only merge reuses finished blocks. The commit stays in the result file for reference. A change only in the notebook's own cells (outside `src/`) does not trigger a rerun.
+  2. **Estimates:** `EST['p5_det']` = 1.7 (52k image passes, with resize ×1.5), so the total estimate is 9.45 CU. The 8.9 I quoted before was off; the old sum was 9.05.
+  3. **Codex #58 P2:** no check inside a block, since a block-level resume would discard partial work. The check between blocks stays, and the thread is answered and resolved.
+  4. **`CU_CAP` = 9.7** is prefilled (the hard limit is 11; the largest block, about 1.7 CU, cannot push past it).
+- **Test:** `test_a_docs_only_commit_keeps_the_code_tree_and_reuses_blocks` uses a temporary git repo.
+  - A docs-only commit changes HEAD but not the tree, and the block is reused.
+  - A change under `src/` changes the tree, and the block is rerun.
+- **Checks (sandbox):** ruff clean; pytest 566 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17 and 18 passed.
+
 ## PR Z — Phase C code: CC, P5 perturbations, notebook 17 under a CU cap — 2026-11-25
 
 Sandbox only. Phase C needs Dhanush's go-ahead and a `CU_CAP`.

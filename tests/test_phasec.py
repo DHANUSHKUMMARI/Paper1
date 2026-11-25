@@ -2,6 +2,7 @@
 per-protocol summaries."""
 
 import json
+import subprocess
 
 import numpy as np
 import pytest
@@ -73,6 +74,53 @@ def test_a_saved_block_is_reused_only_with_the_same_inputs(tmp_path):
     log = {}
     assert run({**prov, "checkpoint": "s2"}, log)["x"] == 2
     assert log["blocks"]["a"]["status"] == "reused"
+    assert calls == [1, 1]
+
+
+def test_a_docs_only_commit_keeps_the_code_tree_and_reuses_blocks(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "docs").mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    (repo / "src" / "a.py").write_text("x = 1\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "code")
+    tree1, head1 = phasec.code_tree(repo), git("rev-parse", "HEAD").stdout
+    (repo / "docs" / "notes.md").write_text("docs only\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "docs")
+    assert git("rev-parse", "HEAD").stdout != head1
+    assert phasec.code_tree(repo) == tree1
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return {}
+
+    out = tmp_path / "out"
+    kw = dict(out_dir=out, t0=0.0, cu_cap=9.0, clock=Clock(0.0))
+    phasec.run_block("a", 0.1, fn, log={}, provenance={"code_tree_src": tree1}, **kw)
+    log = {}
+    phasec.run_block(
+        "a", 0.1, fn, log=log, provenance={"code_tree_src": phasec.code_tree(repo)}, **kw
+    )
+    assert log["blocks"]["a"]["status"] == "reused"
+    (repo / "src" / "a.py").write_text("x = 2\n")
+    git("commit", "-q", "-am", "code change")
+    assert phasec.code_tree(repo) != tree1
+    log = {}
+    phasec.run_block(
+        "a", 0.1, fn, log=log, provenance={"code_tree_src": phasec.code_tree(repo)}, **kw
+    )
+    assert log["blocks"]["a"]["status"] == "rerun"
     assert calls == [1, 1]
 
 

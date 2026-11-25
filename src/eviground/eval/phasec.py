@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -41,6 +42,18 @@ BINARY_SOURCES = ("brgen", "sidset", "sidset_val")  # masks binarized at L > 127
 
 
 # ---- blocks under a CU cap -------------------------------------------------------------------
+
+
+def code_tree(repo: Path | str, subdir: str = "src") -> str:
+    """The git tree hash of ``subdir`` at HEAD: it changes only when the code under ``subdir``
+    changes, so a docs-only commit keeps it (block provenance, Dhanush 25 Nov 2026)."""
+    out = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", f"HEAD:{subdir}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
 
 
 def cu_used(t0: float, rate: float = L4_RATE, now: float | None = None) -> float:

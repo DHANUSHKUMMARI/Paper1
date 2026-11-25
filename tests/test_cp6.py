@@ -53,6 +53,11 @@ def _record(verdict="locally_edited", e_conf=0.82):
     }
 
 
+def _core(counts):
+    """The totals of :func:`verifier.hr_gt_counts` (it also returns the verdict / region split)."""
+    return {k: counts[k] for k in ("checkable", "wrong", "no_region")}
+
+
 def _claim(ctype, text, ids):
     return {"claim_type": ctype, "text": text, "evidence_ids": ids}
 
@@ -224,12 +229,12 @@ def test_hr_gt_verdict_and_region_boxes():
     mask[20:60, 10:40] = True  # E1's box [10, 20, 30, 40] lies inside
     rec = _record()
     rep = variants.template_report(rec)
-    assert verifier.hr_gt_counts(rep, "edited", mask, rec) == {
+    assert _core(verifier.hr_gt_counts(rep, "edited", mask, rec)) == {
         "checkable": 2,
         "wrong": 0,
         "no_region": 0,
     }
-    assert verifier.hr_gt_counts(rep, "real", None, rec) == {
+    assert _core(verifier.hr_gt_counts(rep, "real", None, rec)) == {
         "checkable": 2,
         "wrong": 2,
         "no_region": 0,
@@ -245,12 +250,12 @@ def test_hr_gt_verdict_and_region_boxes():
             }
         ],
     }
-    assert verifier.hr_gt_counts(img_rep, "edited", mask) == {
+    assert _core(verifier.hr_gt_counts(img_rep, "edited", mask)) == {
         "checkable": 2,
         "wrong": 1,
         "no_region": 0,
     }
-    assert verifier.hr_gt_counts(None, "edited", mask) == {
+    assert _core(verifier.hr_gt_counts(None, "edited", mask)) == {
         "checkable": 1,
         "wrong": 1,
         "no_region": 0,
@@ -319,7 +324,7 @@ def test_a_verdict_that_overrules_the_evidence_is_retried_then_replaced():
 def test_attribution_claims_are_not_scored_against_an_edit_mask():
     rec = _record("fully_generated")
     rep = variants.template_report(rec)
-    assert verifier.hr_gt_counts(rep, "generated", None, rec) == {
+    assert _core(verifier.hr_gt_counts(rep, "generated", None, rec)) == {
         "checkable": 1,
         "wrong": 0,
         "no_region": 0,
@@ -376,7 +381,8 @@ def test_image_box_counts_and_unparseable_boxes():
     mask = np.zeros((100, 200), bool)
     mask[:50, :100] = True
     s = verifier.hr_gt_counts(pixel, "edited", mask)
-    assert s == {
+    assert (s["verdict_wrong"], s["region_checkable"], s["region_wrong"]) == (0, 5, 4)
+    assert _core(s) == {
         "checkable": 6,
         "wrong": 4,
         "no_region": 1,
@@ -453,7 +459,7 @@ def test_an_edited_region_claim_without_a_region_is_wrong_and_counted():
 
     for ids in ([], ["E9"], ["A1"], ["G1"]):  # nothing cited, an unknown E, only A or G
         rep = {**base, "claims": [*base["claims"], claim(ids)]}
-        assert verifier.hr_gt_counts(rep, "edited", mask, rec) == {
+        assert _core(verifier.hr_gt_counts(rep, "edited", mask, rec)) == {
             "checkable": 3,
             "wrong": 1,
             "no_region": 1,
@@ -462,7 +468,7 @@ def test_an_edited_region_claim_without_a_region_is_wrong_and_counted():
     pixel, counts = variants.to_pixel_boxes(img, 100, 100)
     assert counts["missing"] == 1
     assert pixel["claims"][0]["box"] is None
-    assert verifier.hr_gt_counts(pixel, "edited", mask) == {
+    assert _core(verifier.hr_gt_counts(pixel, "edited", mask)) == {
         "checkable": 2,
         "wrong": 1,
         "no_region": 1,
@@ -477,7 +483,7 @@ def test_global_and_attribution_claims_are_still_not_checkable():
     rec = _record()
     g = {"claim_type": "global", "text": "x", "evidence_ids": []}
     rep = {"verdict": "locally_edited", "claims": [g]}
-    assert verifier.hr_gt_counts(rep, "edited", None, rec) == {
+    assert _core(verifier.hr_gt_counts(rep, "edited", None, rec)) == {
         "checkable": 1,
         "wrong": 0,
         "no_region": 0,

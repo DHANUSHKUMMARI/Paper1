@@ -13,12 +13,19 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from eviground.explain import prompts
+from eviground.explain import prompts, verifier
 
 
-def template_report(record: Mapping[str, Any]) -> dict[str, Any]:
-    """A report written by fixed rules from the evidence record; every number is copied from
-    the cited entry, so it passes the verifier by construction (checked in the tests)."""
+def template_report(
+    record: Mapping[str, Any], *, min_mask_conf: float | None = verifier.TAU_E
+) -> dict[str, Any]:
+    """A report written by fixed rules from the evidence record. Every number is copied from
+    the cited entry, and an E region is described only if its ``mask_conf`` >= ``min_mask_conf``
+    (rule (c), the same rule the LLM must obey), so every claim passes the verifier (tested).
+
+    ``min_mask_conf=None`` reproduces the template as run in Phase D (notebook 18, 25 Nov), which
+    described every E region and so broke rule (c) on low-confidence regions; it is kept only to
+    report the as-run numbers beside the fixed ones."""
     pred, top = record["prediction"], record["verdict"]
     g1 = next(g for g in record["global"] if g["id"] == "G1")
     claims: list[dict[str, Any]] = [
@@ -36,6 +43,8 @@ def template_report(record: Mapping[str, Any]) -> dict[str, Any]:
     ]
     for reg in record.get("regions", []):
         if reg["id"].startswith("E"):
+            if min_mask_conf is not None and float(reg.get("mask_conf", 0.0)) < min_mask_conf:
+                continue
             claims.append(
                 {
                     "claim_type": "edited_region",

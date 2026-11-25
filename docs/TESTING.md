@@ -5,6 +5,29 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Notebook 17b runs: T4 parity FAIL, so Phase C waits for an L4 — 2026-11-25
+
+- **Step 1, CPU freeze:**
+  - `eval_subsets.json` key `T4_parity` holds 300 of 1,177 edited and 300 of 5,545 real validation images (the pools match notebook 08's counts).
+  - SHA-256 `9cb0713ed2115352daaf26b8cce9fdc40795a2c6a4fbffcde0920cc28d953951`.
+  - The run Dhanush reported printed "T4_parity already frozen", so an earlier Run all had frozen it. Its stored sample equalled a fresh draw.
+  - The hash went into card `sg_7l6fqqbkw1`, which Dhanush accepted before the T4 run (spec rev 224).
+- **Step 2, T4 run:** 18:53 UTC, commit `705c038`, fp16 autocast; result `runs/checkpoints/t4_parity_seed42.json`.
+
+| Criterion | T4 (fp16) | L4 reference | Rule | Result |
+|---|---|---|---|---|
+| (1) P2 pooled edited IoU, 486 images | 0.5082518788 | 0.5101339043 | ±0.005 (diff −0.001882) | pass |
+| (2) real verdict agreement, 300 images | 0.95667 (13 differ) | notebook 08 `model_label` | ≥ 0.995 | **fail** |
+| (3) median \|Δ per-image IoU\|, 300 edited | 0.015975 (max 0.405361) | notebook 08 `model_iou` | ≤ 0.01 | **fail** |
+| (4) unified probe verdict agreement, 300 real | 0.98667 (4 differ) | notebook 08 `probe_label` | ≥ 0.995 | **fail** |
+
+- **Outcome:** "wait for an L4", as pre-registered. No rule changed and no rerun.
+  - Notebook 17 keeps refusing `GPU_CHOICE = 'T4'`, since the parity file says `pass: false`.
+  - The pooled P2 IoU agrees, but single verdicts and masks move under fp16, which only the per-image criteria could show.
+- **CU:**
+  - The T4 run used 0.22 CU by balance (22.97 → 22.75, Dhanush); the record says 0.289 (0.2259 h × 1.28 CU/h).
+  - Before it, the balance fell from 23.43 to 22.97 (0.46 CU) without notebook 18b having run (its outputs are not on Drive). That covers the 17b CPU freeze run(s) and any other runtime time in between, and is not attributed to one run.
+
 ## T4 fallback for Phase C: parity notebook 17b and a GPU option in notebook 17 (Dhanush, 25 Nov) — 2026-11-25
 
 No L4 was available on 25 Nov. Everything here is code only; the T4 runs only on Dhanush's word.

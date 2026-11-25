@@ -298,3 +298,18 @@ def test_prefetch_keeps_order_and_items_and_raises_worker_errors(tmp_path):
     assert next(out) == 1
     with pytest.raises(ValueError, match="cannot decode u3"):
         next(out)
+
+
+def test_gpu_setup_allows_a_t4_only_after_a_passed_parity_check():
+    assert phasec.gpu_setup("L4") == {"gpu": "L4", "dtype": "bf16"}
+    assert phasec.gpu_setup("T4", {"pass": True}) == {"gpu": "T4", "dtype": "fp16"}
+    for parity in (None, {"pass": False}, {}):
+        with pytest.raises(ValueError, match="parity"):
+            phasec.gpu_setup("T4", parity)
+    with pytest.raises(ValueError, match="GPU must be"):
+        phasec.gpu_setup("A100")
+
+
+def test_estimates_scale_by_time_and_rate():
+    est = phasec.scale_estimates({"a": 2.2, "b": 1.1}, time_ratio=2.0, rate_from=2.2, rate_to=1.28)
+    assert est == {"a": 2.56, "b": 1.28}

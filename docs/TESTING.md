@@ -5,6 +5,36 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## T4 fallback for Phase C: parity notebook 17b and a GPU option in notebook 17 (Dhanush, 25 Nov) — 2026-11-25
+
+No L4 was available on 25 Nov. Everything here is code only; the T4 runs only on Dhanush's word.
+
+- **L4 references:** nothing per-image was saved for the P2 dev images (CP4 G2 kept only the pooled edited IoU, 0.5101339042612494), and P(edited) was never saved on the L4. The design (Dhanush) therefore uses:
+  - the P2 pooled IoU;
+  - notebook 08's per-image L4 files for the final model. `diagnosis_edited_seed42_ctx.csv` holds the per-image IoU and **no predicted label**, so verdicts are compared on the real images only (`diagnosis_real_seed42_ctx.csv`, `model_label`).
+- **`eval/parity.py`:**
+  - `sample_parity` draws 300 edited + 300 real uids (seed 42, salt `t4_parity_v1`) from the reference files, sorted and hashed. `intact` checks the frozen lists against their hashes.
+  - `parity_verdict` applies the three pre-registered criteria, and passes only if all three hold:
+    1. P2 pooled edited IoU within ±0.005 of 0.5101;
+    2. real-image verdict agreement ≥ 99.5%;
+    3. median |Δ per-image IoU| ≤ 0.01 on the edited images.
+  - A sampled image without a T4 result is an error.
+- **`runner.set_amp_dtype`:** the autocast dtype of every predictor ('bf16' by default, 'fp16' on a T4). Probe training (`clip_probe._features`) keeps bf16; Phase C loads the cached probes.
+- **Notebook 17b `17b_t4_parity.ipynb`:**
+  - **Step 1, CPU:** `FREEZE_ONLY = True` draws the sample and freezes it in `eval_subsets.json` (key `T4_parity`), printing the hash for the spec card.
+  - **Step 2, T4:** it refuses unless the frozen sample is intact and equals a fresh draw. It then runs P2 dev (486 images, from the verified `p2` tar and the CP4 dev split) and the 600 validation images (shards, full-coverage tiling, `runner.diagnosis_pass`, as in notebooks 08 and 09).
+  - **Outputs:** `t4_parity_seed42.json` holds the verdict, the sample hashes, the per-image IoU pairs and the seconds per tile on each GPU. `compute_t4_parity.json` is the compute record.
+  - **Dry run (CI):** the references are written by the same code, so it passes; a shifted result fails.
+- **Notebook 17:**
+  - `GPU_CHOICE = 'L4'` (default, bf16) or `'T4'` (fp16). `phasec.gpu_setup` refuses a T4 without a passed parity file.
+  - The pre-flight asserts that the runtime matches the choice. The rate is `CU_RATES[GPU_CHOICE]`.
+  - On a T4, `phasec.scale_estimates` moves the L4 estimates by the parity run's measured seconds per tile.
+  - The GPU, the dtype and the parity file's hash are in `PROV`, so no block is reused across GPUs. The result file records `gpu_choice`, `autocast` and `parity_pass`.
+- **Tests:**
+  - `tests/test_parity.py` (5): the sample is seeded and hashed and detects changes; identical results pass; each criterion fails on its own; a missing result is an error; the autocast dtype is settable and bf16 by default.
+  - `tests/test_phasec.py`: a T4 is refused without a passed parity check; the estimates are scaled.
+- **Checks (sandbox):** ruff clean; pytest 586 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 17b, 18 and 18b passed.
+
 ## Notebook 17 review fixes before Phase C (Dhanush, 25 Nov) — 2026-11-25
 
 1. **Crash safety (`phasec.run_block`):**

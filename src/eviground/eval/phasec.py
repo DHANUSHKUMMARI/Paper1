@@ -85,6 +85,28 @@ def session_cap(cu_cap: float, phase_balance_start: float, balance_start: float)
     return cap
 
 
+GPU_DTYPES = {"L4": "bf16", "T4": "fp16"}  # bf16 as in training; fp16 on a T4 (no bf16 there)
+
+
+def gpu_setup(choice: str, parity: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The GPU Phase C runs on (Dhanush, 25 Nov): 'L4' (bf16, the default) or 'T4' (fp16), the
+    latter only with a T4 parity result (notebook 17b) whose ``pass`` is true."""
+    if choice not in GPU_DTYPES:
+        raise ValueError(f"GPU must be one of {sorted(GPU_DTYPES)}, not {choice!r}")
+    if choice == "T4" and not (parity and parity.get("pass") is True):
+        raise ValueError("Phase C on a T4 needs a passed T4 parity check (notebook 17b) first")
+    return {"gpu": choice, "dtype": GPU_DTYPES[choice]}
+
+
+def scale_estimates(
+    est: Mapping[str, float], time_ratio: float, rate_from: float, rate_to: float
+) -> dict[str, float]:
+    """CU estimates made at ``rate_from`` moved to another GPU: wall time x ``time_ratio`` (its
+    seconds per tile over the measured ones), charged at ``rate_to``."""
+    k = float(time_ratio) * float(rate_to) / float(rate_from)
+    return {name: round(v * k, 3) for name, v in est.items()}
+
+
 def _throughput(result: Any) -> tuple[int, float]:
     """Images and seconds summed over every stats dict (``images`` and ``seconds``) in a block's
     result, at any depth."""

@@ -11,7 +11,14 @@ Pass = every criterion (pre-registered in a spec card before the run):
 
 1. pooled edited IoU on P2 dev within ``IOU_TOL`` of the L4 value;
 2. verdict agreement on the sampled real validation images >= ``MIN_AGREEMENT``;
-3. median |T4 - L4| per-image IoU on the sampled edited validation images <= ``MAX_MEDIAN_DIOU``.
+3. median |T4 - L4| per-image IoU on the sampled edited validation images <= ``MAX_MEDIAN_DIOU``;
+4. (probe, added 25 Nov) the cached unified probe's verdicts on the same real images agree with
+   notebook 08's L4 ``probe_label`` >= ``MIN_AGREEMENT``.
+
+Outcome (Dhanush, 25 Nov): 1-3 and 4 pass -> Phase C may run on a T4 with the unified probe rows;
+1-3 pass, 4 fails -> on a T4 without probe rows (they run later on an L4); 1-3 fail -> wait for an
+L4. The detection probe has no L4 per-image reference in notebook 08's files, so its rows never
+run on a T4.
 """
 
 from __future__ import annotations
@@ -85,13 +92,16 @@ def parity_verdict(
     ref_edited_iou: Mapping[str, float],
     ref_real_label: Mapping[str, str],
     *,
+    t4_probe_label: Mapping[str, str] | None = None,
+    ref_probe_label: Mapping[str, str] | None = None,
     ref_p2_iou: float = L4_P2_IOU,
     iou_tol: float = IOU_TOL,
     min_agreement: float = MIN_AGREEMENT,
     max_median_diou: float = MAX_MEDIAN_DIOU,
 ) -> dict[str, Any]:
-    """The three criteria and ``pass`` (all three). Every sampled uid must have a T4 result and a
-    reference; a missing one is an error, never silently dropped."""
+    """The criteria, ``model_pass`` (1-3), ``probe_pass`` (4, None without probe labels), ``pass``
+    (= ``model_pass``: whether Phase C may run on a T4 at all) and the ``outcome``. Every sampled
+    uid must have a T4 result and a reference; a missing one is an error, never dropped."""
     missing_e = sorted(set(ref_edited_iou) - set(t4_edited_iou))
     missing_r = sorted(set(ref_real_label) - set(t4_real_label))
     if missing_e or missing_r:
@@ -114,9 +124,29 @@ def parity_verdict(
         "max": max_median_diou,
     }
     c3["pass"] = c3["median_abs_diff"] is not None and c3["median_abs_diff"] <= max_median_diou
-    return {
-        "p2_pooled_iou": c1,
-        "real_verdict_agreement": c2,
-        "edited_per_image_iou": c3,
-        "pass": bool(c1["pass"] and c2["pass"] and c3["pass"]),
-    }
+    out = {"p2_pooled_iou": c1, "real_verdict_agreement": c2, "edited_per_image_iou": c3}
+    model_pass = bool(c1["pass"] and c2["pass"] and c3["pass"])
+    probe_pass = None
+    if ref_probe_label is not None:
+        c4 = _agreement(t4_probe_label or {}, ref_probe_label, min_agreement)
+        out["real_probe_verdict_agreement"] = c4
+        probe_pass = c4["pass"]
+    if not model_pass:
+        outcome = "wait for an L4"
+    elif probe_pass:
+        outcome = "T4 with the unified probe rows"
+    else:
+        outcome = "T4 without probe rows (probe rows later on an L4)"
+    return {**out, "model_pass": model_pass, "probe_pass": probe_pass, "pass": model_pass,
+            "outcome": outcome}  # fmt: skip
+
+
+def _agreement(t4: Mapping[str, str], ref: Mapping[str, str], minimum: float) -> dict[str, Any]:
+    missing = sorted(set(ref) - set(t4))
+    if missing:
+        raise ValueError(f"no T4 probe result for {len(missing)} real images")
+    agree = [t4[u] == ref[u] for u in sorted(ref)]
+    share = float(np.mean(agree)) if agree else None
+    return {"images": len(agree), "agreement": share, "min": minimum,
+            "disagreeing_uids": [u for u in sorted(ref) if t4[u] != ref[u]],
+            "pass": share is not None and share >= minimum}  # fmt: skip

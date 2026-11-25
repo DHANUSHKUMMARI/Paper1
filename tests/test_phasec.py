@@ -301,8 +301,12 @@ def test_prefetch_keeps_order_and_items_and_raises_worker_errors(tmp_path):
 
 
 def test_gpu_setup_allows_a_t4_only_after_a_passed_parity_check():
-    assert phasec.gpu_setup("L4") == {"gpu": "L4", "dtype": "bf16"}
-    assert phasec.gpu_setup("T4", {"pass": True}) == {"gpu": "T4", "dtype": "fp16"}
+    assert phasec.gpu_setup("L4") == {"gpu": "L4", "dtype": "bf16",
+                                      "probes": {"unified": True, "detection": True}}  # fmt: skip
+    t4 = phasec.gpu_setup("T4", {"pass": True, "probe_pass": True})
+    assert t4["dtype"] == "fp16"
+    assert t4["probes"] == {"unified": True, "detection": False}  # no L4 reference for detection
+    assert phasec.gpu_setup("T4", {"pass": True, "probe_pass": False})["probes"]["unified"] is False
     for parity in (None, {"pass": False}, {}):
         with pytest.raises(ValueError, match="parity"):
             phasec.gpu_setup("T4", parity)

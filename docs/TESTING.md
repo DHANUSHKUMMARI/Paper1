@@ -20,6 +20,14 @@ No L4 was available on 25 Nov. Everything here is code only; the T4 runs only on
     3. median |Δ per-image IoU| ≤ 0.01 on the edited images.
   - A sampled image without a T4 result is an error.
 - **`runner.set_amp_dtype`:** the autocast dtype of every predictor ('bf16' by default, 'fp16' on a T4). Probe training (`clip_probe._features`) keeps bf16; Phase C loads the cached probes.
+- **Probe rows on a T4 (Codex P2; Dhanush's decision, 25 Nov):** on a T4, the cached probes would score fp16 features, though they were fitted on bf16 ones. Forcing bf16 is not reliable on a T4, which has no native bf16.
+  - **A 4th rule:** the cached unified probe, on the same 300 real images, must agree with notebook 08's L4 `probe_label` ≥ 99.5%.
+  - **Outcomes:**
+    - model and probe both pass: a T4 run with the unified probe rows;
+    - the model passes but the probe fails: a T4 run without probe rows, which run later in a short L4 session (about 0.5 CU estimated);
+    - the model fails: wait for an L4.
+  - **The detection probe** has no L4 per-image reference in notebook 08's files, so its rows never run on a T4.
+  - **Code:** `parity_verdict` returns `model_pass`, `probe_pass` and `outcome`. `phasec.gpu_setup(...)['probes']` tells notebook 17's `probe_of` which probes may score. The rule is in card `sg_7l6fqqbkw1`.
 - **Notebook 17b `17b_t4_parity.ipynb`:**
   - **Step 1, CPU:** `FREEZE_ONLY = True` draws the sample and freezes it in `eval_subsets.json` (key `T4_parity`), printing the hash for the spec card.
   - **Step 2, T4:** it refuses unless the frozen sample is intact and equals a fresh draw. It then runs P2 dev (486 images, from the verified `p2` tar and the CP4 dev split) and the 600 validation images (shards, full-coverage tiling, `runner.diagnosis_pass`, as in notebooks 08 and 09).
@@ -31,9 +39,9 @@ No L4 was available on 25 Nov. Everything here is code only; the T4 runs only on
   - On a T4, `phasec.scale_estimates` moves the L4 estimates by the parity run's measured seconds per tile.
   - The GPU, the dtype and the parity file's hash are in `PROV`, so no block is reused across GPUs. The result file records `gpu_choice`, `autocast` and `parity_pass`.
 - **Tests:**
-  - `tests/test_parity.py` (5): the sample is seeded and hashed and detects changes; identical results pass; each criterion fails on its own; a missing result is an error; the autocast dtype is settable and bf16 by default.
-  - `tests/test_phasec.py`: a T4 is refused without a passed parity check; the estimates are scaled.
-- **Checks (sandbox):** ruff clean; pytest 586 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 17b, 18 and 18b passed.
+  - `tests/test_parity.py` (6): the sample is seeded and hashed and detects changes; identical results pass; each criterion fails on its own; a missing result is an error; the autocast dtype is settable and bf16 by default; the probe criterion sets the outcome.
+  - `tests/test_phasec.py`: a T4 is refused without a passed parity check; it allows the unified probe only if its parity passed, and never the detection probe; the estimates are scaled.
+- **Checks (sandbox):** ruff clean; pytest 587 passed, 0 failed (after the probe rule); repo audit ok; dry runs of notebooks 14, 15, 16, 17, 17b, 18 and 18b passed.
 
 ## Notebook 17 review fixes before Phase C (Dhanush, 25 Nov) — 2026-11-25
 

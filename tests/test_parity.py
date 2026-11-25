@@ -70,3 +70,23 @@ def test_the_autocast_dtype_can_be_set_and_is_bf16_by_default():
         runner.set_amp_dtype("bf16")
     with runner.autocast(torch.device("cpu")):  # nothing on the CPU
         assert torch.ones(1).dtype == torch.float32
+
+
+def test_the_probe_criterion_sets_the_outcome():
+    e, r = _refs()
+    probe = {u: "real" for u in r}
+    ok = parity.parity_verdict(parity.L4_P2_IOU, dict(e), dict(r), e, r,
+                               t4_probe_label=dict(probe), ref_probe_label=probe)  # fmt: skip
+    assert ok["pass"]
+    assert ok["probe_pass"] is True
+    assert ok["outcome"] == "T4 with the unified probe rows"
+    bad_probe = dict(probe, r0="edited", r1="edited")
+    v = parity.parity_verdict(parity.L4_P2_IOU, dict(e), dict(r), e, r,
+                              t4_probe_label=bad_probe, ref_probe_label=probe)  # fmt: skip
+    assert v["pass"]  # the model head passed: a T4 run is allowed ...
+    assert v["probe_pass"] is False
+    assert v["outcome"].startswith("T4 without probe rows")  # ... without the probe rows
+    v = parity.parity_verdict(parity.L4_P2_IOU + 0.01, dict(e), dict(r), e, r,
+                              t4_probe_label=dict(probe), ref_probe_label=probe)  # fmt: skip
+    assert v["outcome"] == "wait for an L4"
+    assert parity.parity_verdict(parity.L4_P2_IOU, dict(e), dict(r), e, r)["probe_pass"] is None

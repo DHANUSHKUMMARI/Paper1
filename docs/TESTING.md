@@ -56,7 +56,7 @@ are read from the result files the notebooks write to Drive.
   - It recomputes the as-run HR-GT and **stops unless it matches `cp6_reports_seed42.json` exactly**.
   - It writes `cp6_analysis_seed42.json` (items 1–5 of the review) and `cp6_read30_seed42.json` (the same 30 reports as notebook 18, for Dhanush's read beside the images).
   - Dry run in CI: one dry E region below τ, so the as-run template fails once on rule (c) and the fixed one passes.
-- **Tests:** `tests/test_cp6_analysis.py` (8 tests). The older HR-GT tests in `tests/test_cp6.py` now compare the totals only, since the split adds keys.
+- **Tests:** `tests/test_cp6_analysis.py` (8 tests; composite asserts split, SonarCloud S9073). The older HR-GT tests in `tests/test_cp6.py` now compare the totals only, since the split adds keys.
 - **Checks (sandbox):** ruff clean; pytest 576 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 18 and 18b passed.
 - **Not run here:** the real analysis (needs the Drive files). Dhanush runs notebook 18b on a CPU runtime.
 

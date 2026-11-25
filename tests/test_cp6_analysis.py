@@ -85,12 +85,14 @@ def test_hr_gt_is_split_into_verdict_and_region_claims():
     wrong = {"verdict": "real", "claims": region}
     c = verifier.hr_gt_counts(wrong, "edited", _mask(), rec)
     assert (c["verdict_wrong"], c["region_checkable"], c["region_wrong"]) == (1, 2, 1)
-    assert c["checkable"] == 3 and c["wrong"] == 2
+    assert c["checkable"] == 3
+    assert c["wrong"] == 2
     s = verifier.hr_gt_summary([(right, "edited", _mask(), rec), (wrong, "edited", _mask(), rec),
                                 (None, "real", None, rec)])  # fmt: skip
     assert s["verdict_claims"] == {"checkable": 3, "wrong": 2, "rate": pytest.approx(2 / 3)}
     assert s["region_claims"] == {"checkable": 4, "wrong": 2, "rate": 0.5}
-    assert s["checkable_claims"] == 3 + 4 and s["wrong_claims"] == 2 + 2
+    assert s["checkable_claims"] == 3 + 4
+    assert s["wrong_claims"] == 2 + 2
 
 
 def test_score_all_boxes_scores_boxed_claims_of_any_type_as_a_sensitivity_check():
@@ -136,7 +138,9 @@ def test_final_check_passes_only_when_every_final_claim_passes():
     claim = {"claim_type": "edited_region", "text": "E1 is edited.", "evidence_ids": ["E1"]}
     good = {"verdict": "locally_edited", "confidence": 0.8, "claims": [claim]}
     ok = cp6analysis.final_check([{"uid": "a", "final_report": good}], {"a": rec})
-    assert ok["passes"] and ok["claims"] == 1 and ok["failing_claims"] == 0
+    assert ok["passes"]
+    assert ok["claims"] == 1
+    assert ok["failing_claims"] == 0
     bad = {**good, "claims": [{"claim_type": "edited_region", "text": "", "evidence_ids": ["E9"]}]}
     out = cp6analysis.final_check(
         [{"uid": "a", "final_report": bad}, {"uid": "b", "final_report": None}],

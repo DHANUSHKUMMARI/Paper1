@@ -97,7 +97,10 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - P6: 212 of 569 (by rule: b 168, a 53, limitation 42, c 6, c′ 1);
   - P6_mllm: 74 of 194 (b 55, limitation 18, a 16, c 2).
 - **CP6 criterion 1: pass.** 5,369 final claims, 0 failing, 0 reports without a final report, 0 verdict and 0 confidence mismatches.
-- **Criterion 2:** pending. The 30 reports (`cp6_read30_seed42.json`) are on a private reading page for Dhanush, and the images are not uploaded.
+- **Criterion 2: FAIL** (Dhanush's read on the reading page, 27 Nov; the images were not uploaded).
+  - 23 supported, 7 unsupported (reports 4, 17, 18, 21, 26, 27, 29).
+  - Every unsupported report is a wrong detector verdict restated faithfully; no claim contradicts its evidence.
+  - Report 16 was first marked unsure (the note was about the Qwen2-VL baseline) and was re-marked supported on Dhanush's word.
 
 ## PR #65 review fixes (Dhanush's research lead, 27 Nov) — 2026-11-27
 

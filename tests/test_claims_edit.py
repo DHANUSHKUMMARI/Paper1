@@ -206,3 +206,16 @@ def test_cp8_summary_counts_accuracy_pixels_band_and_cc():
     assert s["pixel"]["iou_edited"] == 1.0
     assert 0 < s["band_iou_mean"] < 1
     assert s["cc"]["scored"] == 2
+
+
+def test_mock_inpainter_edits_only_inside_mask_and_records_request():
+    from eviground.data.inpaint import MockInpainter
+
+    image = np.full((8, 8, 3), 200, np.uint8)
+    mask = np.zeros((8, 8), bool)
+    mask[2:5, 2:5] = True
+    inp = MockInpainter()
+    out = inp.inpaint(image, mask, "p", negative="n", seed=3, steps=7, guidance=5.0)
+    assert np.array_equal(out[~mask], image[~mask])
+    assert (out[mask] != image[mask]).any()
+    assert inp.last_call == {"prompt": "p", "negative": "n", "seed": 3, "steps": 7, "guidance": 5.0}

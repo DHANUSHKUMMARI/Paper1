@@ -50,6 +50,11 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - `cp8_summary`.
 - **Checks (sandbox):** ruff clean; pytest 601 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 17b, 18, 18b and 19 passed. **Not run here:** Kolors itself (no GPU, no weights) and the T4 smoke test.
 - **Main is frozen during Phase C:** this changes `src/` and notebook 17, so it merges before notebook 17 starts, or after Phase C has fully finished.
+- **SonarCloud fixes (PR #65):**
+  - S1172 ×5, major: `MockInpainter.inpaint` now uses its interface arguments. It edits only inside the mask and records the request in `last_call`, with a new test.
+  - S3358, major: notebook 19's `EST_CU` is no longer a nested conditional.
+  - S7508, minor: `eye_check_sample` uses `heapq.nsmallest`, which selects the same uids.
+  - **Checks after the fixes:** ruff clean; pytest 602 passed; audit ok; the dry runs of notebooks 14–19 pass.
 
 ## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
 

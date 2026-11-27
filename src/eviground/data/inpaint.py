@@ -52,13 +52,19 @@ class MockInpainter:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.last_call: dict | None = None  # the request of the latest call (tests read it)
 
     def inpaint(self, image, mask, prompt, *, negative, seed, steps, guidance):
         self.calls += 1
+        self.last_call = {"prompt": prompt, "negative": negative, "seed": seed,
+                          "steps": steps, "guidance": guidance}  # fmt: skip
         rng = np.random.default_rng(seed)
         noise = rng.integers(0, 60, size=image.shape, dtype=np.int16)
-        out = np.clip(image.astype(np.int16) // 2 + noise, 0, 255).astype(np.uint8)
-        return out
+        edited = np.clip(image.astype(np.int16) // 2 + noise, 0, 255).astype(np.uint8)
+        inside = np.asarray(mask, bool)
+        if edited.ndim == 3:
+            inside = inside[..., None]
+        return np.where(inside, edited, image)
 
 
 def _fit(h: int, w: int, long_side: int = KOLORS_LONG_SIDE) -> tuple[int, int]:

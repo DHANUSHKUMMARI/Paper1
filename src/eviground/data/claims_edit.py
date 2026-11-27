@@ -20,6 +20,7 @@ mask (:func:`claims`).
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -184,7 +185,7 @@ def band_iou(pred: np.ndarray, gt: np.ndarray, px: int = 8) -> float | None:
 def eye_check_sample(plan: Mapping[str, Any], n: int = 30, seed: int = 42) -> list[str]:
     """The ``n`` pairs Dhanush checks by eye, drawn by a seeded hash (sorted uids)."""
     uids = sorted(p["uid"] for p in plan["plans"])
-    return sorted(sorted(uids, key=lambda u: _h(seed, "eye_check", u))[:n])
+    return sorted(heapq.nsmallest(n, uids, key=lambda u: _h(seed, "eye_check", u)))
 
 
 def claims(plan_row: Mapping[str, Any], edited_mask: np.ndarray) -> dict[str, Any]:

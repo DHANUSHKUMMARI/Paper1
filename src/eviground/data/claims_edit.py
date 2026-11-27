@@ -195,11 +195,24 @@ def keep_pair(
 
 
 def boundary_band(mask: np.ndarray, px: int = 8) -> np.ndarray:
-    """The thin band of ``px`` pixels on each side of the mask border (the composite seam)."""
+    """The thin band of ``px`` iterations (cross structuring element) on each side of the mask
+    border (the composite seam). ``border_value=1``: the image edge is not a mask edge, so a mask
+    touching it gets no fake seam strip there (review of PR #65)."""
     m = np.asarray(mask, bool)
     grow = ndimage.binary_dilation(m, iterations=px)
-    shrink = ndimage.binary_erosion(m, iterations=px)
+    shrink = ndimage.binary_erosion(m, iterations=px, border_value=1)
     return grow & ~shrink
+
+
+def consecutive_failures(records: Sequence[Mapping[str, Any]]) -> int:
+    """How many of the latest pair records in a row failed to generate (notebook 19 stops at
+    ``MAX_FAILS``; review of PR #65)."""
+    n = 0
+    for r in reversed(records):
+        if r.get("reason") != "generation failed":
+            break
+        n += 1
+    return n
 
 
 def band_iou(pred: np.ndarray, gt: np.ndarray, px: int = 8) -> float | None:

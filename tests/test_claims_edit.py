@@ -275,3 +275,21 @@ def test_generation_code_covers_only_pixel_deciding_files(tmp_path):
     assert fp2 != fp1
     with pytest.raises(ValueError):
         ce.check_resume(records, fp2)
+
+
+def test_boundary_band_has_no_fake_seam_at_the_image_edge():
+    gt = np.zeros((60, 60), bool)
+    gt[0:30, 15:45] = True  # touches the top edge of the image
+    band = ce.boundary_band(gt, 4)
+    assert not band[0:4, 30].any()  # the image edge is not a mask edge
+    assert not band[10, 30]  # interior
+    assert band[29, 30] and band[30, 30]  # the real lower border, both sides
+    assert band[10, 15] and band[10, 14]  # the real side border, both sides
+
+
+def test_consecutive_failures_counts_the_trailing_run():
+    ok, bad = {"reason": "kept"}, {"reason": "generation failed"}
+    assert ce.consecutive_failures([]) == 0
+    assert ce.consecutive_failures([bad, ok]) == 0
+    assert ce.consecutive_failures([ok, bad, bad]) == 2
+    assert ce.consecutive_failures([bad, ok, bad, bad, bad]) == 3

@@ -64,6 +64,17 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## PR #65 review fixes (Dhanush's research lead, 27 Nov) — 2026-11-27
+
+- **`claims_edit.boundary_band`:** `binary_erosion(..., border_value=1)`. A mask touching the image edge no longer gets a fake seam strip along that edge.
+  - The interior band is unchanged: 920 px and band IoU 1.0 on the 60×60 test square, before and after.
+  - New test: a mask touching the top edge.
+- **Notebook 19, High-RAM:** the metadata asks for `machine_shape: "hm"`, and the intro and settings say why (ChatGLM-6B + UNet + VAE with CPU offload need about 18 GB of system RAM). Outside the dry run, the pre-flight prints the RAM and warns below 18 GB.
+- **Notebook 19, cell 6:** stops after `MAX_FAILS = 3` generation failures in a row and reports `STOPPED` with the last error. `claims_edit.consecutive_failures` is tested, and the failed record keeps its error.
+- **Card `sg_4xe6wnswpt`:** "8 dilation iterations (cross structuring element)". The band is now described as 8 dilation and 8 erosion iterations, with the image edge not counted as a mask edge.
+- **`CLAUDE.md`:** the token and workflow efficiency rules.
+- **Checks:** ruff clean; pytest 608 passed; audit ok; the dry runs of notebooks 14–19 pass.
+
 ## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
 
 - **Found:** no notebook carried a runtime request. The metadata (copied from notebook 06) had only `kernelspec` and `language_info`, so Colab, opening a notebook from GitHub, reused the runtime type last used: a T4 after notebooks 17b and 18.

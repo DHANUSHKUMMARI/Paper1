@@ -5,6 +5,23 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
+
+- **Found:** no notebook carried a runtime request. The metadata (copied from notebook 06) had only `kernelspec` and `language_info`, so Colab, opening a notebook from GitHub, reused the runtime type last used: a T4 after notebooks 17b and 18.
+  - Nothing in notebook 17 refuses an L4. Its only GPU check runs after connecting (`session.gpu_type(GPU) == GPU_CHOICE`; `"NVIDIA L4"` reads as `"L4"`).
+- **Fix:** `"accelerator": "GPU"` and `"colab": {"gpuType": ...}` in the metadata, written by the generators: L4 for notebook 17, T4 for notebooks 17b and 18.
+  - Colab now asks for that GPU when the notebook opens. It cannot create capacity; when no L4 is free, Colab still says so.
+  - The cells are unchanged. Notebook 17's file hash is part of the Phase C provenance, which is harmless since no Phase C block has run yet.
+- **CU per hour:** Colab gives code no billing rate. `session.CU_RATES` (L4 2.2, T4 1.28, CPU 0.08; measured from balances) is used only for estimates and the cap, and the CU recorded comes from the balance.
+- **Test:** `tests/test_notebook_gpu_metadata.py`, which checks the three notebooks' requests.
+- **`PHASE_C_BALANCE_START` is now a required setting** in notebook 17 (Dhanush, 27 Nov).
+  - It is None by default and asserted like `CU_BALANCE_START`: the balance at the actual first Phase C start, typed again unchanged on every resume. It replaces the fixed 23.43, which had already passed before Phase C started (22.75 on 25 Nov) and would have cut the cap.
+  - The pre-flight prints the effective cap of the session.
+- **`cp8` block in notebook 17** (lowest priority, estimate 0.15 CU): until CP8 generation (notebook 19) has written a verified `claims_edit` tar, the block is logged as `skipped` ("inputs missing") and nothing is saved, so a later session runs it. The scoring itself comes with the CP8 code PR.
+- **Tests:** the setting is required and feeds `session_cap`; the cp8 block skips cleanly. The dry run asserts the skip.
+- **Main is frozen during Phase C:** a PR touching `src/`, `configs/` or notebook 17 merges before notebook 17 starts, or after Phase C has fully finished (any resume included), never between Phase C sessions.
+- **Checks (27 Nov, on main `84566f3` plus these two commits):** `ruff check src tests` clean; `python -m pytest` 592 passed; `repo_audit --history` ok; `EVIGROUND_DRY_RUN=1` nbmake dry runs pass for notebooks 14 (30 s), 15 (22 s), 16 (7 s), 17 (13 s), 17b (17 s), 18 (2 s) and 18b (3 s).
+
 ## Notebook 17b runs: T4 parity FAIL, so Phase C waits for an L4 — 2026-11-25
 
 - **Step 1, CPU freeze:**

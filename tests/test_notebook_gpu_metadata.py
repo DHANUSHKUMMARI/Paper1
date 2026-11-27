@@ -18,3 +18,22 @@ def test_gpu_notebooks_ask_colab_for_their_gpu(name, gpu):
     meta = json.loads((NOTEBOOKS / f"{name}.ipynb").read_text())["metadata"]
     assert meta["accelerator"] == "GPU"
     assert meta["colab"]["gpuType"] == gpu
+
+
+def _source(name):
+    nb = json.loads((NOTEBOOKS / f"{name}.ipynb").read_text())
+    return "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+
+
+def test_phase_c_start_balance_is_a_required_setting():
+    src = _source("17_phase_c_evaluation")
+    assert "PHASE_C_BALANCE_START = None" in src  # no fixed default (it was 23.43)
+    assert "assert isinstance(PHASE_C_BALANCE_START, (int, float))" in src
+    assert "phasec.session_cap(CU_CAP, PHASE_C_BALANCE_START, CU_BALANCE_START)" in src
+    assert "cap this session (effective)" in src
+
+
+def test_the_cp8_block_skips_cleanly_without_its_inputs():
+    src = _source("17_phase_c_evaluation")
+    assert "if not testcache.is_ready(CACHE, CP8_TAR):" in src
+    assert "'status': 'skipped', 'reason': f'inputs missing" in src

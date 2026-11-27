@@ -14,6 +14,12 @@ are read from the result files the notebooks write to Drive.
   - The cells are unchanged. Notebook 17's file hash is part of the Phase C provenance, which is harmless since no Phase C block has run yet.
 - **CU per hour:** Colab gives code no billing rate. `session.CU_RATES` (L4 2.2, T4 1.28, CPU 0.08; measured from balances) is used only for estimates and the cap, and the CU recorded comes from the balance.
 - **Test:** `tests/test_notebook_gpu_metadata.py`, which checks the three notebooks' requests.
+- **`PHASE_C_BALANCE_START` is now a required setting** in notebook 17 (Dhanush, 27 Nov).
+  - It is None by default and asserted like `CU_BALANCE_START`: the balance at the actual first Phase C start, typed again unchanged on every resume. It replaces the fixed 23.43, which had already passed before Phase C started (22.75 on 25 Nov) and would have cut the cap.
+  - The pre-flight prints the effective cap of the session.
+- **`cp8` block in notebook 17** (lowest priority, estimate 0.15 CU): until CP8 generation (notebook 19) has written a verified `claims_edit` tar, the block is logged as `skipped` ("inputs missing") and nothing is saved, so a later session runs it. The scoring itself comes with the CP8 code PR.
+- **Tests:** the setting is required and feeds `session_cap`; the cp8 block skips cleanly. The dry run asserts the skip.
+- **Main is frozen during Phase C:** a PR touching `src/`, `configs/` or notebook 17 merges before notebook 17 starts, or after Phase C has fully finished (any resume included), never between Phase C sessions.
 
 ## Notebook 17b runs: T4 parity FAIL, so Phase C waits for an L4 — 2026-11-25
 

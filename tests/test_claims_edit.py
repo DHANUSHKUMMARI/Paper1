@@ -271,6 +271,7 @@ def test_generation_code_covers_only_pixel_deciding_files(tmp_path):
     assert fp() == fp1
     ce.check_resume(records, fp())
     commit("src/eviground/data/claims_edit.py", "# changed\n")
-    assert fp() != fp1
+    fp2 = fp()
+    assert fp2 != fp1
     with pytest.raises(ValueError):
-        ce.check_resume(records, fp())
+        ce.check_resume(records, fp2)

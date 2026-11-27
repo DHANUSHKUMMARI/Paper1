@@ -62,6 +62,7 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - On resume, `claims_edit.check_resume` stops if any saved record has another fingerprint, or has none, so one tar never mixes generations.
   - The fingerprint is written to the result file. A new test covers it.
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
+  - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
 ## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
 

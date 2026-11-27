@@ -49,4 +49,5 @@ def test_cp8_generation_asks_for_high_ram_and_stops_on_repeated_failures():
     assert meta["colab"]["machine_shape"] == "hm"  # Kolors with CPU offload: ~18 GB RAM
     src = _source("19_cp8_generation")
     assert "MAX_FAILS = 3" in src
-    assert "ce.consecutive_failures(" in src and ">= MAX_FAILS" in src
+    assert "ce.consecutive_failures(" in src
+    assert ">= MAX_FAILS" in src

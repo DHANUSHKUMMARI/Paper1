@@ -73,7 +73,7 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
 - **Notebook 19, cell 6:** stops after `MAX_FAILS = 3` generation failures in a row and reports `STOPPED` with the last error. `claims_edit.consecutive_failures` is tested, and the failed record keeps its error.
 - **Card `sg_4xe6wnswpt`:** "8 dilation iterations (cross structuring element)". The band is now described as 8 dilation and 8 erosion iterations, with the image edge not counted as a mask edge.
 - **`CLAUDE.md`:** the token and workflow efficiency rules.
-- **Checks:** ruff clean; pytest 608 passed; audit ok; the dry runs of notebooks 14–19 pass.
+- **Checks:** ruff clean; pytest 608 passed; audit ok; the dry runs of notebooks 14–19 pass. SonarCloud S9073 ×3 (major; composite asserts in the new tests) split, then the checks passed again.
 
 ## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
 

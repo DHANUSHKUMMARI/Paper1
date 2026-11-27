@@ -283,8 +283,10 @@ def test_boundary_band_has_no_fake_seam_at_the_image_edge():
     band = ce.boundary_band(gt, 4)
     assert not band[0:4, 30].any()  # the image edge is not a mask edge
     assert not band[10, 30]  # interior
-    assert band[29, 30] and band[30, 30]  # the real lower border, both sides
-    assert band[10, 15] and band[10, 14]  # the real side border, both sides
+    assert band[29, 30]  # the real lower border, inside
+    assert band[30, 30]  # and outside
+    assert band[10, 15]  # the real side border, inside
+    assert band[10, 14]  # and outside
 
 
 def test_consecutive_failures_counts_the_trailing_run():

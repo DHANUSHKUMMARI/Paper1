@@ -20,6 +20,7 @@ are read from the result files the notebooks write to Drive.
 - **`cp8` block in notebook 17** (lowest priority, estimate 0.15 CU): until CP8 generation (notebook 19) has written a verified `claims_edit` tar, the block is logged as `skipped` ("inputs missing") and nothing is saved, so a later session runs it. The scoring itself comes with the CP8 code PR.
 - **Tests:** the setting is required and feeds `session_cap`; the cp8 block skips cleanly. The dry run asserts the skip.
 - **Main is frozen during Phase C:** a PR touching `src/`, `configs/` or notebook 17 merges before notebook 17 starts, or after Phase C has fully finished (any resume included), never between Phase C sessions.
+- **Checks (27 Nov, on main `84566f3` plus these two commits):** `ruff check src tests` clean; `python -m pytest` 592 passed; `repo_audit --history` ok; `EVIGROUND_DRY_RUN=1` nbmake dry runs pass for notebooks 14 (30 s), 15 (22 s), 16 (7 s), 17 (13 s), 17b (17 s), 18 (2 s) and 18b (3 s).
 
 ## Notebook 17b runs: T4 parity FAIL, so Phase C waits for an L4 — 2026-11-25
 

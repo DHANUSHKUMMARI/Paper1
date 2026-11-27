@@ -5,6 +5,16 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
+
+- **Found:** no notebook carried a runtime request. The metadata (copied from notebook 06) had only `kernelspec` and `language_info`, so Colab, opening a notebook from GitHub, reused the runtime type last used: a T4 after notebooks 17b and 18.
+  - Nothing in notebook 17 refuses an L4. Its only GPU check runs after connecting (`session.gpu_type(GPU) == GPU_CHOICE`; `"NVIDIA L4"` reads as `"L4"`).
+- **Fix:** `"accelerator": "GPU"` and `"colab": {"gpuType": ...}` in the metadata, written by the generators: L4 for notebook 17, T4 for notebooks 17b and 18.
+  - Colab now asks for that GPU when the notebook opens. It cannot create capacity; when no L4 is free, Colab still says so.
+  - The cells are unchanged. Notebook 17's file hash is part of the Phase C provenance, which is harmless since no Phase C block has run yet.
+- **CU per hour:** Colab gives code no billing rate. `session.CU_RATES` (L4 2.2, T4 1.28, CPU 0.08; measured from balances) is used only for estimates and the cap, and the CU recorded comes from the balance.
+- **Test:** `tests/test_notebook_gpu_metadata.py`, which checks the three notebooks' requests.
+
 ## Notebook 17b runs: T4 parity FAIL, so Phase C waits for an L4 — 2026-11-25
 
 - **Step 1, CPU freeze:**

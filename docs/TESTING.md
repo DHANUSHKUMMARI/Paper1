@@ -5,6 +5,76 @@ runs) run on CPU with synthetic data: no GPU, no Kaggle or Hugging Face access, 
 Entries titled as a notebook "run" record real Colab sessions (GPU or CPU runtime) instead; their numbers
 are read from the result files the notebooks write to Drive.
 
+## CP8 Claims-Edit code: plan, generation notebook 19 (T4), and the cp8 block of notebook 17 (Dhanush, 27 Nov) — 2026-11-27
+
+Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhanush's word.
+
+- **Model** (Dhanush, 27 Nov): Kolors-Inpainting, HF `Kwai-Kolors/Kolors-Inpainting` @ `3bb98b424c9a17c09bf9e4fa1d53ce4f5aa32dc6` (Apache-2.0, not gated).
+  - **Pipeline:** the README runs it through the Kolors repository, so the repo is pinned too: `Kwai-Kolors/Kolors` @ `038818d244ed103056abd10f429729a26af4d239`, installed with `--no-deps`. The libraries come from the repository's `requirements.txt` pins: diffusers 0.28.2, transformers 4.42.4, huggingface-hub 0.23.4, accelerate 0.27.2.
+  - **Install:** in notebook 19's cell 1, before torch is imported, with the same restart rule as notebook 18.
+  - **Overlap:** Kolors is a P2 held-out editor, never a training editor (asserted and logged). CP8 is therefore not independent of the P2 Kolors pixels.
+  - **Memory:** the repository script moves the whole pipeline to the GPU. A ChatGLM-6B text encoder (about 12.5 GB in fp16) plus the UNet does not fit a 16 GB T4, so `KolorsInpainter` uses `enable_model_cpu_offload()` and attention slicing. Not verified here: that is what the smoke test is for.
+- **`data/claims_edit.py`** (model-independent):
+  - `plan_edits`: one edit per reserved photo. The mask is the largest non-crowd instance of car, couch, chair, dining table or laptop with 2–40% of the image, with seeded ties. The damage comes by a seeded hash from cracks, dents, stains and broken glass (glass only for car and laptop), with the prompt "realistic {damage} on the {category}, photo". The negative prompt is fixed; the seed is per photo; steps 25, guidance 6.0, mask dilation 8 px.
+  - `freeze` / `intact`: the SHA-256 over the plan and its settings.
+  - `instance_mask`: COCO polygons, or the box.
+  - `composite`: a hard seam, inside the dilated mask only.
+  - `keep_pair`: a pair is dropped when generation failed, or when the mean change inside the mask is < 10/255.
+  - `boundary_band` / `band_iou`: the seam diagnostic.
+  - `eye_check_sample` (30, seeded) and `claims`.
+- **`data/inpaint.py`:** `MockInpainter` (deterministic), `KolorsInpainter` (lazy, fp16, CPU offload; records s/image and peak GPU memory), and `assert_not_training_editor`.
+- **Notebook 19 `19_cp8_generation.ipynb`** (T4):
+  - It stages the verified `claims_edit_src` tar and reads the instances from `annotations_trainval2017.zip`.
+  - It freezes the plan in `eval_subsets.json` (key `CP8_plan`) before any generation; a changed plan is refused.
+  - **`SMOKE_ONLY = True` by default:** 2 images; it records s/image (median), peak GPU memory and output bytes per pair, and estimates CU for 150 (and for 100). It stops if one image takes more than 120 s.
+  - **`SMOKE_ONLY = False`:** all photos, resumable. It applies the drop rule (> 10% dropped fails CP8) and builds and publishes the `claims_edit` tar: the real photos, plus each kept edited copy with its mask.
+  - Its dry run (mock inpainter, fake COCO with polygons) is a CI step.
+- **Notebook 17 `cp8` block** (lowest priority, estimate 0.15 CU; `eval/cp8.py`). It does one pass per image:
+  - `cp5.explain_image` gives the verdict and probabilities;
+  - pixel counts of the decoder map against the edit mask, and against its 8 px boundary band;
+  - the M5 evidence bundle goes to `runs/explain/cp8_unified_ctx_seed42/`, as notebook 14 did for P6, so the CP8 reports can run on a T4 later with no further L4 session;
+  - then CC (the Phase C rule) on every E region, asserting each region mask's shape.
+  - `cp8.cp8_summary` gives image accuracy (all, real, edited) and the confusion, pooled pixel metrics on the edited copies, the mean boundary-band IoU, and CC.
+  - **Skip rule:** without a verified `claims_edit` tar the block is logged as skipped ("inputs missing").
+  - **Provenance:** the tar's hash enters this block's provenance only, so its later arrival never reruns the other blocks.
+  - The edited masks are read as binary (`phasec.BINARY_SOURCES` gains `claims_edit`).
+- **Found in the dry run:** the crash safety of `run_block` caught a real bug. The band record kept its pixel histograms and the CSV could not encode them; the block was logged as `failed` with its traceback, and the run went on. Fixed by keeping the band's counts only.
+- **Tests:** `tests/test_claims_edit.py` (9):
+  - the plan rules and determinism; the hash detects any change;
+  - polygon and box masks;
+  - composite and the drop rule;
+  - the band IoU;
+  - the eye-check sample;
+  - the claims and the training-editor guard;
+  - the Kolors size fit;
+  - `cp8_summary`.
+- **Checks (sandbox):** ruff clean; pytest 601 passed, 0 failed; repo audit ok; dry runs of notebooks 14, 15, 16, 17, 17b, 18, 18b and 19 passed. **Not run here:** Kolors itself (no GPU, no weights) and the T4 smoke test.
+- **Main is frozen during Phase C:** this changes `src/` and notebook 17, so it merges before notebook 17 starts, or after Phase C has fully finished.
+- **SonarCloud fixes (PR #65):**
+  - S1172 ×5, major: `MockInpainter.inpaint` now uses its interface arguments. It edits only inside the mask and records the request in `last_call`, with a new test.
+  - S3358, major: notebook 19's `EST_CU` is no longer a nested conditional.
+  - S7508, minor: `eye_check_sample` uses `heapq.nsmallest`, which selects the same uids.
+  - **Checks after the fixes:** ruff clean; pytest 602 passed; audit ok; the dry runs of notebooks 14–19 pass.
+- **Codex P2 (PR #65): resume is bound to the generation configuration.**
+  - Each pair record in notebook 19 now carries `generation_fingerprint`: a SHA-256 over the inpainter name with its pins, the plan SHA-256 and the git hashes of only the files that decide the pixels (`claims_edit.GEN_CODE_PATHS`: `data/claims_edit.py`, `data/inpaint.py`, notebook 19).
+  - The `src` tree as a whole is left out (Dhanush, 27 Nov), so an unrelated merge (e.g. CP9 code) never blocks a resume. A test checks both directions: an unrelated `src` change allows the resume, and a `claims_edit.py` change refuses it.
+  - **Rule (Dhanush, 27 Nov):** no merges between the CP8 smoke test and the end of the full notebook 19 run, the same rule as for Phase C.
+  - On resume, `claims_edit.check_resume` stops if any saved record has another fingerprint, or has none, so one tar never mixes generations.
+  - The fingerprint is written to the result file. A new test covers it.
+  - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
+  - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
+
+## PR #65 review fixes (Dhanush's research lead, 27 Nov) — 2026-11-27
+
+- **`claims_edit.boundary_band`:** `binary_erosion(..., border_value=1)`. A mask touching the image edge no longer gets a fake seam strip along that edge.
+  - The interior band is unchanged: 920 px and band IoU 1.0 on the 60×60 test square, before and after.
+  - New test: a mask touching the top edge.
+- **Notebook 19, High-RAM:** the metadata asks for `machine_shape: "hm"`, and the intro and settings say why (ChatGLM-6B + UNet + VAE with CPU offload need about 18 GB of system RAM). Outside the dry run, the pre-flight prints the RAM and warns below 18 GB.
+- **Notebook 19, cell 6:** stops after `MAX_FAILS = 3` generation failures in a row and reports `STOPPED` with the last error. `claims_edit.consecutive_failures` is tested, and the failed record keeps its error.
+- **Card `sg_4xe6wnswpt`:** "8 dilation iterations (cross structuring element)". The band is now described as 8 dilation and 8 erosion iterations, with the image edge not counted as a mask edge.
+- **`CLAUDE.md`:** the token and workflow efficiency rules.
+- **Checks:** ruff clean; pytest 608 passed; audit ok; the dry runs of notebooks 14–19 pass. SonarCloud S9073 ×3 (major; composite asserts in the new tests) split, then the checks passed again.
+
 ## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
 
 - **Found:** no notebook carried a runtime request. The metadata (copied from notebook 06) had only `kernelspec` and `language_info`, so Colab, opening a notebook from GitHub, reused the runtime type last used: a T4 after notebooks 17b and 18.

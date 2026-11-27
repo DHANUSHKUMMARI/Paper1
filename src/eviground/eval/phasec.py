@@ -40,7 +40,7 @@ from eviground.models.heads import CLASSES
 L4_RATE = 2.2
 SHARE_BINS = ((0.0, 0.01), (0.01, 0.05), (0.05, 0.15), (0.15, 0.40), (0.40, 1.01))
 BIN_NAMES = ("<1%", "1-5%", "5-15%", "15-40%", ">40%")
-BINARY_SOURCES = ("brgen", "sidset", "sidset_val")  # masks binarized at L > 127
+BINARY_SOURCES = ("brgen", "sidset", "sidset_val", "claims_edit")  # masks binarized at L > 127
 
 
 # ---- blocks under a CU cap -------------------------------------------------------------------

@@ -132,6 +132,35 @@ def intact(frozen: Mapping[str, Any]) -> bool:
     return plan_sha256(frozen) == frozen.get("sha256")
 
 
+# The files that decide a generated pair's pixels (Dhanush, 27 Nov): only these enter the
+# fingerprint, so an unrelated merge (e.g. CP9 code) never blocks a resume. The Kolors pins live in
+# inpaint.py and in the inpainter's name; the plan settings in the plan hash.
+GEN_CODE_PATHS = (
+    "src/eviground/data/claims_edit.py",
+    "src/eviground/data/inpaint.py",
+    "notebooks/19_cp8_generation.ipynb",
+)
+
+
+def generation_fingerprint(inpainter: str, plan_sha: str, code: Mapping[str, str]) -> str:
+    """What decides a generated pair beyond the plan: the inpainter with its pins, the frozen plan
+    and the git hashes of ``GEN_CODE_PATHS`` (``phasec.code_tree(repo, GEN_CODE_PATHS)``). A
+    resumed pair is reused only under the same fingerprint (Codex review, PR #65)."""
+    key = {"inpainter": inpainter, "plan_sha256": plan_sha, "code": dict(sorted(code.items()))}
+    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+
+
+def check_resume(records: Iterable[Mapping[str, Any]], fingerprint: str) -> None:
+    """Refuse to reuse records made under another generation fingerprint (a record without
+    one counts as different), so the tar never mixes generations."""
+    other = sorted(r["uid"] for r in records if r.get("fingerprint") != fingerprint)
+    if other:
+        raise ValueError(
+            f"{len(other)} saved pairs were made under another generation configuration "
+            f"(e.g. {other[0]}): use a new output folder or delete them; nothing is mixed"
+        )
+
+
 def dilate(mask: np.ndarray, px: int = DILATE_PX) -> np.ndarray:
     return ndimage.binary_dilation(np.asarray(mask, bool), iterations=int(px)) if px else mask
 

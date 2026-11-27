@@ -55,6 +55,13 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - S3358, major: notebook 19's `EST_CU` is no longer a nested conditional.
   - S7508, minor: `eye_check_sample` uses `heapq.nsmallest`, which selects the same uids.
   - **Checks after the fixes:** ruff clean; pytest 602 passed; audit ok; the dry runs of notebooks 14–19 pass.
+- **Codex P2 (PR #65): resume is bound to the generation configuration.**
+  - Each pair record in notebook 19 now carries `generation_fingerprint`: a SHA-256 over the inpainter name with its pins, the plan SHA-256 and the git hashes of only the files that decide the pixels (`claims_edit.GEN_CODE_PATHS`: `data/claims_edit.py`, `data/inpaint.py`, notebook 19).
+  - The `src` tree as a whole is left out (Dhanush, 27 Nov), so an unrelated merge (e.g. CP9 code) never blocks a resume. A test checks both directions: an unrelated `src` change allows the resume, and a `claims_edit.py` change refuses it.
+  - **Rule (Dhanush, 27 Nov):** no merges between the CP8 smoke test and the end of the full notebook 19 run, the same rule as for Phase C.
+  - On resume, `claims_edit.check_resume` stops if any saved record has another fingerprint, or has none, so one tar never mixes generations.
+  - The fingerprint is written to the result file. A new test covers it.
+  - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
 
 ## Colab GPU request in the notebooks (Dhanush, 27 Nov: notebook 17 kept getting a T4) — 2026-11-27
 

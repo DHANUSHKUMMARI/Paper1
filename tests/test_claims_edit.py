@@ -219,3 +219,58 @@ def test_mock_inpainter_edits_only_inside_mask_and_records_request():
     assert np.array_equal(out[~mask], image[~mask])
     assert (out[mask] != image[mask]).any()
     assert inp.last_call == {"prompt": "p", "negative": "n", "seed": 3, "steps": 7, "guidance": 5.0}
+
+
+def test_generation_fingerprint_and_resume_refusal():
+    fp = ce.generation_fingerprint("kolors@a", "s" * 64, {"src": "t1"})
+    assert fp == ce.generation_fingerprint("kolors@a", "s" * 64, {"src": "t1"})
+    assert fp != ce.generation_fingerprint("kolors@b", "s" * 64, {"src": "t1"})
+    assert fp != ce.generation_fingerprint("kolors@a", "s" * 64, {"src": "t2"})
+    ce.check_resume([{"uid": "a", "fingerprint": fp}], fp)
+    with pytest.raises(ValueError, match="another generation configuration"):
+        ce.check_resume([{"uid": "a", "fingerprint": fp}, {"uid": "b", "fingerprint": "x"}], fp)
+    with pytest.raises(ValueError):
+        ce.check_resume([{"uid": "c"}], fp)   # an old record without a fingerprint
+
+
+def test_generation_code_covers_only_pixel_deciding_files(tmp_path):
+    """An unrelated src change keeps the fingerprint (resume allowed); a claims_edit.py change
+    alters it (resume refused). Dhanush, 27 Nov."""
+    import subprocess
+
+    from eviground.eval import phasec
+
+    repo = tmp_path
+
+    def git(*a):
+        cmd = ["git", "-C", str(repo), *a]
+        return subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+    def commit(path, text):
+        f = repo / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+        git("add", "-A")
+        git("commit", "-q", "-m", path)
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.invalid")
+    git("config", "user.name", "t")
+    for p in ce.GEN_CODE_PATHS:
+        (repo / p).parent.mkdir(parents=True, exist_ok=True)
+        (repo / p).write_text(f"# {p}\n")
+    commit("src/eviground/eval/other.py", "x = 1\n")
+
+    def fp():
+        code = phasec.code_tree(repo, ce.GEN_CODE_PATHS)
+        return ce.generation_fingerprint("kolors@a", "s" * 64, code)
+
+    fp1 = fp()
+    records = [{"uid": "a", "fingerprint": fp1}]
+    commit("src/eviground/eval/cp9.py", "y = 2\n")   # unrelated code merged
+    assert fp() == fp1
+    ce.check_resume(records, fp())
+    commit("src/eviground/data/claims_edit.py", "# changed\n")
+    assert fp() != fp1
+    with pytest.raises(ValueError):
+        ce.check_resume(records, fp())

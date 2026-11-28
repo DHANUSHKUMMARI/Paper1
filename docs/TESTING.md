@@ -64,6 +64,17 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## Notebook 19 run: CP8 smoke test and full generation (T4) (28 Nov) — 2026-11-28
+
+Real Colab sessions on a standard T4 (12.7 GB system RAM, 15.6 GB GPU), Kolors loaded in two stages (#71). Numbers from Drive `runs/cp8/cp8_generation_seed42.json` and `compute_cp8_generation.json`.
+
+- **Seventh attempt:** `TypeError: KolorsInpainter.__init__() missing 'prompts' and 'negative'`: the Colab tab still had the old cells while cell 1 pulled the new code. Fixed by pasting the new cell 5 line; no code change.
+- **Smoke test** (2 pairs): 2/2 kept, 0 failed; median 22.21 s/image; peak GPU 12.826 GB; median 405,112 bytes per pair; CU estimate 1.33 for 150 pairs, 0.94 for 100 (under 3, so the card's 150 stays); session 0.1308 h, 0.167 CU by rate.
+- **Plan:** `CP8_plan` sha256 `6db4e9d16f5262abd7622d9c6299b4bc9908d7b520dbd6d0b3abe5fb74974288`, 129 edits; 21 of 150 photos without a 2–40% instance. That alone fails the drop rule (21/150 = 14%); recorded as FAIL before the full run (Dhanush's research lead), rule unchanged, card suggestion `sg_b6r1mwho55`.
+- **Full run** (commit `8c91b24`, generation fingerprint `d0d1c44914fb…`): 129 attempted, 126 kept, 3 not visible (mean change 9.50, 8.97, 8.89 < 10.0), 0 generation failures, not stopped. Drop share (21 + 3)/150 = 0.16 → `drop_rule_pass: false`. Median 25.86 s/image; peak GPU 12.826 GB; median 474,579 bytes per pair. Tar `claims_edit`: 255 images, 126 masks, sha256 `b4aa62fe97daed4b047b27395942a5a6c3f4b9ca52f2876c705aa6f9bd39eb0c`. Wall 0.989 h, 1.266 CU by rate, **1.22 CU by balance** (21.26 → 20.04).
+- **Eye-check sample:** 30 seeded uids; 2 of them are dropped pairs, so 28 can be checked.
+- **Compute, notebook 19 in all:** 2.67 CU by balance (22.71 → 20.04).
+
 ## Notebook 19: Kolors loaded in two stages to fit a standard T4 (12.7 GB RAM) (28 Nov) — 2026-11-28
 
 - **Fifth attempt:** the weights download broke off (`ChunkedEncodingError`, IncompleteRead on a ChatGLM shard) — a network drop; re-running the cell resumed it.

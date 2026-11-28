@@ -44,10 +44,13 @@ def test_the_cp8_block_skips_cleanly_without_its_inputs():
     assert "'status': 'skipped', 'reason': f'inputs missing" in src
 
 
-def test_cp8_generation_asks_for_high_ram_and_stops_on_repeated_failures():
+def test_cp8_generation_runs_on_a_standard_t4_and_stops_on_repeated_failures():
     meta = json.loads((NOTEBOOKS / "19_cp8_generation.ipynb").read_text())["metadata"]
-    assert meta["colab"]["machine_shape"] == "hm"  # Kolors with CPU offload: ~18 GB RAM
+    assert meta["colab"]["gpuType"] == "T4"
+    assert "machine_shape" not in meta["colab"]  # two-stage load fits 12.7 GB of RAM (28 Nov)
     src = _source("19_cp8_generation")
+    assert "MIN_RAM_GB = 12" in src
+    assert "prompts=[p['prompt'] for p in PLAN['plans']], negative=ce.NEGATIVE" in src
     assert "MAX_FAILS = 3" in src
     assert "ce.consecutive_failures(" in src
     assert ">= MAX_FAILS" in src
@@ -68,7 +71,7 @@ def test_cp8_install_removes_colabs_peft_before_diffusers_is_used():
     src = _source("19_cp8_generation")
     assert "'uninstall', '-y', 'peft'" in src
     assert src.index("*KOLORS_PINS]") < src.index("'uninstall', '-y', 'peft'")
-    assert src.index("'uninstall', '-y', 'peft'") < src.index("inpaint.KolorsInpainter(WEIGHTS)")
+    assert src.index("'uninstall', '-y', 'peft'") < src.index("inpaint.KolorsInpainter(WEIGHTS")
     assert "'diffusers' in sys.modules" in src
 
 

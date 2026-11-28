@@ -64,6 +64,21 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## Notebook 19: Kolors loaded in two stages to fit a standard T4 (12.7 GB RAM) (28 Nov) — 2026-11-28
+
+- **Fifth attempt:** the weights download broke off (`ChunkedEncodingError`, IncompleteRead on a ChatGLM shard) — a network drop; re-running the cell resumed it.
+- **Sixth attempt:** the Colab runtime crashed out of system RAM while loading Kolors (cell 5). The runtime had 12.7 GB; Colab offers no High-RAM T4 to this account.
+  - Cause: with `enable_model_cpu_offload()` every model waits in system RAM: ChatGLM-6B (about 12.5 GB fp16) plus the UNet (5.16 GB, loaded in fp32 first), about 18 GB or more.
+  - No pairs were generated.
+- **Fix (`inpaint.KolorsInpainter`):**
+  1. ChatGLM is loaded alone straight onto the GPU (`device_map`, shard by shard), encodes every distinct prompt of the frozen plan with the fixed negative through the pinned pipeline's own `encode_prompt`, and is freed;
+  2. the UNet and VAE are loaded in fp16 onto the GPU; the pipeline's `encode_prompt` becomes a lookup into those embeddings (a prompt outside the plan is an error).
+  - Each model still runs on the GPU in fp16, as under CPU offload. Pins and model unchanged.
+- **Notebook 19:** `MIN_RAM_GB` 18 → 12; no High-RAM request in the metadata; the inpainter gets the plan's prompts and `ce.NEGATIVE`. Also carries the Codex P2 fix from #70 (restart when the pins are reinstalled after `huggingface_hub` was imported).
+- **Tests:** each prompt encoded once and looked up, unknown prompt refused; no CPU offload in the loader; notebook metadata and call.
+- **Not testable here:** the real load and the RAM and GPU peaks (no GPU, no weights); the smoke test measures them.
+- **Checks:** ruff clean; pytest 616 passed; audit ok; the dry runs of notebooks 14, 15, 16, 17, 17b, 18, 18b and 19 pass.
+
 ## Notebook 19, third and fourth attempts: the huggingface-hub pin undone by the repo install (28 Nov) — 2026-11-28
 
 - **Third attempt:** `NameError: OUT` in cell 6. The session restarted during Run all, so cells 5–6 ran without cells 1–2. No code change; no pairs.

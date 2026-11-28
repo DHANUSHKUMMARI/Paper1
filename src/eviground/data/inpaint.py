@@ -4,8 +4,8 @@
 - :class:`KolorsInpainter`: Kolors-Inpainting (Hugging Face ``Kwai-Kolors/Kolors-Inpainting``
   @ :data:`KOLORS_WEIGHTS_REV`, Apache-2.0) through the pipeline of the Kolors repository
   (``Kwai-Kolors/Kolors`` @ :data:`KOLORS_REPO_REV`, installed with ``--no-deps``), as the repo's
-  ``inpainting/sample_inpainting.py`` builds it, in fp16 with model CPU offload so that it fits a
-  T4. Imported lazily, so the sandbox and CI never need it.
+  ``inpainting/sample_inpainting.py`` builds it, in fp16, loaded in two stages so that it fits a
+  T4 with 12.7 GB of system RAM (see the class). Imported lazily: the sandbox and CI never need it.
 
 Every backend maps (image (H, W, 3) uint8, mask (H, W) bool, prompt, seed) to a generated image
 of the same shape; :func:`claims_edit.composite` then keeps only the pixels inside the mask.
@@ -97,12 +97,30 @@ def patch_chatglm_pad(tokenizer_cls: Any) -> bool:
 
 
 class KolorsInpainter:
-    """Kolors-Inpainting, fp16, model CPU offload (T4). ``weights_dir``: the pinned weights
-    (``snapshot_download``); the pinned repo must be importable (``kolors``)."""
+    """Kolors-Inpainting, fp16 on the GPU, loaded in two stages (28 Nov).
+
+    A standard Colab T4 has 12.7 GB of system RAM, less than ChatGLM-6B (12.5 GB fp16) plus the
+    UNet that model CPU offload keeps in RAM, so the run crashed while loading. Each model fits
+    the 15 GB GPU alone, and the text encoder is needed only for the plan's few distinct prompts:
+
+    1. ChatGLM is loaded straight onto the GPU (shard by shard) and every prompt in ``prompts`` is
+       encoded with ``negative`` by the pinned pipeline's own ``encode_prompt``; the embeddings are
+       kept on the CPU and the encoder is freed;
+    2. the UNet and VAE are loaded in fp16 onto the GPU, and the pipeline's ``encode_prompt`` is
+       replaced by a lookup into those embeddings.
+
+    Each model runs on the GPU in fp16, as under CPU offload; only where weights wait changes.
+    ``weights_dir``: the pinned weights (``snapshot_download``); the pinned repo must be importable.
+    """
 
     name = f"Kolors-Inpainting@{KOLORS_WEIGHTS_REV[:12]} (repo @{KOLORS_REPO_REV[:12]})"
 
-    def __init__(self, weights_dir: Path | str, device: str = "cuda") -> None:
+    def __init__(
+        self, weights_dir: Path | str, prompts, negative: str, device: str = "cuda"
+    ) -> None:
+        import gc
+        from types import SimpleNamespace
+
         import torch
         from diffusers import AutoencoderKL, EulerDiscreteScheduler, UNet2DConditionModel
         from kolors.models.modeling_chatglm import ChatGLMModel
@@ -114,18 +132,45 @@ class KolorsInpainter:
         patch_chatglm_pad(ChatGLMTokenizer)
         d = Path(weights_dir)
         fp16 = torch.float16
+        tokenizer = ChatGLMTokenizer.from_pretrained(d / "text_encoder")
+        # stage 1: the text encoder alone on the GPU; the shards go straight there (RAM ~ one shard)
+        encoder = ChatGLMModel.from_pretrained(
+            d / "text_encoder", torch_dtype=fp16, device_map={"": device}
+        ).half()
+        stub = SimpleNamespace(
+            tokenizer=tokenizer, text_encoder=encoder,
+            config=SimpleNamespace(force_zeros_for_empty_prompt=False),
+        )  # fmt: skip
+
+        def encode(prompt: str):
+            with torch.no_grad():
+                out = StableDiffusionXLInpaintPipeline.encode_prompt(
+                    stub, prompt=prompt, device=device, num_images_per_prompt=1,
+                    do_classifier_free_guidance=True, negative_prompt=negative,
+                )  # fmt: skip
+            return tuple(t.to("cpu") for t in out)
+
+        self.embeds = _encode_all(encode, prompts)
+        stub.text_encoder = None  # free the 12.5 GB encoder before the denoiser loads
+        del encoder
+        gc.collect()
+        torch.cuda.empty_cache()
+        # stage 2: the denoiser on the GPU, in fp16 from the start (no fp32 copy in RAM)
         self.pipe = StableDiffusionXLInpaintPipeline(
-            vae=AutoencoderKL.from_pretrained(d / "vae").to(fp16),
-            text_encoder=ChatGLMModel.from_pretrained(d / "text_encoder", torch_dtype=fp16).half(),
-            tokenizer=ChatGLMTokenizer.from_pretrained(d / "text_encoder"),
-            unet=UNet2DConditionModel.from_pretrained(d / "unet").to(fp16),
+            vae=AutoencoderKL.from_pretrained(d / "vae", torch_dtype=fp16),
+            text_encoder=None,
+            tokenizer=tokenizer,
+            unet=UNet2DConditionModel.from_pretrained(d / "unet", torch_dtype=fp16),
             scheduler=EulerDiscreteScheduler.from_pretrained(d / "scheduler"),
-        )
-        self.pipe.enable_model_cpu_offload()  # the 6B text encoder and the UNet do not fit together
+        ).to(device)
         self.pipe.enable_attention_slicing()
+        self.pipe.encode_prompt = self._lookup  # the pinned encode_prompt needs the encoder
         self.torch = torch
         self.device = device
         self.seconds: list[float] = []
+
+    def _lookup(self, prompt, device=None, **_):
+        return tuple(t.to(device or self.device) for t in lookup_embeds(self.embeds, prompt))
 
     def inpaint(self, image, mask, prompt, *, negative, seed, steps, guidance):
         from PIL import Image
@@ -147,6 +192,22 @@ class KolorsInpainter:
         if not self.torch.cuda.is_available():
             return None
         return round(self.torch.cuda.max_memory_allocated() / 1e9, 3)
+
+
+def _encode_all(encode, prompts) -> dict[str, tuple]:
+    """Each distinct prompt encoded once (in first-seen order): {prompt: encode(prompt)}."""
+    out: dict[str, tuple] = {}
+    for p in prompts:
+        if p not in out:
+            out[p] = encode(p)
+    return out
+
+
+def lookup_embeds(embeds: dict[str, tuple], prompt: str) -> tuple:
+    """The cached embeddings of ``prompt``; a prompt outside the frozen plan is an error."""
+    if prompt not in embeds:
+        raise KeyError(f"prompt not encoded at load (not in the frozen plan): {prompt!r}")
+    return embeds[prompt]
 
 
 def pipeline_info(inp: Any) -> dict[str, Any]:

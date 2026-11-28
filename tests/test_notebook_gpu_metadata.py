@@ -70,3 +70,12 @@ def test_cp8_install_removes_colabs_peft_before_diffusers_is_used():
     assert src.index("*KOLORS_PINS]") < src.index("'uninstall', '-y', 'peft'")
     assert src.index("'uninstall', '-y', 'peft'") < src.index("inpaint.KolorsInpainter(WEIGHTS)")
     assert "'diffusers' in sys.modules" in src
+
+
+def test_cp8_install_restores_the_hub_pin_after_the_repo_install():
+    """`pip install -e REPO` upgrades huggingface-hub (eviground needs >= 0.24) on every Run all;
+    diffusers 0.28.2 needs cached_download, removed in hub 0.26 (28 Nov)."""
+    src = _source("19_cp8_generation")
+    assert "_version('huggingface-hub') != '0.23.4'" in src
+    assert src.index("'-e', REPO]") < src.index("_version('huggingface-hub') != '0.23.4'")
+    assert src.index("_version('huggingface-hub') != '0.23.4'") < src.index("*KOLORS_PINS]")

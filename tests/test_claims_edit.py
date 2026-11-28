@@ -305,3 +305,26 @@ def test_resume_retries_failed_pairs_only():
         "c": {"reason": "edit not visible (mean change 1.00 < 10.0)"},
     }
     assert [t["uid"] for t in ce.to_generate(targets, done)] == ["b", "d"]
+
+
+def test_kolors_weights_revision_is_the_full_pinned_commit():
+    rev = inpaint.KOLORS_WEIGHTS_REV
+    assert len(rev) == 40
+    assert all(c in "0123456789abcdef" for c in rev)
+    assert rev == "3bb98b424c9aa02d11164bf78904a3e7fba17c09"  # the card cites 3bb98b424c9a
+    assert inpaint.KOLORS_REPO_REV.startswith("038818d244ed")
+
+
+def test_chatglm_pad_patch_accepts_padding_side_and_keeps_the_result():
+    class Tok:  # the Kolors tokenizer's _pad signature (no padding_side)
+        def _pad(self, encoded, max_length=None, padding_strategy=None, pad_to_multiple_of=None,
+                 return_attention_mask=None):
+            return {"ids": [0] * (max_length - len(encoded)) + list(encoded)}
+
+    assert inpaint.patch_chatglm_pad(Tok)
+    t = Tok()
+    assert t._pad([5, 6], max_length=4, padding_side="left") == {"ids": [0, 0, 5, 6]}
+    assert t._pad([5, 6], max_length=4) == {"ids": [0, 0, 5, 6]}
+    with pytest.raises(ValueError):
+        t._pad([5], max_length=2, padding_side="right")
+    assert not inpaint.patch_chatglm_pad(Tok)  # already accepts padding_side: left alone

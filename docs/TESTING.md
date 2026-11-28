@@ -64,6 +64,27 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## Notebook 19 install fix: Python 3.13 stack and the full Kolors weights revision (28 Nov) — 2026-11-28
+
+- **What happened:** the first smoke-test attempt stopped in cell 1 before anything was generated (no plan frozen, no pairs). `pip install ... transformers==4.42.4 ...` exited 1 on Colab.
+- **Cause:**
+  - transformers 4.42.4 (Kolors' requirement) needs `tokenizers>=0.19,<0.20`;
+  - `tokenizers 0.19.1` ships no Python 3.13 wheel;
+  - built from source with Rust it still fails, even with `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`: `PyUnicode_FromKindAndData` / `PyUnicode_4BYTE_KIND` are missing from the limited API, so `tokenizers-python` does not compile (sandbox, Python 3.13.18).
+  - On Python 3.13 the oldest working pair is transformers 4.45.2 + tokenizers 0.20.3 (0.20.0 has no cp313 wheel; 4.44.2 still needs 0.19).
+- **Second bug, found on the way:** `KOLORS_WEIGHTS_REV` was `3bb98b424c9a17c09bf9e4fa1d53ce4f5aa32dc6`. Only its first 12 characters (the card's `3bb98b424c9a`) match the real commit, `3bb98b424c9aa02d11164bf78904a3e7fba17c09`. The Hugging Face API refuses the old value ("Invalid rev id"), so the weight download would have failed next. Fixed.
+- **Fix (Dhanush, 28 Nov):**
+  - notebook 19 pins `transformers==4.45.2`, `tokenizers==0.20.3`, with diffusers 0.28.2, huggingface-hub 0.23.4 and accelerate 0.27.2 unchanged;
+  - pip output is captured and its last 30 lines shown on failure;
+  - `inpaint.patch_chatglm_pad`: transformers >= 4.45 passes `padding_side` to the Kolors `ChatGLMTokenizer._pad`, which lacks it (`TypeError`, reproduced). The shim checks it is `None` or `left` and drops it.
+- **Verification (sandbox, CPU):**
+  - **Tokenization:** all 17 plan prompts and the negative prompt, tokenized as the Kolors inpainting pipeline does (`padding="max_length"`, `max_length=256`, `truncation=True`). The token ids and masks are identical (one SHA-256, `91986a35…`) under transformers 4.42.4 / tokenizers 0.19.1 on Python 3.12 and under 4.45.2 / 0.20.3 with the shim on Python 3.13. Without the shim the new stack raises the `TypeError`.
+  - **Encoder and pipeline:** on transformers 4.45.2 (torch 2.15, CPU), the Kolors inpainting pipeline imports. A 2-layer ChatGLM built from the pinned text-encoder config, with random weights, runs the pipeline's encoder call: finite outputs, and left padding leaves the real tokens' hidden states unchanged (max difference 0.0).
+  - **Not run here:** the real 6B text encoder, the UNet and the GPU path. The smoke test is the first real run.
+- **Spec:** suggestion `sg_tbpawif6rs` updates the CP8 card's pin line. It is pending Dhanush.
+- **Tests:** the weights revision is the full 40-character commit; the shim (accepts `left`, refuses `right`, idempotent); notebook 19's pins and error tail.
+- **Checks:** ruff clean; pytest 612 passed; audit ok; the dry runs of notebooks 14–19 pass.
+
 ## Notebook 18b run: CP6 analysis on CPU (27 Nov) — 2026-11-27
 
 - **Compute:** CPU runtime, 0.4944 h. **0.04 CU by balance** (22.75 → 22.71, Dhanush); the record says 0.04 at 0.08 CU/h.

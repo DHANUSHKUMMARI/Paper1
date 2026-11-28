@@ -51,3 +51,13 @@ def test_cp8_generation_asks_for_high_ram_and_stops_on_repeated_failures():
     assert "MAX_FAILS = 3" in src
     assert "ce.consecutive_failures(" in src
     assert ">= MAX_FAILS" in src
+
+
+
+def test_cp8_install_pins_a_python_313_stack_and_shows_errors():
+    """transformers 4.42.4 needs tokenizers 0.19, which does not install on Python 3.13 (28 Nov)."""
+    src = _source("19_cp8_generation")
+    assert "'transformers==4.45.2', 'tokenizers==0.20.3'" in src
+    assert "transformers==4.42.4" not in src
+    assert "'-q', *KOLORS_PINS" not in src  # pip output is captured and its tail shown on failure
+    assert "[-30:]" in src

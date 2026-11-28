@@ -20,7 +20,9 @@ from typing import Any, Protocol
 import numpy as np
 
 KOLORS_WEIGHTS = "Kwai-Kolors/Kolors-Inpainting"
-KOLORS_WEIGHTS_REV = "3bb98b424c9a17c09bf9e4fa1d53ce4f5aa32dc6"
+# the full commit of Kwai-Kolors/Kolors-Inpainting (2024-07-26); the earlier value here had only its
+# first 12 characters right, so the download would have failed (found 28 Nov, before any run)
+KOLORS_WEIGHTS_REV = "3bb98b424c9aa02d11164bf78904a3e7fba17c09"
 KOLORS_REPO = "https://github.com/Kwai-Kolors/Kolors"
 KOLORS_REPO_REV = "038818d244ed103056abd10f429729a26af4d239"
 KOLORS_LONG_SIDE = 1024  # Kolors' native size; sides rounded to a multiple of 64
@@ -73,6 +75,27 @@ def _fit(h: int, w: int, long_side: int = KOLORS_LONG_SIDE) -> tuple[int, int]:
     return max(64, round(h * s / 64) * 64), max(64, round(w * s / 64) * 64)
 
 
+def patch_chatglm_pad(tokenizer_cls: Any) -> bool:
+    """Let Kolors' ChatGLM tokenizer run under transformers >= 4.45, which passes ``padding_side``
+    to ``_pad``; the tokenizer pads on the left only, so the argument is checked and dropped. The
+    token ids are unchanged: every CP8 prompt and the negative prompt gave byte-identical ids and
+    masks under transformers 4.42.4 / tokenizers 0.19.1 (Python 3.12) and 4.45.2 / 0.20.3 with
+    this patch (sandbox, 28 Nov). Returns whether the patch was applied."""
+    import inspect
+
+    if "padding_side" in inspect.signature(tokenizer_cls._pad).parameters:
+        return False
+    original = tokenizer_cls._pad
+
+    def _pad(self, *args, padding_side=None, **kwargs):
+        if padding_side not in (None, "left"):
+            raise ValueError(f"the ChatGLM tokenizer pads on the left only, not {padding_side!r}")
+        return original(self, *args, **kwargs)
+
+    tokenizer_cls._pad = _pad
+    return True
+
+
 class KolorsInpainter:
     """Kolors-Inpainting, fp16, model CPU offload (T4). ``weights_dir``: the pinned weights
     (``snapshot_download``); the pinned repo must be importable (``kolors``)."""
@@ -88,6 +111,7 @@ class KolorsInpainter:
             StableDiffusionXLInpaintPipeline,
         )
 
+        patch_chatglm_pad(ChatGLMTokenizer)
         d = Path(weights_dir)
         fp16 = torch.float16
         self.pipe = StableDiffusionXLInpaintPipeline(

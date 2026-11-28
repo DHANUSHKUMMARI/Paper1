@@ -64,6 +64,21 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## Notebook 19, third and fourth attempts: the huggingface-hub pin undone by the repo install (28 Nov) — 2026-11-28
+
+- **Third attempt:** `NameError: OUT` in cell 6. The session restarted during Run all, so cells 5–6 ran without cells 1–2. No code change; no pairs.
+- **Fourth attempt (Restart session, Run all):**
+  - the weights at the pinned revision were found and checked (42 files, 1 min 24 s);
+  - building the inpainter failed: `import diffusers` → `ImportError: cannot import name 'cached_download' from 'huggingface_hub'`. No pairs were generated.
+- **Cause:**
+  - `pyproject.toml` needs `huggingface_hub>=0.24`, so cell 1's `pip install -e REPO` upgrades the hub to the latest on every Run all;
+  - the Kolors pin install (which restores 0.23.4) was skipped on a second Run all, because its condition checked only kolors, diffusers and transformers;
+  - diffusers 0.28.2 imports `cached_download`, removed in huggingface-hub 0.26.
+  - The first attempts did not show it: there the pins were installed after the repo, in the same cell.
+- **Fix:** the pin install also runs when huggingface-hub is not 0.23.4. Pins and card unchanged.
+- **Test:** the hub check comes after the repo install and before the pin install.
+- **Checks:** ruff clean; pytest 614 passed; audit ok; the dry runs of notebooks 14, 15, 16, 17, 17b, 18, 18b and 19 pass.
+
 ## Notebook 19, second attempt: Colab's peft vs the accelerate pin (28 Nov) — 2026-11-28
 
 - **What worked on the T4:**

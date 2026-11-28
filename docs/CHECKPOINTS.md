@@ -12,7 +12,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP3 | 5 | Training health | **PASS** (seed 42, both models; notebook 06 on an L4, 15–16 Nov 2026; script verdict, awaiting Dhanush) |DHANUSH |
 | CP4 | 6 | Generalization gate | **FAIL** (G1 and G2; RF PASS; one fix used, no second fix; 17–18 Nov 2026; awaiting Dhanush's decision on the narrowed claims) | |
 | CP5 | 7 | Evidence faithfulness | **FAIL** (19 Nov, notebook 14; repaired token-deletion test 24 Nov, notebook 15: both maps pass deletion, decoder fails randomization SSIM 0.546, Grad-CAM++ fails EPG 1.38×; fallback: decoder primary) | |
-| CP6 | 8 | Grounded explanations | **pending criterion 2** (notebook 18 on a T4, 25 Nov 2026: GR 0.9528, HR-E 0.0472; the 30-report read and the criterion 1 check on the stored reports are next, notebook 18b) | |
+| CP6 | 8 | Grounded explanations | **FAIL on criterion 2** (27 Nov 2026): 7 of 30 reports read are unsupported, every one a wrong detector verdict restated faithfully; 0 claims unsupported by their evidence. Criteria 1, 3 and 4 pass | |
 | CP7 | 10 | Full benchmark | pending | |
 | CP8 | 11 | Claims-Edit case study | pending | |
 | CP9 | 14 | Ablations, statistics, human study | pending | |
@@ -27,7 +27,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 - **Numbers:** each pass criterion with its measured value
 - **Result:** PASS | FAIL
 - **If FAIL:** fix applied, re-run result, or fallback taken (and why)
-- **Verified by Dhanush:** ☐
+- **Verified by Dhanush:** ☑ (the 30-report read, 27 Nov)
 
 ---
 
@@ -585,14 +585,26 @@ was reused (a pipeline check, not a seed one). Values are on validation crops, a
 - **Compute:** notebook 14 about 7 CU by balance (28.19 left); notebook 15 1.71 CU (26.48 left).
 - **Verified by Dhanush:** ☐
 
-### CP6 — Grounded explanations, seed 42 — 2026-11-25 — **pending criterion 2**
+### CP6 — Grounded explanations, seed 42 — 2026-11-25 / 27 — **FAIL (criterion 2)**
 - **Run:** notebook 18 on a paid T4, commit `f2fd5b9` (session 2), result `runs/cp6/cp6_reports_seed42.json`. The full numbers are in `docs/TESTING.md`.
 - **Criteria (spec §9.1):**
-  1. **100% of claims in verified reports cite an existing evidence ID:** true by construction, since the final report keeps only claims that pass every rule. Notebook 18b checks it on the stored reports.
-  2. **0 unsupported claims in 30 reports read beside their evidence JSON and image:** **pending.** Notebook 18b writes the 30 reports (the same 30 as notebook 18), each claim with its verifier errors; Dhanush reads them beside the images.
+  1. **100% of claims in verified reports cite an existing evidence ID:** **pass** (notebook 18b, 27 Nov). All 5,369 final claims of the 1,500 reports pass every verifier rule. There are 0 reports without a final report, 0 verdict mismatches and 0 confidence mismatches.
+  2. **0 unsupported claims in 30 reports read beside their evidence JSON and image:** **FAIL** (Dhanush's read, 27 Nov).
+     - **Result:** 23 supported, 7 unsupported (reports 4, 17, 18, 21, 26, 27, 29 of `runs/cp6/cp6_read30_seed42.json`).
+     - **Report 16:** first marked unsure, with a note about the Qwen2-VL baseline. Dhanush re-marked it supported, since its grounded report is correct.
+     - **Cause:** every unsupported report carries a wrong detector verdict that the LLM restated faithfully:
+       - 5 edited images called real (reports 21, 26, 27, 29) or fully generated (report 4);
+       - 2 generated images called real (report 17) or edited (report 18).
+     - **No claim contradicts its evidence JSON** (criterion 1).
+     - 7/30 = 23% wrong verdicts in the read, against 271/1474 = 18.4% verdict claims wrong on P6.
+     - **Recorded as measured:** the rule is unchanged (Dhanush, 27 Nov). **Limitation for the paper:** grounding makes a report faithful to the detector's evidence, not correct against the image; a wrong verdict passes through the verifier.
   3. **Pre-verifier rejection rate logged (HR):** yes. First pass on P6: 5,089 claims, GR 0.9528, HR-E 0.0472. On P6_mllm: GR 0.9568, HR-E 0.0432.
   4. **The LLM input never contains image pixels or paths; MockLLM tests pass:** yes (`tests/test_cp6.py`, CI).
 - **HR-GT (without the 26 flagged SID-Set masks):** grounded final 0.1736 on P6 and 0.1582 on P6_mllm; image baseline 0.5907 on P6_mllm. Verdict accuracy 0.8161 (the detector's verdict) vs 0.3128 (image baseline).
-- **Known issue:** the as-run template broke rule (c) on 91 of 1,500 reports. It is fixed in the code; notebook 18b reports the template both as run and fixed.
+- **HR-GT split (notebook 18b; P6, flagged masks excluded):**
+  - verdict claims wrong: 271/1474 for every EviGround variant;
+  - region claims wrong: grounded 199/1233 = 0.1614, no verifier 0.1673, template fixed 0.2415.
+  - **P6_mllm, region claims only:** grounded 53/405 = 0.1309 vs image baseline 21/115 = 0.1826. Scoring every box of the image baseline gives 234/703 = 0.3329 (sensitivity).
+- **Template bug (fixed):** the as-run template broke rule (c) with 108 `edited_region` claims (mask_conf < 0.6) in 91 of 1,500 reports. The fixed template has 0 failing claims; its HR-GT on P6 is 0.2279 as run and 0.2195 fixed.
 - **Compute:** 2.94 CU by balance over two T4 sessions (26.37 → 23.43).
 - **Verified by Dhanush:** ☐

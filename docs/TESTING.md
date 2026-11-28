@@ -64,6 +64,44 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## Notebook 18b run: CP6 analysis on CPU (27 Nov) — 2026-11-27
+
+- **Compute:** CPU runtime, 0.4944 h. **0.04 CU by balance** (22.75 → 22.71, Dhanush); the record says 0.04 at 0.08 CU/h.
+- **As-run HR-GT reproduces notebook 18: True.**
+- **Template:**
+  - as run, 108 of 5,831 claims fail, all rule (c) and all `edited_region`, in 91 reports (1,409 pass);
+  - fixed, 0 of 5,723 claims fail and 1,500 reports pass.
+- **HR-GT split, wrong / checkable:**
+
+| Part | Variant | HR-GT | Verdict claims | Region claims |
+|---|---|---|---|---|
+| P6 | grounded final | 0.1736 | 271/1474 | 199/1233 = 0.1614 |
+| P6 | no verifier | 0.1762 | 271/1474 | 211/1261 = 0.1673 |
+| P6 | template as run | 0.2279 | 271/1474 | 636/2506 = 0.2538 |
+| P6 | template fixed | 0.2195 | 271/1474 | 579/2398 = 0.2415 |
+| P6, flagged included | grounded final | 0.1750 | 273/1500 | 211/1265 = 0.1668 |
+| P6_mllm | grounded final | 0.1582 | 88/486 | 53/405 = 0.1309 |
+| P6_mllm | no verifier | 0.1624 | 88/486 | 58/413 = 0.1404 |
+| P6_mllm | template fixed | 0.2003 | 88/486 | 171/807 = 0.2119 |
+| P6_mllm | image baseline | 0.5907 | 334/486 | 21/115 = 0.1826 |
+| P6_mllm | image baseline, all boxes (sensitivity) | 0.4777 | 334/486 | 234/703 = 0.3329 |
+| P6_mllm, flagged included | grounded final / image baseline | 0.1618 / 0.5939 | 89/500 / 345/500 | 60/421 = 0.1425 / 22/118 = 0.1864 |
+
+- **Image baseline verdicts (true → said, 500):**
+  - real: 43 real, 3 generated, 3 edited, 1 unparsed;
+  - generated: 33, 7, 4, 6;
+  - edited: 238, 43, 105, 14.
+  - 155/500 are correct, and it answers "real" 314 times.
+- **Image baseline claim types:** every claim carries a box (attribution 88, edited_region 118, global 269, limitation 67, verdict 176). The primary rule scores only `edited_region`.
+- **Limitation claims that failed:**
+  - P6: 212 of 569 (by rule: b 168, a 53, limitation 42, c 6, c′ 1);
+  - P6_mllm: 74 of 194 (b 55, limitation 18, a 16, c 2).
+- **CP6 criterion 1: pass.** 5,369 final claims, 0 failing, 0 reports without a final report, 0 verdict and 0 confidence mismatches.
+- **Criterion 2: FAIL** (Dhanush's read on the reading page, 27 Nov; the images were not uploaded).
+  - 23 supported, 7 unsupported (reports 4, 17, 18, 21, 26, 27, 29).
+  - Every unsupported report is a wrong detector verdict restated faithfully; no claim contradicts its evidence.
+  - Report 16 was first marked unsure (the note was about the Qwen2-VL baseline) and was re-marked supported on Dhanush's word.
+
 ## PR #65 review fixes (Dhanush's research lead, 27 Nov) — 2026-11-27
 
 - **`claims_edit.boundary_band`:** `binary_erosion(..., border_value=1)`. A mask touching the image edge no longer gets a fake seam strip along that edge.

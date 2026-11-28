@@ -1,5 +1,7 @@
 """CP8 Claims-Edit plan and helpers (Dhanush, 27 Nov): frozen by hash before any generation."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -328,3 +330,25 @@ def test_chatglm_pad_patch_accepts_padding_side_and_keeps_the_result():
     with pytest.raises(ValueError):
         t._pad([5], max_length=2, padding_side="right")
     assert not inpaint.patch_chatglm_pad(Tok)  # already accepts padding_side: left alone
+
+
+def test_kolors_prompts_are_encoded_once_and_looked_up():
+    """Two-stage load (28 Nov): the text encoder runs once per distinct prompt, then is freed."""
+    calls = []
+
+    def encode(p):
+        calls.append(p)
+        return (p.upper(),)
+
+    embeds = inpaint._encode_all(encode, ["dents on the car", "stains", "dents on the car"])
+    assert calls == ["dents on the car", "stains"]
+    assert inpaint.lookup_embeds(embeds, "stains") == ("STAINS",)
+    with pytest.raises(KeyError, match="not in the frozen plan"):
+        inpaint.lookup_embeds(embeds, "cracks")
+
+
+def test_kolors_loads_without_cpu_offload():
+    src = Path(inpaint.__file__).read_text()
+    assert "enable_model_cpu_offload()" not in src
+    assert 'device_map={"": device}' in src
+    assert "text_encoder=None" in src

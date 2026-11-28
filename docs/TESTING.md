@@ -64,6 +64,23 @@ Sandbox only. Nothing has been generated or scored; the T4 smoke test needs Dhan
   - **Checks:** ruff clean; pytest 604 passed; audit ok; the dry runs of notebooks 14–19 pass.
   - SonarCloud S5778 (major) on the new test: the fingerprint is now computed before the `pytest.raises` block, so only `check_resume` can raise inside it. The checks above pass again.
 
+## Notebook 19, second attempt: Colab's peft vs the accelerate pin (28 Nov) — 2026-11-28
+
+- **What worked on the T4:**
+  - the new install (transformers 4.45.2, tokenizers 0.20.3);
+  - the weights download at the corrected revision (42 files; the seven text-encoder shards, the UNet and the VAE; about 25 min);
+  - the ChatGLM text encoder load (7/7 shards).
+- **What failed:** building `StableDiffusionXLInpaintPipeline`.
+  - diffusers 0.28.2 `register_modules` calls `_unwrap_model`, which does `from peft import PeftModel` whenever peft is installed.
+  - Colab ships peft 0.21.2, which imports `accelerate.utils.memory.clear_device_cache`, absent from the pinned accelerate 0.27.2 → `ImportError`.
+  - No pairs were generated.
+- **Fix:**
+  - notebook 19 uninstalls peft after the pin install. Notebook 19 never uses it; eviground imports it only lazily, for the detector.
+  - If diffusers was already imported in the session, the notebook asks for Runtime → Restart session (diffusers caches the peft check at import).
+  - Pins and card unchanged.
+- **Test:** the peft removal comes after the pins and before the inpainter is built.
+- **Checks:** ruff clean; pytest 613 passed; audit ok; the dry runs of notebooks 14–19 pass.
+
 ## Notebook 19 install fix: Python 3.13 stack and the full Kolors weights revision (28 Nov) — 2026-11-28
 
 - **What happened:** the first smoke-test attempt stopped in cell 1 before anything was generated (no plan frozen, no pairs). `pip install ... transformers==4.42.4 ...` exited 1 on Colab.

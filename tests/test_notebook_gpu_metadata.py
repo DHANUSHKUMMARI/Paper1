@@ -61,3 +61,12 @@ def test_cp8_install_pins_a_python_313_stack_and_shows_errors():
     assert "transformers==4.42.4" not in src
     assert "'-q', *KOLORS_PINS" not in src  # pip output is captured and its tail shown on failure
     assert "[-30:]" in src
+
+
+def test_cp8_install_removes_colabs_peft_before_diffusers_is_used():
+    """Colab's peft needs accelerate >= 1.x; diffusers 0.28.2 imports it if present (28 Nov)."""
+    src = _source("19_cp8_generation")
+    assert "'uninstall', '-y', 'peft'" in src
+    assert src.index("*KOLORS_PINS]") < src.index("'uninstall', '-y', 'peft'")
+    assert src.index("'uninstall', '-y', 'peft'") < src.index("inpaint.KolorsInpainter(WEIGHTS)")
+    assert "'diffusers' in sys.modules" in src

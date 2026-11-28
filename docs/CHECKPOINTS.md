@@ -14,7 +14,7 @@ Claude Code: after each checkpoint, fill in its entry below. Record what was run
 | CP5 | 7 | Evidence faithfulness | **FAIL** (19 Nov, notebook 14; repaired token-deletion test 24 Nov, notebook 15: both maps pass deletion, decoder fails randomization SSIM 0.546, Grad-CAM++ fails EPG 1.38×; fallback: decoder primary) | |
 | CP6 | 8 | Grounded explanations | **FAIL on criterion 2** (27 Nov 2026): 7 of 30 reports read are unsupported, every one a wrong detector verdict restated faithfully; 0 claims unsupported by their evidence. Criteria 1, 3 and 4 pass | |
 | CP7 | 10 | Full benchmark | pending | |
-| CP8 | 11 | Claims-Edit case study | pending | |
+| CP8 | 11 | Claims-Edit case study | **FAIL on the drop rule** (28 Nov 2026): 21 of 150 photos have no instance covering 2–40% (mask rule) and 3 of 129 edits were not visible, (21 + 3)/150 = 0.16 > 0.10. 126 pairs generated; eye check and P7 metrics pending | |
 | CP9 | 14 | Ablations, statistics, human study | pending | |
 | CP10 | 15 | Manuscript integrity | pending | |
 
@@ -607,4 +607,18 @@ was reused (a pipeline check, not a seed one). Values are on validation crops, a
   - **P6_mllm, region claims only:** grounded 53/405 = 0.1309 vs image baseline 21/115 = 0.1826. Scoring every box of the image baseline gives 234/703 = 0.3329 (sensitivity).
 - **Template bug (fixed):** the as-run template broke rule (c) with 108 `edited_region` claims (mask_conf < 0.6) in 91 of 1,500 reports. The fixed template has 0 failing claims; its HR-GT on P6 is 0.2279 as run and 0.2195 fixed.
 - **Compute:** 2.94 CU by balance over two T4 sessions (26.37 → 23.43).
+- **Verified by Dhanush:** ☐
+
+### CP8 — Claims-Edit generation, seed 42 — 2026-11-28 — **FAIL (drop rule)**; scoring pending
+- **Run:** notebook 19 on a standard T4 (12.7 GB system RAM), commit `8c91b24`. Kolors-Inpainting @ `3bb98b424c9a`, Kolors repo @ `038818d244ed`, loaded in two stages (#71). Result `runs/cp8/cp8_generation_seed42.json`.
+- **Plan** (`CP8_plan`, frozen before any generation): sha256 `6db4e9d16f5262abd7622d9c6299b4bc9908d7b520dbd6d0b3abe5fb74974288`, 129 edits from the 150 reserved COCO photos.
+- **Drop rule** (≤ 10% of the 150 dropped, photos without an instance included): **FAIL**, decided by Dhanush's research lead on 28 Nov at the smoke test, before the full run; the rule is unchanged.
+  - **Excluded by the mask rule:** 21 of 150 photos have no car, couch, chair, dining table or laptop covering 2–40% of the image (their object is larger); 21/150 = 14% alone exceeds the rule.
+  - **Among the 129 attempted pairs (descriptive):** 126 kept, 3 dropped as not visible (mean change inside the mask 9.50, 8.97 and 8.89 against 10.0: `000000015335`, `000000029675`, `000000172877`), 0 generation failures.
+  - Total (21 + 3)/150 = 0.16.
+- **Generation:** median 25.86 s per image, peak GPU memory 12.826 GB, median 474,579 bytes per pair.
+- **Tar `claims_edit`:** 255 images (129 real photos + 126 edited copies) and 126 masks, sha256 `b4aa62fe97daed4b047b27395942a5a6c3f4b9ca52f2876c705aa6f9bd39eb0c`. The 21 excluded photos are not in it.
+- **Eye check (pending):** the seeded sample of 30 contains 2 dropped pairs (`000000015335`, `000000172877`), so 28 pairs can be checked.
+- **P7 metrics (pending):** the `cp8` block of notebook 17 on an L4 (Phase C); reports as a notebook 18-style T4 run.
+- **Compute:** notebook 19 in all 2.67 CU by balance (22.71 → 20.04): failed attempts and the smoke test 1.45, the full run 1.22.
 - **Verified by Dhanush:** ☐

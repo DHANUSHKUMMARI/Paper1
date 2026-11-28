@@ -204,6 +204,16 @@ def boundary_band(mask: np.ndarray, px: int = 8) -> np.ndarray:
     return grow & ~shrink
 
 
+def to_generate(
+    targets: Sequence[Mapping[str, Any]], done: Mapping[str, Mapping[str, Any]]
+) -> list[Mapping[str, Any]]:
+    """The planned pairs still to generate on a resume: those without a record, and those whose
+    record is ``generation failed`` (retried with the same seed; a pair that was generated but
+    judged not visible stays dropped, as the drop rule says)."""
+    retry = "generation failed"
+    return [t for t in targets if t["uid"] not in done or done[t["uid"]].get("reason") == retry]
+
+
 def consecutive_failures(records: Sequence[Mapping[str, Any]]) -> int:
     """How many of the latest pair records in a row failed to generate (notebook 19 stops at
     ``MAX_FAILS``; review of PR #65)."""

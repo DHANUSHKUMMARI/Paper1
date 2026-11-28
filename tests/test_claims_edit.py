@@ -230,7 +230,7 @@ def test_generation_fingerprint_and_resume_refusal():
     with pytest.raises(ValueError, match="another generation configuration"):
         ce.check_resume([{"uid": "a", "fingerprint": fp}, {"uid": "b", "fingerprint": "x"}], fp)
     with pytest.raises(ValueError):
-        ce.check_resume([{"uid": "c"}], fp)   # an old record without a fingerprint
+        ce.check_resume([{"uid": "c"}], fp)  # an old record without a fingerprint
 
 
 def test_generation_code_covers_only_pixel_deciding_files(tmp_path):
@@ -267,7 +267,7 @@ def test_generation_code_covers_only_pixel_deciding_files(tmp_path):
 
     fp1 = fp()
     records = [{"uid": "a", "fingerprint": fp1}]
-    commit("src/eviground/eval/cp9.py", "y = 2\n")   # unrelated code merged
+    commit("src/eviground/eval/cp9.py", "y = 2\n")  # unrelated code merged
     assert fp() == fp1
     ce.check_resume(records, fp())
     commit("src/eviground/data/claims_edit.py", "# changed\n")
@@ -295,3 +295,13 @@ def test_consecutive_failures_counts_the_trailing_run():
     assert ce.consecutive_failures([bad, ok]) == 0
     assert ce.consecutive_failures([ok, bad, bad]) == 2
     assert ce.consecutive_failures([bad, ok, bad, bad, bad]) == 3
+
+
+def test_resume_retries_failed_pairs_only():
+    targets = [{"uid": u} for u in "abcd"]
+    done = {
+        "a": {"reason": "kept"},
+        "b": {"reason": "generation failed"},
+        "c": {"reason": "edit not visible (mean change 1.00 < 10.0)"},
+    }
+    assert [t["uid"] for t in ce.to_generate(targets, done)] == ["b", "d"]

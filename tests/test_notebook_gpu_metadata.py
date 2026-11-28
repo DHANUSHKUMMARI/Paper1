@@ -79,3 +79,4 @@ def test_cp8_install_restores_the_hub_pin_after_the_repo_install():
     assert "_version('huggingface-hub') != '0.23.4'" in src
     assert src.index("'-e', REPO]") < src.index("_version('huggingface-hub') != '0.23.4'")
     assert src.index("_version('huggingface-hub') != '0.23.4'") < src.index("*KOLORS_PINS]")
+    assert "'huggingface_hub' in sys.modules" in src  # reinstall after import: restart
